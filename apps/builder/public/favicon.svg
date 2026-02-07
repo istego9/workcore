@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="WorkCore">
+  <defs>
+    <linearGradient id="wc-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+    <linearGradient id="wc-ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#14b8a6" />
+      <stop offset="100%" stop-color="#22d3ee" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#wc-bg)" />
+  <g fill="none" stroke-linecap="round" stroke-width="4">
+    <path d="M21 21 A16 16 0 1 1 21 43" stroke="url(#wc-ring)" />
+    <path d="M29 29 A8 8 0 1 1 29 35" stroke="#38bdf8" />
+  </g>
+  <circle cx="33" cy="32" r="3" fill="#f8fafc" />
+</svg>

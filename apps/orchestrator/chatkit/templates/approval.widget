@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "name": "approval",
+  "template": "{\n  \"type\": \"Card\",\n  \"padding\": 12,\n  \"children\": [\n    {\"type\": \"Text\", \"value\": {{ prompt | tojson }}},\n    {\"type\": \"Row\", \"children\": [\n      {\"type\": \"Button\", \"label\": \"Approve\", \"style\": \"primary\", \"onClickAction\": {\"type\": \"interrupt.approve\", \"payload\": {\"run_id\": {{ run_id | tojson }}, \"interrupt_id\": {{ interrupt_id | tojson }}}}},\n      {\"type\": \"Button\", \"label\": \"Reject\", \"style\": \"secondary\", \"onClickAction\": {\"type\": \"interrupt.reject\", \"payload\": {\"run_id\": {{ run_id | tojson }}, \"interrupt_id\": {{ interrupt_id | tojson }}}}}\n    ]}\n  ]\n}",
+  "jsonSchema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "interrupt_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "run_id",
+      "interrupt_id"
+    ]
+  }
+}

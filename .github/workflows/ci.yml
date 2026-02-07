@@ -1,0 +1,157 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ci: ${{ steps.filter.outputs.ci }}
+      specs: ${{ steps.filter.outputs.specs }}
+      orchestrator: ${{ steps.filter.outputs.orchestrator }}
+      builder: ${{ steps.filter.outputs.builder }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Detect changed areas
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            ci:
+              - ".github/workflows/ci.yml"
+            specs:
+              - "AGENTS.md"
+              - "docs/api/**"
+              - "docs/architecture/**"
+              - "docs/DEV_WORKFLOW.md"
+              - "db/migrations/**"
+              - "scripts/archctl_validate.sh"
+            orchestrator:
+              - "apps/orchestrator/**"
+              - "db/migrations/**"
+              - "scripts/**"
+              - "docs/api/**"
+            builder:
+              - "apps/builder/**"
+
+  spec-gates:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.specs == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Run spec validation gate
+        run: ./scripts/archctl_validate.sh
+
+  orchestrator-tests:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.orchestrator == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/orchestrator/requirements.txt
+          pip install pytest
+
+      - name: Run orchestrator tests
+        run: python -m pytest apps/orchestrator/tests
+
+  builder-unit:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.builder == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/builder
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/builder/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run builder unit tests
+        run: npm run test:unit
+
+  builder-e2e-smoke:
+    needs: [changes, builder-unit]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.builder == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/builder
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/builder/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build builder app
+        run: npm run build
+
+      - name: Run smoke e2e against local preview
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 >/tmp/builder-preview.log 2>&1 &
+          PREVIEW_PID=$!
+          trap 'kill ${PREVIEW_PID}' EXIT
+
+          for i in {1..30}; do
+            if curl -fsS "http://127.0.0.1:4173/" >/dev/null; then
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "builder preview did not become ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          E2E_BASE_URL="http://127.0.0.1:4173" E2E_WORKERS=1 npm run test:e2e:smoke

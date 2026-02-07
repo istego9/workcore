@@ -1,0 +1,33 @@
+{
+  "name": "workflow-builder-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:unit": "vitest --run",
+    "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test e2e/chatkit-ui.spec.ts",
+    "test:e2e:workcore": "E2E_BASE_URL=http://workcore.build E2E_API_BASE_URL=http://api.workcore.build E2E_CHATKIT_API_URL=http://chatkit.workcore.build/chatkit playwright test"
+  },
+  "dependencies": {
+    "@mantine/core": "^7.12.0",
+    "@mantine/hooks": "^7.12.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^14.3.1",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "jsdom": "^27.4.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

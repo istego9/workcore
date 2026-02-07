@@ -1,0 +1,24 @@
+.git
+.gitignore
+.DS_Store
+.env
+.env.docker
+.venv
+logs
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Builder artifacts
+apps/builder/node_modules
+apps/builder/dist
+apps/builder/test-results
+apps/builder/playwright-report
+
+# Python caches
+apps/**/__pycache__
+apps/**/*.pyc
+
+# Local runtime artifacts
+*.log

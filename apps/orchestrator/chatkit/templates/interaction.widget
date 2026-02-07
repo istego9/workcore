@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "name": "interaction",
+  "template": "{\n  \"type\": \"Card\",\n  \"padding\": 12,\n  \"children\": [\n    {\"type\": \"Text\", \"value\": {{ instructions | tojson }}},\n    {\"type\": \"Form\", \"onSubmitAction\": {\"type\": \"interrupt.submit\", \"payload\": {\"run_id\": {{ run_id | tojson }}, \"interrupt_id\": {{ interrupt_id | tojson }}}}, \"children\": [\n      {% for field in fields %}\n      {\"type\": \"Input\", \"name\": {{ field | tojson }}, \"placeholder\": {{ field | tojson }}},\n      {% endfor %}\n      {\"type\": \"Row\", \"children\": [\n        {\"type\": \"Button\", \"label\": \"Submit\", \"submit\": true, \"style\": \"primary\"},\n        {\"type\": \"Button\", \"label\": \"Cancel\", \"style\": \"secondary\", \"onClickAction\": {\"type\": \"interrupt.cancel\", \"payload\": {\"run_id\": {{ run_id | tojson }}, \"interrupt_id\": {{ interrupt_id | tojson }}}}}\n      ]}\n    ]}\n  ]\n}",
+  "jsonSchema": {
+    "type": "object",
+    "properties": {
+      "instructions": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "interrupt_id": {
+        "type": "string"
+      },
+      "fields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "instructions",
+      "run_id",
+      "interrupt_id",
+      "fields"
+    ]
+  }
+}

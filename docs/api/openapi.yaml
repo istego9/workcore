@@ -1,0 +1,1090 @@
+openapi: 3.0.3
+info:
+  title: Workflow Platform API
+  version: 0.2.4
+  description: >
+    MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
+    When `WORKCORE_API_AUTH_TOKEN` is configured, requests (except `/health` and signed inbound webhooks) must include
+    `Authorization: Bearer <token>`.
+servers:
+  - url: https://api.example.com
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: workflows
+  - name: runs
+  - name: interrupts
+  - name: streaming
+  - name: webhooks
+  - name: chatkit
+
+paths:
+  /openapi.yaml:
+    get:
+      tags: [workflows]
+      summary: OpenAPI contract
+      security: []
+      responses:
+        '200':
+          description: OpenAPI YAML
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /api-reference:
+    get:
+      tags: [workflows]
+      summary: Human-readable API reference
+      security: []
+      responses:
+        '200':
+          description: API reference in Markdown
+          content:
+            text/markdown:
+              schema:
+                type: string
+  /workflow-authoring-guide:
+    get:
+      tags: [workflows]
+      summary: Workflow authoring guide for agents
+      security: []
+      responses:
+        '200':
+          description: Workflow authoring guide in Markdown
+          content:
+            text/markdown:
+              schema:
+                type: string
+  /schemas/workflow-draft.schema.json:
+    get:
+      tags: [workflows]
+      summary: JSON Schema for workflow draft payloads
+      security: []
+      responses:
+        '200':
+          description: JSON Schema document
+          content:
+            application/json:
+              schema:
+                type: object
+  /schemas/workflow-export-v1.schema.json:
+    get:
+      tags: [workflows]
+      summary: JSON Schema for workflow export v1 payloads
+      security: []
+      responses:
+        '200':
+          description: JSON Schema document
+          content:
+            application/json:
+              schema:
+                type: object
+  /agent-integration-kit:
+    get:
+      tags: [workflows]
+      summary: Integration kit for external agents (Markdown)
+      security: []
+      responses:
+        '200':
+          description: Integration kit with all required resource links
+          content:
+            text/markdown:
+              schema:
+                type: string
+  /agent-integration-kit.json:
+    get:
+      tags: [workflows]
+      summary: Integration kit for external agents (JSON bundle)
+      security: []
+      responses:
+        '200':
+          description: Machine-readable integration bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIntegrationKit'
+  /agent-integration-test:
+    get:
+      tags: [workflows]
+      summary: Interactive integration test UI for external agents
+      security: []
+      responses:
+        '200':
+          description: HTML page with integration checks and draft validator
+          content:
+            text/html:
+              schema:
+                type: string
+  /agent-integration-test.json:
+    get:
+      tags: [workflows]
+      summary: Integration readiness test report
+      security: []
+      responses:
+        '200':
+          description: Integration check report with PASS/FAIL summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIntegrationCheckReport'
+  /agent-integration-test/validate-draft:
+    post:
+      tags: [workflows]
+      summary: Validate workflow draft against runtime publish rules
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                draft:
+                  $ref: '#/components/schemas/WorkflowDraft'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDraftValidationResult'
+  /chatkit:
+    post:
+      tags: [chatkit]
+      summary: ChatKit advanced integration endpoint
+      description: Handles ChatKit thread/message/action requests. Streaming responses are sent as SSE.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ChatKit response (JSON or SSE stream)
+          content:
+            application/json:
+              schema:
+                type: object
+            text/event-stream:
+              schema:
+                type: string
+  /workflows:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [workflows]
+      summary: List workflows
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowList'
+    post:
+      tags: [workflows]
+      summary: Create workflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowCreateRequest'
+            example:
+              name: Order triage
+              description: Classify customer intent and route
+              draft:
+                nodes:
+                  - id: start
+                    type: start
+                  - id: end
+                    type: end
+                edges:
+                  - source: start
+                    target: end
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+  /workflows/{workflow_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    patch:
+      tags: [workflows]
+      summary: Update workflow metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowUpdateRequest'
+            example:
+              name: Order triage v2
+              description: Updated description
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+    get:
+      tags: [workflows]
+      summary: Get workflow
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      tags: [workflows]
+      summary: Delete workflow
+      responses:
+        '204':
+          description: Deleted
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /workflows/{workflow_id}/draft:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    put:
+      tags: [workflows]
+      summary: Update workflow draft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDraft'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+  /workflows/{workflow_id}/publish:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [workflows]
+      summary: Publish workflow
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowVersion'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+  /workflows/{workflow_id}/rollback:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [workflows]
+      summary: Rollback draft to active published version
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+  /workflows/{workflow_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [workflows]
+      summary: List published versions
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWorkflowVersions'
+
+  /workflows/{workflow_id}/runs:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ImportRunId'
+    post:
+      tags: [runs]
+      summary: Start a run
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunCreateRequest'
+            example:
+              inputs:
+                customer_text: "I want a refund"
+              metadata:
+                correlation_id: corr_123
+                user_id: user_1
+                tenant_id: tenant_a
+              mode: async
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+
+  /runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [runs]
+      summary: Get run
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+
+  /runs:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [runs]
+      summary: List runs
+      parameters:
+        - in: query
+          name: workflow_id
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedRuns'
+
+  /runs/{run_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [runs]
+      summary: Cancel run
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+
+  /runs/{run_id}/rerun-node:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [runs]
+      summary: Rerun node
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RerunNodeRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+
+  /runs/{run_id}/stream:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [streaming]
+      summary: SSE stream for run progress
+      parameters:
+        - in: header
+          name: Last-Event-ID
+          schema: { type: string }
+      responses:
+        '200':
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /runs/{run_id}/interrupts/{interrupt_id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/InterruptId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [interrupts]
+      summary: Resume interrupt
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InterruptResumeRequest'
+            example:
+              input:
+                approved: true
+              files: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+
+  /runs/{run_id}/interrupts/{interrupt_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/InterruptId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [interrupts]
+      summary: Cancel interrupt
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Interrupt'
+
+  /webhooks/inbound/{integration_key}:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [webhooks]
+      summary: Inbound webhook trigger
+      security: []
+      parameters:
+        - in: path
+          name: integration_key
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboundWebhookRequest'
+            example:
+              action: start_run
+              workflow_id: wf_123
+              inputs:
+                customer_text: "I need help with my order"
+      responses:
+        '202':
+          description: Accepted
+
+  /webhooks/outbound:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [webhooks]
+      summary: List outbound webhooks
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookSubscriptions'
+    post:
+      tags: [webhooks]
+      summary: Register outbound webhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSubscriptionCreateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+
+  /webhooks/outbound/{subscription_id}:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    delete:
+      tags: [webhooks]
+      summary: Delete outbound webhook
+      parameters:
+        - in: path
+          name: subscription_id
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: No Content
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    WorkflowId:
+      in: path
+      name: workflow_id
+      required: true
+      schema: { type: string }
+    RunId:
+      in: path
+      name: run_id
+      required: true
+      schema: { type: string }
+    InterruptId:
+      in: path
+      name: interrupt_id
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      schema: { type: string }
+      description: Idempotency key for non-safe operations. Re-using the same key within the TTL returns the original response.
+    TenantId:
+      in: header
+      name: X-Tenant-Id
+      required: false
+      schema: { type: string }
+      description: Tenant scope for request processing. Defaults to `local` when omitted.
+    CorrelationId:
+      in: header
+      name: X-Correlation-Id
+      required: false
+      schema: { type: string }
+      description: Correlation identifier echoed in all JSON responses and error envelopes.
+    TraceId:
+      in: header
+      name: X-Trace-Id
+      required: false
+      schema: { type: string }
+      description: Trace identifier propagated to run metadata and runtime events.
+    ProjectId:
+      in: header
+      name: X-Project-Id
+      required: false
+      schema: { type: string }
+      description: Optional project context, merged into run metadata.
+    ImportRunId:
+      in: header
+      name: X-Import-Run-Id
+      required: false
+      schema: { type: string }
+      description: Optional import run identifier, merged into run metadata.
+    PaginationLimit:
+      in: query
+      name: limit
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    PaginationCursor:
+      in: query
+      name: cursor
+      required: false
+      schema:
+        type: string
+
+  responses:
+    ErrorResponse:
+      description: Error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - INVALID_ARGUMENT
+                - NOT_FOUND
+                - CONFLICT
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - RATE_LIMITED
+                - PRECONDITION_FAILED
+                - INTERNAL
+            message: { type: string }
+            details:
+              oneOf:
+                - type: object
+                - type: array
+                  items: { type: string }
+          required: [code, message]
+        correlation_id: { type: string }
+      required: [error]
+      example:
+        error:
+          code: INVALID_ARGUMENT
+          message: "workflow_id is required"
+        correlation_id: "corr_123"
+
+    WorkflowCreateRequest:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        draft:
+          $ref: '#/components/schemas/WorkflowDraft'
+      required: [name]
+
+    WorkflowUpdateRequest:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string, nullable: true }
+
+    Workflow:
+      type: object
+      properties:
+        workflow_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        draft:
+          $ref: '#/components/schemas/WorkflowDraft'
+        active_version_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [workflow_id, name]
+
+    WorkflowSummary:
+      type: object
+      properties:
+        workflow_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        active_version_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [workflow_id, name]
+
+    WorkflowList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WorkflowSummary' }
+        next_cursor: { type: string, nullable: true }
+      required: [items]
+
+    WorkflowDraft:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/WorkflowNode' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/WorkflowEdge' }
+        variables_schema:
+          type: object
+      required: [nodes, edges]
+
+    WorkflowNode:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        config: { type: object }
+      required: [id, type]
+
+    WorkflowEdge:
+      type: object
+      properties:
+        source: { type: string }
+        target: { type: string }
+      required: [source, target]
+
+    WorkflowVersion:
+      type: object
+      properties:
+        version_id: { type: string }
+        workflow_id: { type: string }
+        version_number: { type: integer }
+        hash: { type: string }
+        content: { type: object }
+        created_at: { type: string, format: date-time }
+      required: [version_id, workflow_id, version_number]
+
+    RunCreateRequest:
+      type: object
+      properties:
+        inputs: { type: object }
+        version_id: { type: string }
+        metadata:
+          type: object
+          properties:
+            correlation_id: { type: string }
+            tenant_id: { type: string }
+            project_id: { type: string }
+            import_run_id: { type: string }
+            trace_id: { type: string }
+            user_id: { type: string }
+          required: [tenant_id, project_id, import_run_id, trace_id]
+        mode:
+          type: string
+          enum: [live, test, sync, async]
+      required: [inputs]
+
+    Run:
+      type: object
+      properties:
+        run_id: { type: string }
+        workflow_id: { type: string }
+        version_id: { type: string }
+        status: { type: string }
+        mode: { type: string }
+        inputs: { type: object }
+        state: { type: object }
+        outputs: { type: object }
+        metadata:
+          type: object
+          properties:
+            correlation_id: { type: string }
+            tenant_id: { type: string }
+            project_id: { type: string }
+            import_run_id: { type: string }
+            trace_id: { type: string }
+            user_id: { type: string }
+        correlation_id: { type: string }
+        trace_id: { type: string }
+        tenant_id: { type: string }
+        project_id: { type: string }
+        import_run_id: { type: string }
+        node_runs:
+          type: array
+          items: { $ref: '#/components/schemas/NodeRun' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [run_id, workflow_id, version_id, status]
+
+    NodeRun:
+      type: object
+      properties:
+        node_id: { type: string }
+        status: { type: string }
+        attempt: { type: integer }
+        output: { type: object }
+        last_error: { type: object }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+      required: [node_id, status]
+
+    Interrupt:
+      type: object
+      properties:
+        interrupt_id: { type: string }
+        run_id: { type: string }
+        node_id: { type: string }
+        type: { type: string }
+        status: { type: string }
+        prompt: { type: string }
+        input_schema: { type: object }
+        allow_file_upload: { type: boolean }
+        input: { type: object }
+        files: { type: array, items: { type: object } }
+        expires_at: { type: string, format: date-time }
+      required: [interrupt_id, run_id, node_id, status]
+
+    InterruptResumeRequest:
+      type: object
+      properties:
+        input: { type: object }
+        files: { type: array, items: { type: object } }
+
+    RerunNodeRequest:
+      type: object
+      properties:
+        node_id: { type: string }
+        scope: { type: string, enum: [node_only, downstream] }
+      required: [node_id, scope]
+
+    InboundWebhookRequest:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [start_run, resume_interrupt]
+        workflow_id: { type: string }
+        version_id: { type: string }
+        run_id: { type: string }
+        interrupt_id: { type: string }
+        inputs: { type: object }
+      required: [action]
+
+    WebhookSubscription:
+      type: object
+      properties:
+        subscription_id: { type: string }
+        url: { type: string }
+        event_types:
+          type: array
+          items: { type: string }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+      required: [subscription_id, url, event_types]
+
+    WebhookSubscriptionCreateRequest:
+      type: object
+      properties:
+        url: { type: string }
+        event_types:
+          type: array
+          items: { type: string }
+      required: [url, event_types]
+
+    PaginatedRuns:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Run' }
+        next_cursor:
+          type: string
+          nullable: true
+      required: [items]
+
+    PaginatedWorkflowVersions:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WorkflowVersion' }
+        next_cursor:
+          type: string
+          nullable: true
+      required: [items]
+
+    PaginatedWebhookSubscriptions:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookSubscription' }
+        next_cursor:
+          type: string
+          nullable: true
+      required: [items]
+
+    Event:
+      type: object
+      properties:
+        event_id: { type: string }
+        type: { type: string }
+        run_id: { type: string }
+        workflow_id: { type: string }
+        version_id: { type: string }
+        node_id: { type: string }
+        sequence: { type: integer }
+        correlation_id: { type: string }
+        trace_id: { type: string }
+        tenant_id: { type: string }
+        project_id: { type: string }
+        import_run_id: { type: string }
+        payload: { type: object }
+        timestamp: { type: string, format: date-time }
+      required: [event_id, type, run_id, workflow_id, version_id, sequence]
+
+    AgentIntegrationKit:
+      type: object
+      properties:
+        title: { type: string }
+        updated_at: { type: string, format: date-time }
+        correlation_id: { type: string }
+        urls:
+          type: object
+          properties:
+            integration_kit_markdown: { type: string, format: uri }
+            integration_kit_json: { type: string, format: uri }
+            integration_test_ui: { type: string, format: uri }
+            integration_test_json: { type: string, format: uri }
+            validate_draft: { type: string, format: uri }
+            openapi: { type: string, format: uri }
+            api_reference: { type: string, format: uri }
+            workflow_authoring_guide: { type: string, format: uri }
+            workflow_draft_schema: { type: string, format: uri }
+            workflow_export_schema: { type: string, format: uri }
+        integration_test:
+          $ref: '#/components/schemas/AgentIntegrationCheckReport'
+        docs:
+          type: object
+          properties:
+            api_reference_markdown: { type: string }
+            workflow_authoring_guide_markdown: { type: string }
+        schemas:
+          type: object
+          properties:
+            workflow_draft: { type: object }
+            workflow_export_v1: { type: object }
+      required: [title, updated_at, urls, integration_test, docs, schemas]
+
+    AgentIntegrationCheckItem:
+      type: object
+      properties:
+        id: { type: string }
+        description: { type: string }
+        ok: { type: boolean }
+        detail: { type: string }
+      required: [id, description, ok, detail]
+
+    AgentIntegrationCheckReport:
+      type: object
+      properties:
+        title: { type: string }
+        generated_at: { type: string, format: date-time }
+        correlation_id: { type: string }
+        urls:
+          type: object
+          properties:
+            integration_kit_markdown: { type: string, format: uri }
+            integration_kit_json: { type: string, format: uri }
+            integration_test_ui: { type: string, format: uri }
+            integration_test_json: { type: string, format: uri }
+            validate_draft: { type: string, format: uri }
+            openapi: { type: string, format: uri }
+            api_reference: { type: string, format: uri }
+            workflow_authoring_guide: { type: string, format: uri }
+            workflow_draft_schema: { type: string, format: uri }
+            workflow_export_schema: { type: string, format: uri }
+        summary:
+          type: object
+          properties:
+            status: { type: string, enum: [PASS, FAIL] }
+            passed: { type: integer }
+            failed: { type: integer }
+            total: { type: integer }
+          required: [status, passed, failed, total]
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentIntegrationCheckItem'
+      required: [title, generated_at, urls, summary, checks]
+
+    AgentDraftValidationResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        errors:
+          type: array
+          items: { type: string }
+        correlation_id: { type: string }
+      required: [valid, errors]

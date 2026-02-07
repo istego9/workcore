@@ -1,0 +1,24 @@
+{
+  auto_https off
+}
+
+:{$PROXY_PORT:8080} {
+  @builder host {$PUBLIC_BUILDER_HOST:builder.localhost}
+  handle @builder {
+    reverse_proxy {$BUILDER_UPSTREAM:127.0.0.1:5183}
+  }
+
+  @api host {$PUBLIC_API_HOST:api.localhost}
+  handle @api {
+    reverse_proxy {$API_UPSTREAM:127.0.0.1:8000}
+  }
+
+  @chatkit host {$PUBLIC_CHATKIT_HOST:chatkit.localhost}
+  handle @chatkit {
+    reverse_proxy {$CHATKIT_UPSTREAM:127.0.0.1:8001}
+  }
+
+  handle {
+    respond "unknown host" 404
+  }
+}

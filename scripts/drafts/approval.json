@@ -1,0 +1,12 @@
+{
+  "nodes": [
+    { "id": "start", "type": "start", "config": { "defaults": {} } },
+    { "id": "approval", "type": "approval", "config": { "prompt": "Approve the request?" } },
+    { "id": "end", "type": "end", "config": {} }
+  ],
+  "edges": [
+    { "source": "start", "target": "approval" },
+    { "source": "approval", "target": "end" }
+  ],
+  "variables_schema": {}
+}

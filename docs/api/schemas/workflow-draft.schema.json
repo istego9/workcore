@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workcore.build/schemas/workflow-draft.schema.json",
+  "title": "WorkCore Workflow Draft",
+  "description": "Editable workflow graph used by Builder and Workflow API draft endpoints.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["nodes", "edges"],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      }
+    },
+    "variables_schema": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "nodeType": {
+      "type": "string",
+      "enum": [
+        "start",
+        "agent",
+        "mcp",
+        "if_else",
+        "while",
+        "set_state",
+        "interaction",
+        "approval",
+        "output",
+        "end"
+      ]
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["condition", "target"],
+      "properties": {
+        "condition": { "type": "string" },
+        "target": { "type": "string" }
+      }
+    },
+    "whileConfig": {
+      "type": "object",
+      "required": ["condition", "max_iterations", "body_target", "exit_target", "loop_back"],
+      "properties": {
+        "ui": { "$ref": "#/$defs/ui" },
+        "condition": { "type": "string" },
+        "max_iterations": { "type": "integer", "minimum": 1 },
+        "body_target": { "type": "string" },
+        "exit_target": { "type": "string" },
+        "loop_back": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ifElseConfig": {
+      "type": "object",
+      "required": ["branches"],
+      "properties": {
+        "ui": { "$ref": "#/$defs/ui" },
+        "branches": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/branch" }
+        },
+        "else_target": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "setStateConfig": {
+      "type": "object",
+      "required": ["target", "expression"],
+      "properties": {
+        "ui": { "$ref": "#/$defs/ui" },
+        "target": { "type": "string" },
+        "expression": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "nodeConfig": {
+      "type": "object",
+      "properties": {
+        "ui": { "$ref": "#/$defs/ui" }
+      },
+      "additionalProperties": true
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/nodeType" },
+        "config": { "$ref": "#/$defs/nodeConfig" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "while" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": { "config": { "$ref": "#/$defs/whileConfig" } },
+            "required": ["config"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "if_else" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": { "config": { "$ref": "#/$defs/ifElseConfig" } },
+            "required": ["config"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "set_state" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": { "config": { "$ref": "#/$defs/setStateConfig" } },
+            "required": ["config"]
+          }
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+cel-python
+openai-agents
+jsonschema
+openai
+openai-chatkit
+python-dotenv
+aiokafka
+starlette
+httpx
+asyncpg
+minio

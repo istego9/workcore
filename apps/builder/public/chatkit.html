@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>ChatKit Local</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Inter", system-ui, -apple-system, sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      body.embedded {
+        background: #ffffff;
+      }
+      body.embedded header {
+        padding: 0;
+        border: none;
+        background: transparent;
+      }
+      body.embedded .bar {
+        display: none;
+      }
+      body.embedded .status {
+        padding: 8px 12px;
+      }
+      body.embedded main {
+        height: 100vh;
+      }
+      header {
+        padding: 12px 16px;
+        background: #ffffff;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .bar {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(120px, 1fr)) auto;
+        gap: 10px;
+        align-items: end;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        color: #334155;
+        margin-bottom: 4px;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #cbd5f5;
+        background: #fff;
+        font-size: 14px;
+      }
+      button {
+        padding: 10px 14px;
+        border-radius: 8px;
+        border: none;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .status {
+        font-size: 12px;
+        color: #64748b;
+        padding-top: 6px;
+      }
+      main {
+        flex: 1;
+        min-height: 0;
+      }
+      openai-chatkit {
+        display: block;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="bar">
+        <div>
+          <label for="apiUrl">API URL</label>
+          <input id="apiUrl" placeholder="http://chatkit.localhost:8080/chatkit" />
+        </div>
+        <div>
+          <label for="domainKey">Domain key</label>
+          <input id="domainKey" placeholder="ck_domain_key..." />
+        </div>
+        <div>
+          <label for="workflowId">Workflow ID</label>
+          <input id="workflowId" placeholder="wf_..." />
+        </div>
+        <div>
+          <label for="workflowVersionId">Workflow version</label>
+          <input id="workflowVersionId" placeholder="optional" />
+        </div>
+        <div>
+          <label for="authToken">Auth token</label>
+          <input id="authToken" type="password" placeholder="optional" />
+        </div>
+        <div>
+          <label for="theme">Theme</label>
+          <select id="theme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div>
+          <label for="autoConnect">Auto connect</label>
+          <select id="autoConnect">
+            <option value="0">Off</option>
+            <option value="1">On</option>
+          </select>
+        </div>
+        <button id="apply">Connect</button>
+      </div>
+      <div class="status" id="status">Idle</div>
+    </header>
+    <main>
+      <openai-chatkit id="chatkit"></openai-chatkit>
+    </main>
+
+    <script src="https://cdn.platform.openai.com/deployments/chatkit/chatkit.js"></script>
+    <script>
+      const chatkitEl = document.getElementById('chatkit');
+      const statusEl = document.getElementById('status');
+
+      const apiUrlInput = document.getElementById('apiUrl');
+      const domainKeyInput = document.getElementById('domainKey');
+      const workflowIdInput = document.getElementById('workflowId');
+      const workflowVersionIdInput = document.getElementById('workflowVersionId');
+      const authTokenInput = document.getElementById('authToken');
+      const themeSelect = document.getElementById('theme');
+      const autoConnectSelect = document.getElementById('autoConnect');
+      const applyBtn = document.getElementById('apply');
+
+      const params = new URLSearchParams(window.location.search);
+      const embed = params.get('embed') === '1';
+      const autoStartEnabled = params.get('auto_start') === '1';
+      let autoStartTriggered = false;
+      if (embed) {
+        document.body.classList.add('embedded');
+      }
+      apiUrlInput.value = params.get('api_url') || 'http://chatkit.localhost:8080/chatkit';
+      domainKeyInput.value = params.get('domain_key') || '';
+      workflowIdInput.value = params.get('workflow_id') || '';
+      workflowVersionIdInput.value = params.get('workflow_version_id') || '';
+      authTokenInput.value = params.get('auth_token') || '';
+      themeSelect.value = params.get('theme') || 'light';
+      autoConnectSelect.value = params.get('auto') || '0';
+      if (embed) {
+        autoConnectSelect.value = '1';
+      }
+
+      function setStatus(text, tone) {
+        statusEl.textContent = text;
+        statusEl.style.color = tone === 'error' ? '#dc2626' : '#64748b';
+      }
+
+      function buildFetch(apiURL, authToken, workflowId, workflowVersionId) {
+        return async (input, init = {}) => {
+          const headers = new Headers(init.headers || {});
+          if (!headers.has('Content-Type')) {
+            headers.set('Content-Type', 'application/json');
+          }
+          if (authToken) {
+            headers.set('Authorization', `Bearer ${authToken}`);
+          }
+
+          let body = init.body;
+          if (body && typeof body === 'string') {
+            try {
+              const parsed = JSON.parse(body);
+              if (parsed && typeof parsed === 'object' && parsed.type === 'threads.create') {
+                parsed.metadata = parsed.metadata || {};
+                if (workflowId) parsed.metadata.workflow_id = workflowId;
+                if (workflowVersionId) parsed.metadata.workflow_version_id = workflowVersionId;
+                body = JSON.stringify(parsed);
+              }
+            } catch (err) {
+              // ignore parse errors
+            }
+          }
+
+          const nextInit = Object.assign({}, init, { headers, body });
+          return fetch(input, nextInit);
+        };
+      }
+
+      function connect() {
+        const apiURL = apiUrlInput.value.trim();
+        const domainKey = domainKeyInput.value.trim();
+        const workflowId = workflowIdInput.value.trim();
+        const workflowVersionId = workflowVersionIdInput.value.trim();
+        const authToken = authTokenInput.value.trim();
+        const theme = themeSelect.value;
+
+        if (!apiURL) {
+          setStatus('API URL is required', 'error');
+          return;
+        }
+        if (!domainKey) {
+          setStatus('Domain key is required', 'error');
+          return;
+        }
+        if (!workflowId) {
+          setStatus('Workflow ID is required', 'error');
+          return;
+        }
+
+        try {
+          chatkitEl.setOptions({
+            api: {
+              url: apiURL,
+              domainKey,
+              fetch: buildFetch(apiURL, authToken, workflowId, workflowVersionId)
+            },
+            theme,
+          });
+          setStatus('Connected. Start chatting.', 'ok');
+        } catch (err) {
+          setStatus(`Failed to connect: ${err.message || err}`, 'error');
+        }
+      }
+
+      function triggerAutoStart() {
+        if (!autoStartEnabled || autoStartTriggered) return;
+        if (typeof chatkitEl.sendUserMessage !== 'function') {
+          setStatus('Auto-start failed: sendUserMessage unavailable', 'error');
+          autoStartTriggered = true;
+          return;
+        }
+        autoStartTriggered = true;
+        const ignoreAlreadyResponding = (err) => {
+          const message = err?.message || String(err || '');
+          return message.includes('already responding');
+        };
+        const payload = {
+          content: [{ type: 'input_text', text: ' ' }],
+          attachments: [],
+        };
+        try {
+          const result = chatkitEl.sendUserMessage(payload);
+          if (result && typeof result.catch === 'function') {
+            result.catch((err) => {
+              if (ignoreAlreadyResponding(err)) return;
+              setStatus(`Auto-start failed: ${err?.message || err}`, 'error');
+            });
+          }
+        } catch (err) {
+          if (ignoreAlreadyResponding(err)) return;
+          setStatus(`Auto-start failed: ${err?.message || err}`, 'error');
+        }
+      }
+
+      applyBtn.addEventListener('click', connect);
+
+      chatkitEl.addEventListener('chatkit.error', (event) => {
+        const message = event?.detail?.error?.message || 'ChatKit error';
+        setStatus(message, 'error');
+      });
+
+      chatkitEl.addEventListener('chatkit.thread.change', (event) => {
+        const threadId = event?.detail?.threadId;
+        if (threadId) {
+          setStatus(`Thread ${threadId} active`, 'ok');
+          triggerAutoStart();
+        }
+      });
+
+      if (autoConnectSelect.value === '1' && workflowIdInput.value.trim()) {
+        connect();
+      }
+    </script>
+  </body>
+</html>

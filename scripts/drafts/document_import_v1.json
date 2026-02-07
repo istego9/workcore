@@ -1,0 +1,312 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "config": {
+        "defaults": {
+          "phase": "ingest",
+          "confidence_threshold": 0.75
+        }
+      }
+    },
+    {
+      "id": "ingest",
+      "type": "agent",
+      "config": {
+        "instructions": "Normalize raw import payload and extract document text blocks.",
+        "user_input": "{{inputs['document_text']}}",
+        "output_format": "json",
+        "output_schema": {
+          "type": "object",
+          "required": [
+            "document_id",
+            "source",
+            "text"
+          ],
+          "properties": {
+            "document_id": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "top_level_parse",
+      "type": "agent",
+      "config": {
+        "instructions": "Return only top-level entities from the document with confidence.",
+        "user_input": "{{node_outputs['ingest']['text']}}",
+        "output_format": "json",
+        "output_schema": {
+          "type": "object",
+          "required": [
+            "phase",
+            "confidence",
+            "top_level_items"
+          ],
+          "properties": {
+            "phase": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "number"
+            },
+            "top_level_items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "title",
+                  "why",
+                  "citation"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "why": {
+                    "type": "string"
+                  },
+                  "citation": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "top_level_review",
+      "type": "approval",
+      "config": {
+        "prompt": "Review top-level parse. Confidence={{node_outputs['top_level_parse']['confidence']}}. Approve or provide corrections.",
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "approved"
+          ],
+          "properties": {
+            "approved": {
+              "type": "boolean"
+            },
+            "approved_items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "state_target": "review.top_level"
+      }
+    },
+    {
+      "id": "epic_decomposition",
+      "type": "agent",
+      "config": {
+        "instructions": "Decompose each approved top-level item into epics and preserve why/citation.",
+        "user_input": "{{state['review']['top_level']}}",
+        "max_retries": 1,
+        "output_format": "json",
+        "output_schema": {
+          "type": "object",
+          "required": [
+            "phase",
+            "epics"
+          ],
+          "properties": {
+            "phase": {
+              "type": "string"
+            },
+            "epics": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "parent_id",
+                  "title",
+                  "why",
+                  "citation"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "parent_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "why": {
+                    "type": "string"
+                  },
+                  "citation": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "quality_gate",
+      "type": "agent",
+      "config": {
+        "instructions": "Validate duplicates, orphan nodes, cycles, empty titles and depth limits. Return pass boolean and issues.",
+        "user_input": "{{node_outputs['epic_decomposition']}}",
+        "output_format": "json",
+        "output_schema": {
+          "type": "object",
+          "required": [
+            "phase",
+            "pass",
+            "issues",
+            "warnings"
+          ],
+          "properties": {
+            "phase": {
+              "type": "string"
+            },
+            "pass": {
+              "type": "boolean"
+            },
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "quality_gate_decision",
+      "type": "if_else",
+      "config": {
+        "branches": [
+          {
+            "condition": "node_outputs['quality_gate']['pass'] == True",
+            "target": "output_ready"
+          }
+        ],
+        "else_target": "output_blocked"
+      }
+    },
+    {
+      "id": "output_ready",
+      "type": "output",
+      "config": {
+        "expression": "{'phase': 'quality_gate', 'status': 'COMPLETED', 'confidence': node_outputs['top_level_parse']['confidence'], 'warnings': node_outputs['quality_gate']['warnings'], 'outputs': {'top_level': node_outputs['top_level_parse'], 'epics': node_outputs['epic_decomposition']}}"
+      }
+    },
+    {
+      "id": "output_blocked",
+      "type": "output",
+      "config": {
+        "expression": "{'phase': 'quality_gate', 'status': 'FAILED', 'confidence': node_outputs['top_level_parse']['confidence'], 'warnings': node_outputs['quality_gate']['warnings'], 'outputs': {}, 'errors': node_outputs['quality_gate']['issues']}"
+      }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "source": "start",
+      "target": "ingest"
+    },
+    {
+      "source": "ingest",
+      "target": "top_level_parse"
+    },
+    {
+      "source": "top_level_parse",
+      "target": "top_level_review"
+    },
+    {
+      "source": "top_level_review",
+      "target": "epic_decomposition"
+    },
+    {
+      "source": "epic_decomposition",
+      "target": "quality_gate"
+    },
+    {
+      "source": "quality_gate",
+      "target": "quality_gate_decision"
+    },
+    {
+      "source": "quality_gate_decision",
+      "target": "output_ready"
+    },
+    {
+      "source": "quality_gate_decision",
+      "target": "output_blocked"
+    },
+    {
+      "source": "output_ready",
+      "target": "end"
+    },
+    {
+      "source": "output_blocked",
+      "target": "end"
+    }
+  ],
+  "variables_schema": {
+    "type": "object",
+    "required": [
+      "tenant_id",
+      "project_id",
+      "import_run_id",
+      "trace_id",
+      "document_text"
+    ],
+    "properties": {
+      "tenant_id": {
+        "type": "string"
+      },
+      "project_id": {
+        "type": "string"
+      },
+      "import_run_id": {
+        "type": "string"
+      },
+      "trace_id": {
+        "type": "string"
+      },
+      "document_text": {
+        "type": "string"
+      }
+    }
+  }
+}

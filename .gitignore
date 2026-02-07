@@ -1,0 +1,12 @@
+.env
+.env.docker
+.certs/
+.venv/
+.pytest_cache/
+logs/
+node_modules/
+apps/builder/dist/
+apps/builder/test-results/
+__pycache__/
+*.pyc
+.DS_Store

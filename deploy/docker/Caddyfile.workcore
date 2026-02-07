@@ -1,0 +1,33 @@
+{
+  auto_https off
+}
+
+(workcore_routes) {
+  @builder host {$PUBLIC_BUILDER_HOST:workcore.build}
+  handle @builder {
+    reverse_proxy {$BUILDER_UPSTREAM:builder:5173}
+  }
+
+  @api host {$PUBLIC_API_HOST:api.workcore.build}
+  handle @api {
+    reverse_proxy {$API_UPSTREAM:orchestrator:8000}
+  }
+
+  @chatkit host {$PUBLIC_CHATKIT_HOST:chatkit.workcore.build}
+  handle @chatkit {
+    reverse_proxy {$CHATKIT_UPSTREAM:chatkit:8001}
+  }
+
+  handle {
+    respond "unknown host" 404
+  }
+}
+
+:{$PROXY_PORT:8080} {
+  import workcore_routes
+}
+
+:{$PROXY_TLS_PORT:8443} {
+  tls {$TLS_CERT_FILE:/certs/workcore.build.pem} {$TLS_KEY_FILE:/certs/workcore.build-key.pem}
+  import workcore_routes
+}
