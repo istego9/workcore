@@ -202,11 +202,14 @@ def create_service_app() -> Starlette:
     ]
 
     app = Starlette(routes=routes, lifespan=lifespan)
-    cors_origins = get_env("CORS_ALLOW_ORIGINS") or "http://localhost:5173,http://127.0.0.1:5173,http://builder.localhost:8080"
+    cors_origins = (
+        get_env("CORS_ALLOW_ORIGINS")
+        or "http://workcore.build:8080,https://workcore.build:8443,http://hq21.build,https://hq21.build"
+    )
     allow_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins or ["*"],
+        allow_origins=allow_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

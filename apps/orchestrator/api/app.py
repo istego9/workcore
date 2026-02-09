@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from inspect import isawaitable
@@ -42,6 +44,38 @@ _API_REFERENCE_PATH = _ROOT_DIR / "docs" / "api" / "reference.md"
 _WORKFLOW_AUTHORING_GUIDE_PATH = _ROOT_DIR / "docs" / "architecture" / "workflow-authoring-agents.md"
 _WORKFLOW_DRAFT_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "workflow-draft.schema.json"
 _WORKFLOW_EXPORT_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "workflow-export-v1.schema.json"
+_AGENT_INTEGRATION_LOGGER = logging.getLogger("workcore.agent_integration")
+_DEFAULT_AGENT_INTEGRATION_LOG_LIMIT = 100
+_MAX_AGENT_INTEGRATION_LOG_LIMIT = 500
+_DEFAULT_AGENT_INTEGRATION_LOG_CAPACITY = 1000
+
+
+def _is_truthy(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def validate_runtime_security_env() -> None:
+    if _is_truthy(get_env("WORKCORE_ALLOW_INSECURE_DEV", "0")):
+        return
+
+    required = (
+        "WORKCORE_API_AUTH_TOKEN",
+        "WEBHOOK_DEFAULT_INBOUND_SECRET",
+        "CORS_ALLOW_ORIGINS",
+    )
+    for name in required:
+        if not (get_env(name) or "").strip():
+            raise RuntimeError(
+                f"{name} is required for secure startup; "
+                "set WORKCORE_ALLOW_INSECURE_DEV=1 only for temporary local troubleshooting"
+            )
+
+    cors_allow_origins = get_env("CORS_ALLOW_ORIGINS", "") or ""
+    if "*" in cors_allow_origins:
+        raise RuntimeError(
+            "CORS_ALLOW_ORIGINS must not contain '*' for secure startup; "
+            "set explicit origins or use WORKCORE_ALLOW_INSECURE_DEV=1 temporarily"
+        )
 
 
 class ApiContext:
@@ -192,6 +226,13 @@ def create_app(
         default_integration_key=integration_key,
     )
     app: Starlette | None = None
+    capacity_raw = get_env("AGENT_INTEGRATION_LOG_CAPACITY", str(_DEFAULT_AGENT_INTEGRATION_LOG_CAPACITY))
+    try:
+        log_capacity = int(capacity_raw or _DEFAULT_AGENT_INTEGRATION_LOG_CAPACITY)
+    except ValueError:
+        log_capacity = _DEFAULT_AGENT_INTEGRATION_LOG_CAPACITY
+    log_capacity = max(_MAX_AGENT_INTEGRATION_LOG_LIMIT, min(log_capacity, 5000))
+    integration_logs: deque[Dict[str, Any]] = deque(maxlen=log_capacity)
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
@@ -284,6 +325,81 @@ def create_app(
             {"error": error, "correlation_id": _correlation_id(request)},
             status_code=status_code,
         )
+
+    def _truncate_text(value: Any, max_len: int = 600) -> str:
+        text = str(value)
+        if len(text) <= max_len:
+            return text
+        return f"{text[: max_len - 3]}..."
+
+    def _sanitize_log_context(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(context, dict):
+            return {}
+        sanitized: Dict[str, Any] = {}
+        for key, value in context.items():
+            if value is None:
+                continue
+            if isinstance(value, (bool, int, float)):
+                sanitized[key] = value
+            elif isinstance(value, str):
+                sanitized[key] = _truncate_text(value)
+            elif isinstance(value, dict):
+                sanitized[key] = f"<dict keys={len(value)}>"
+            elif isinstance(value, (list, tuple, set)):
+                sanitized[key] = f"<{type(value).__name__} size={len(value)}>"
+            else:
+                sanitized[key] = f"<{type(value).__name__}>"
+        return sanitized
+
+    def _integration_log(
+        request: Request,
+        event: str,
+        detail: str,
+        *,
+        level: str = "INFO",
+        status_code: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        level_name = level.upper()
+        if level_name not in {"INFO", "WARNING", "ERROR"}:
+            level_name = "INFO"
+        safe_context = _sanitize_log_context(context)
+        entry = {
+            "log_id": f"ilog_{uuid.uuid4().hex[:12]}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level_name,
+            "event": event,
+            "detail": _truncate_text(detail),
+            "http_method": request.method,
+            "path": request.url.path,
+            "status_code": status_code,
+            "correlation_id": _correlation_id(request),
+            "trace_id": _trace_id(request),
+            "tenant_id": _tenant_id(request),
+            "client_ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("User-Agent"),
+            "context": safe_context,
+        }
+        integration_logs.append(entry)
+        line = json.dumps(
+            {
+                "event": entry["event"],
+                "log_id": entry["log_id"],
+                "correlation_id": entry["correlation_id"],
+                "trace_id": entry["trace_id"],
+                "status_code": entry["status_code"],
+                "context": safe_context,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+        if level_name == "ERROR":
+            _AGENT_INTEGRATION_LOGGER.error(line)
+        elif level_name == "WARNING":
+            _AGENT_INTEGRATION_LOGGER.warning(line)
+        else:
+            _AGENT_INTEGRATION_LOGGER.info(line)
+        return entry
 
     async def _await_if_needed(value: Any) -> Any:
         if isawaitable(value):
@@ -841,15 +957,45 @@ def create_app(
     async def health(_: Request) -> PlainTextResponse:
         return PlainTextResponse("ok")
 
-    async def openapi_spec(_: Request) -> PlainTextResponse:
+    async def openapi_spec(request: Request) -> PlainTextResponse:
         if not _OPENAPI_SPEC_PATH.exists():
+            _integration_log(
+                request,
+                "integration.openapi.read",
+                "OpenAPI spec file is missing",
+                level="WARNING",
+                status_code=404,
+            )
             return PlainTextResponse("openapi spec not found", status_code=404)
-        return PlainTextResponse(_OPENAPI_SPEC_PATH.read_text(encoding="utf-8"), media_type="application/yaml")
+        content = _OPENAPI_SPEC_PATH.read_text(encoding="utf-8")
+        _integration_log(
+            request,
+            "integration.openapi.read",
+            "OpenAPI spec returned",
+            status_code=200,
+            context={"bytes": len(content)},
+        )
+        return PlainTextResponse(content, media_type="application/yaml")
 
-    async def api_reference(_: Request) -> PlainTextResponse:
+    async def api_reference(request: Request) -> PlainTextResponse:
         if not _API_REFERENCE_PATH.exists():
+            _integration_log(
+                request,
+                "integration.api_reference.read",
+                "API reference file is missing",
+                level="WARNING",
+                status_code=404,
+            )
             return PlainTextResponse("api reference not found", status_code=404)
-        return PlainTextResponse(_API_REFERENCE_PATH.read_text(encoding="utf-8"), media_type="text/markdown")
+        content = _API_REFERENCE_PATH.read_text(encoding="utf-8")
+        _integration_log(
+            request,
+            "integration.api_reference.read",
+            "API reference returned",
+            status_code=200,
+            context={"bytes": len(content)},
+        )
+        return PlainTextResponse(content, media_type="text/markdown")
 
     def _public_doc_urls(request: Request) -> Dict[str, str]:
         base_url = str(request.base_url).rstrip("/")
@@ -858,6 +1004,7 @@ def create_app(
             "integration_kit_json": f"{base_url}/agent-integration-kit.json",
             "integration_test_ui": f"{base_url}/agent-integration-test",
             "integration_test_json": f"{base_url}/agent-integration-test.json",
+            "integration_logs": f"{base_url}/agent-integration-logs",
             "validate_draft": f"{base_url}/agent-integration-test/validate-draft",
             "openapi": f"{base_url}/openapi.yaml",
             "api_reference": f"{base_url}/api-reference",
@@ -955,6 +1102,7 @@ def create_app(
             "/agent-integration-test",
             "/agent-integration-test.json",
             "/agent-integration-test/validate-draft",
+            "/agent-integration-logs",
             "/workflow-authoring-guide",
             "/schemas/workflow-draft.schema.json",
             "/schemas/workflow-export-v1.schema.json",
@@ -962,9 +1110,15 @@ def create_app(
         missing_paths = [path for path in required_openapi_paths if path not in openapi_text]
         add_check(
             "openapi_has_integration_paths",
-            "OpenAPI includes integration kit/test endpoints",
+            "OpenAPI includes integration kit/test/log endpoints",
             len(missing_paths) == 0,
             "ok" if not missing_paths else f"missing: {', '.join(missing_paths)}",
+        )
+        add_check(
+            "integration_log_buffer_configured",
+            "Integration log buffer is configured for troubleshooting",
+            integration_logs.maxlen is not None and integration_logs.maxlen >= _MAX_AGENT_INTEGRATION_LOG_LIMIT,
+            f"capacity={integration_logs.maxlen}",
         )
 
         sample_valid_draft = {
@@ -1021,6 +1175,7 @@ def create_app(
         return {
             "title": "WorkCore Agent Integration Test",
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "correlation_id": _correlation_id(request),
             "urls": _public_doc_urls(request),
             "summary": {
                 "status": "PASS" if passed == total else "FAIL",
@@ -1031,30 +1186,86 @@ def create_app(
             "checks": checks,
         }
 
-    async def workflow_authoring_guide(_: Request) -> PlainTextResponse:
+    async def workflow_authoring_guide(request: Request) -> PlainTextResponse:
         if not _WORKFLOW_AUTHORING_GUIDE_PATH.exists():
+            _integration_log(
+                request,
+                "integration.workflow_authoring_guide.read",
+                "Workflow authoring guide is missing",
+                level="WARNING",
+                status_code=404,
+            )
             return PlainTextResponse("workflow authoring guide not found", status_code=404)
-        return PlainTextResponse(
-            _WORKFLOW_AUTHORING_GUIDE_PATH.read_text(encoding="utf-8"),
-            media_type="text/markdown",
+        content = _WORKFLOW_AUTHORING_GUIDE_PATH.read_text(encoding="utf-8")
+        _integration_log(
+            request,
+            "integration.workflow_authoring_guide.read",
+            "Workflow authoring guide returned",
+            status_code=200,
+            context={"bytes": len(content)},
         )
+        return PlainTextResponse(content, media_type="text/markdown")
 
-    async def workflow_draft_schema(_: Request) -> Response:
+    async def workflow_draft_schema(request: Request) -> Response:
         if not _WORKFLOW_DRAFT_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.workflow_draft_schema.read",
+                "Workflow draft schema is missing",
+                level="WARNING",
+                status_code=404,
+            )
             return PlainTextResponse("workflow draft schema not found", status_code=404)
         try:
             payload = json.loads(_WORKFLOW_DRAFT_SCHEMA_PATH.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            _integration_log(
+                request,
+                "integration.workflow_draft_schema.read",
+                "Workflow draft schema JSON is invalid",
+                level="ERROR",
+                status_code=500,
+                context={"error": str(exc)},
+            )
             return PlainTextResponse("workflow draft schema is invalid", status_code=500)
+        _integration_log(
+            request,
+            "integration.workflow_draft_schema.read",
+            "Workflow draft schema returned",
+            status_code=200,
+            context={"top_level_keys": len(payload) if isinstance(payload, dict) else 0},
+        )
         return JSONResponse(payload)
 
-    async def workflow_export_schema(_: Request) -> Response:
+    async def workflow_export_schema(request: Request) -> Response:
         if not _WORKFLOW_EXPORT_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.workflow_export_schema.read",
+                "Workflow export schema is missing",
+                level="WARNING",
+                status_code=404,
+            )
             return PlainTextResponse("workflow export schema not found", status_code=404)
         try:
             payload = json.loads(_WORKFLOW_EXPORT_SCHEMA_PATH.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            _integration_log(
+                request,
+                "integration.workflow_export_schema.read",
+                "Workflow export schema JSON is invalid",
+                level="ERROR",
+                status_code=500,
+                context={"error": str(exc)},
+            )
             return PlainTextResponse("workflow export schema is invalid", status_code=500)
+        _integration_log(
+            request,
+            "integration.workflow_export_schema.read",
+            "Workflow export schema returned",
+            status_code=200,
+            context={"top_level_keys": len(payload) if isinstance(payload, dict) else 0},
+        )
         return JSONResponse(payload)
 
     async def agent_integration_kit(request: Request) -> PlainTextResponse:
@@ -1075,41 +1286,93 @@ def create_app(
             f"- Workflow export schema: {urls['workflow_export_schema']}",
             f"- Integration test UI: {urls['integration_test_ui']}",
             f"- Integration test JSON: {urls['integration_test_json']}",
+            f"- Integration logs JSON: {urls['integration_logs']}",
             f"- Draft validator endpoint: {urls['validate_draft']}",
             "",
             "## Machine-readable bundle",
             f"- JSON bundle: {urls['integration_kit_json']}",
             "",
+            "## Detailed troubleshooting logs",
+            "- Use integration logs to debug onboarding failures quickly.",
+            f"- Logs endpoint: {urls['integration_logs']}",
+            "- Filter logs by `correlation_id`, `trace_id`, or `event`.",
+            "",
             "## Minimum integration steps",
             "1. Read OpenAPI and API reference.",
-            "2. Validate workflow payloads with the provided schemas.",
-            "3. Follow the workflow authoring guide before publish/run.",
+            "2. Define workflow goal and output, then follow workflow authoring guide.",
+            "3. Validate workflow payloads with the provided schemas.",
             "4. Run integration checks and ensure status=PASS.",
             "5. Use `/workflows`, `/publish`, and `/runs` lifecycle endpoints.",
+            "6. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
         ]
+        _integration_log(
+            request,
+            "integration.kit.read",
+            "Agent integration kit returned",
+            status_code=200,
+            context={"urls_count": len(urls)},
+        )
         return PlainTextResponse("\n".join(lines), media_type="text/markdown")
 
     async def agent_integration_kit_json(request: Request) -> JSONResponse:
         if not _WORKFLOW_AUTHORING_GUIDE_PATH.exists():
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "Workflow authoring guide is missing for kit JSON",
+                level="WARNING",
+                status_code=404,
+            )
             return _error(request, "NOT_FOUND", "workflow authoring guide not found", 404)
         if not _API_REFERENCE_PATH.exists():
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "API reference is missing for kit JSON",
+                level="WARNING",
+                status_code=404,
+            )
             return _error(request, "NOT_FOUND", "api reference not found", 404)
         if not _WORKFLOW_DRAFT_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "Workflow draft schema is missing for kit JSON",
+                level="WARNING",
+                status_code=404,
+            )
             return _error(request, "NOT_FOUND", "workflow draft schema not found", 404)
         if not _WORKFLOW_EXPORT_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "Workflow export schema is missing for kit JSON",
+                level="WARNING",
+                status_code=404,
+            )
             return _error(request, "NOT_FOUND", "workflow export schema not found", 404)
 
         try:
             draft_schema = json.loads(_WORKFLOW_DRAFT_SCHEMA_PATH.read_text(encoding="utf-8"))
             export_schema = json.loads(_WORKFLOW_EXPORT_SCHEMA_PATH.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "Failed to parse local schema files for kit JSON",
+                level="ERROR",
+                status_code=500,
+                context={"error": str(exc)},
+            )
             return _error(request, "INTERNAL", "invalid local schema files", 500)
 
+        integration_test = _integration_check_report(request)
+        summary = integration_test.get("summary", {})
         payload = {
             "title": "WorkCore Agent Integration Kit",
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "urls": _public_doc_urls(request),
-            "integration_test": _integration_check_report(request),
+            "integration_test": integration_test,
             "docs": {
                 "api_reference_markdown": _API_REFERENCE_PATH.read_text(encoding="utf-8"),
                 "workflow_authoring_guide_markdown": _WORKFLOW_AUTHORING_GUIDE_PATH.read_text(encoding="utf-8"),
@@ -1119,6 +1382,17 @@ def create_app(
                 "workflow_export_v1": export_schema,
             },
         }
+        _integration_log(
+            request,
+            "integration.kit_json.read",
+            "Agent integration kit JSON returned",
+            status_code=200,
+            context={
+                "integration_status": summary.get("status"),
+                "checks_total": summary.get("total"),
+                "checks_failed": summary.get("failed"),
+            },
+        )
         return _json(request, payload)
 
     async def agent_integration_test(request: Request) -> PlainTextResponse:
@@ -1147,9 +1421,17 @@ def create_app(
     <button id="refresh">Run checks</button>
     <a href="/agent-integration-test.json" target="_blank" rel="noopener noreferrer">Open JSON report</a>
     <a href="/agent-integration-kit" target="_blank" rel="noopener noreferrer">Open integration kit</a>
+    <a href="/agent-integration-logs?limit=100" target="_blank" rel="noopener noreferrer">Open integration logs</a>
   </div>
   <div id="summary" class="card muted">Loading...</div>
   <div id="checks" class="card"></div>
+
+  <h2>Integration Logs</h2>
+  <p class="muted">Use logs to troubleshoot integration errors by correlation or trace context.</p>
+  <div class="row">
+    <button id="refreshLogs">Refresh logs</button>
+  </div>
+  <pre id="logsOutput">No logs loaded yet.</pre>
 
   <h2>Draft Validator</h2>
   <p class="muted">Paste draft JSON and validate against runtime publish rules.</p>
@@ -1162,6 +1444,7 @@ def create_app(
   <script>
     const summaryEl = document.getElementById('summary');
     const checksEl = document.getElementById('checks');
+    const logsOutput = document.getElementById('logsOutput');
     const validateOutput = document.getElementById('validateOutput');
     const draftInput = document.getElementById('draftInput');
 
@@ -1186,6 +1469,13 @@ def create_app(
           '<span class=\"muted\">' + (check.detail || '') + '</span>';
         checksEl.appendChild(row);
       });
+      await runLogs();
+    }
+
+    async function runLogs() {
+      const response = await fetch('/agent-integration-logs?limit=50');
+      const payload = await response.json();
+      logsOutput.textContent = JSON.stringify(payload, null, 2);
     }
 
     async function validateDraft() {
@@ -1206,31 +1496,158 @@ def create_app(
     }
 
     document.getElementById('refresh').addEventListener('click', runChecks);
+    document.getElementById('refreshLogs').addEventListener('click', runLogs);
     document.getElementById('validate').addEventListener('click', validateDraft);
     runChecks();
   </script>
 </body>
 </html>"""
+        _integration_log(
+            request,
+            "integration.test_ui.read",
+            "Agent integration test UI returned",
+            status_code=200,
+        )
         return PlainTextResponse(html, media_type="text/html")
 
     async def agent_integration_test_json(request: Request) -> JSONResponse:
-        return _json(request, _integration_check_report(request))
+        report = _integration_check_report(request)
+        summary = report.get("summary", {})
+        _integration_log(
+            request,
+            "integration.test_json.read",
+            "Agent integration test report returned",
+            status_code=200,
+            context={
+                "integration_status": summary.get("status"),
+                "checks_total": summary.get("total"),
+                "checks_failed": summary.get("failed"),
+            },
+        )
+        return _json(request, report)
 
     async def agent_validate_draft(request: Request) -> JSONResponse:
         payload = await request.json()
         if not isinstance(payload, dict):
+            _integration_log(
+                request,
+                "integration.draft.validate",
+                "Draft validation request body is not an object",
+                level="WARNING",
+                status_code=400,
+            )
             return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
         draft = payload.get("draft", payload)
         if not isinstance(draft, dict):
+            _integration_log(
+                request,
+                "integration.draft.validate",
+                "Draft payload is not an object",
+                level="WARNING",
+                status_code=400,
+            )
             return _error(request, "INVALID_ARGUMENT", "draft must be an object", 400)
         errors = _validate_draft(draft)
+        node_count = len(draft.get("nodes")) if isinstance(draft.get("nodes"), list) else 0
+        edge_count = len(draft.get("edges")) if isinstance(draft.get("edges"), list) else 0
+        valid = len(errors) == 0
+        _integration_log(
+            request,
+            "integration.draft.validate",
+            "Draft validated against runtime publish rules",
+            level="INFO" if valid else "WARNING",
+            status_code=200,
+            context={
+                "valid": valid,
+                "errors_count": len(errors),
+                "nodes_count": node_count,
+                "edges_count": edge_count,
+                "first_error": errors[0] if errors else None,
+            },
+        )
         return _json(
             request,
             {
-                "valid": len(errors) == 0,
+                "valid": valid,
                 "errors": errors,
             },
         )
+
+    async def agent_integration_logs(request: Request) -> JSONResponse:
+        limit_raw = request.query_params.get("limit", str(_DEFAULT_AGENT_INTEGRATION_LOG_LIMIT))
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            _integration_log(
+                request,
+                "integration.logs.read",
+                "Invalid limit query parameter for integration logs",
+                level="WARNING",
+                status_code=400,
+                context={"limit_raw": limit_raw},
+            )
+            return _error(request, "INVALID_ARGUMENT", "limit must be an integer", 400)
+        if limit < 1 or limit > _MAX_AGENT_INTEGRATION_LOG_LIMIT:
+            _integration_log(
+                request,
+                "integration.logs.read",
+                "Integration logs limit is out of supported range",
+                level="WARNING",
+                status_code=400,
+                context={"limit": limit, "max_limit": _MAX_AGENT_INTEGRATION_LOG_LIMIT},
+            )
+            return _error(
+                request,
+                "INVALID_ARGUMENT",
+                f"limit must be between 1 and {_MAX_AGENT_INTEGRATION_LOG_LIMIT}",
+                400,
+            )
+        correlation_filter = request.query_params.get("correlation_id")
+        trace_filter = request.query_params.get("trace_id")
+        event_filter = request.query_params.get("event")
+
+        entries = list(integration_logs)
+        filtered: list[Dict[str, Any]] = []
+        for entry in reversed(entries):
+            if correlation_filter and entry.get("correlation_id") != correlation_filter:
+                continue
+            if trace_filter and entry.get("trace_id") != trace_filter:
+                continue
+            if event_filter and entry.get("event") != event_filter:
+                continue
+            filtered.append(entry)
+
+        returned_entries = filtered[:limit]
+        total_filtered = len(filtered)
+        payload = {
+            "title": "WorkCore Agent Integration Logs",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "filters": {
+                "limit": limit,
+                "correlation_id": correlation_filter,
+                "trace_id": trace_filter,
+                "event": event_filter,
+            },
+            "summary": {
+                "total": total_filtered,
+                "returned": len(returned_entries),
+                "has_more": total_filtered > len(returned_entries),
+            },
+            "entries": returned_entries,
+        }
+        _integration_log(
+            request,
+            "integration.logs.read",
+            "Agent integration logs returned",
+            status_code=200,
+            context={
+                "requested_limit": limit,
+                "returned": len(returned_entries),
+                "total_filtered": total_filtered,
+                "has_more": total_filtered > len(returned_entries),
+            },
+        )
+        return _json(request, payload)
 
     routes = [
         Route("/health", health),
@@ -1244,6 +1661,7 @@ def create_app(
         Route("/agent-integration-test", agent_integration_test),
         Route("/agent-integration-test.json", agent_integration_test_json),
         Route("/agent-integration-test/validate-draft", agent_validate_draft, methods=["POST"]),
+        Route("/agent-integration-logs", agent_integration_logs),
         Route("/workflows", list_workflows, methods=["GET"]),
         Route("/workflows", create_workflow, methods=["POST"]),
         Route("/workflows/{workflow_id}", update_workflow, methods=["PATCH"]),
@@ -1286,6 +1704,7 @@ def create_app(
                     or request.url.path == "/agent-integration-test"
                     or request.url.path == "/agent-integration-test.json"
                     or request.url.path == "/agent-integration-test/validate-draft"
+                    or request.url.path == "/agent-integration-logs"
                     or request.url.path.startswith("/schemas/")
                     or request.url.path.startswith("/webhooks/inbound/")
                 ):
@@ -1301,12 +1720,12 @@ def create_app(
 
     cors_origins = (
         get_env("CORS_ALLOW_ORIGINS")
-        or "http://localhost:5173,http://127.0.0.1:5173,http://builder.localhost:8080"
+        or "http://workcore.build,https://workcore.build,http://workcore.build:8080,https://workcore.build:8443,http://hq21.build,https://hq21.build"
     )
     allow_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins or ["*"],
+        allow_origins=allow_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

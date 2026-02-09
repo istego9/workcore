@@ -152,6 +152,269 @@ export const parseDraft = (draft: WorkflowDraft): {
   };
 };
 
+const SUPPORTED_NODE_TYPES = new Set<NodeType>(NODE_PALETTE.map((item) => item.type));
+
+const isObjectRecord = (value: unknown): value is Record<string, any> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+const isSupportedNodeType = (value: unknown): value is NodeType =>
+  typeof value === 'string' && SUPPORTED_NODE_TYPES.has(value as NodeType);
+
+export const validateImportedDraft = (draft: WorkflowDraft): string[] => {
+  const errors: string[] = [];
+  if (!isObjectRecord(draft)) {
+    return ['Draft must be an object.'];
+  }
+  if (!Array.isArray(draft.nodes) || draft.nodes.length === 0) {
+    errors.push('Draft must contain at least one node.');
+  }
+  if (!Array.isArray(draft.edges)) {
+    errors.push('Draft edges must be an array.');
+  }
+  if (draft.variables_schema !== undefined && !isObjectRecord(draft.variables_schema)) {
+    errors.push('Draft variables_schema must be an object.');
+  }
+  if (errors.length > 0 || !Array.isArray(draft.nodes) || !Array.isArray(draft.edges)) {
+    return errors;
+  }
+
+  const nodes: BuilderNode[] = [];
+  const edges: BuilderEdge[] = [];
+  const seenNodeIds = new Set<string>();
+
+  draft.nodes.forEach((rawNode, index) => {
+    if (!isObjectRecord(rawNode)) {
+      errors.push(`Node #${index + 1} must be an object.`);
+      return;
+    }
+    const nodeId = typeof rawNode.id === 'string' ? rawNode.id.trim() : '';
+    if (!nodeId) {
+      errors.push(`Node #${index + 1} is missing id.`);
+    } else if (seenNodeIds.has(nodeId)) {
+      errors.push(`Duplicate node id: ${nodeId}.`);
+    } else {
+      seenNodeIds.add(nodeId);
+    }
+
+    if (!isSupportedNodeType(rawNode.type)) {
+      const rawType = rawNode.type === undefined ? 'undefined' : String(rawNode.type);
+      errors.push(`Node ${nodeId || `#${index + 1}`} has unsupported type: ${rawType}.`);
+    }
+
+    if (rawNode.config !== undefined && !isObjectRecord(rawNode.config)) {
+      errors.push(`Node ${nodeId || `#${index + 1}`} has invalid config (must be an object).`);
+    }
+
+    nodes.push({
+      id: nodeId || `invalid_node_${index}`,
+      type: isSupportedNodeType(rawNode.type) ? rawNode.type : 'start',
+      position: { x: 0, y: 0 },
+      config: isObjectRecord(rawNode.config) ? rawNode.config : {}
+    });
+  });
+
+  draft.edges.forEach((rawEdge, index) => {
+    if (!isObjectRecord(rawEdge)) {
+      errors.push(`Edge #${index + 1} must be an object.`);
+      return;
+    }
+    const source = typeof rawEdge.source === 'string' ? rawEdge.source.trim() : '';
+    const target = typeof rawEdge.target === 'string' ? rawEdge.target.trim() : '';
+    if (!source || !target) {
+      errors.push(`Edge #${index + 1} must contain non-empty source and target.`);
+      return;
+    }
+    edges.push({
+      id: createEdgeId(source, target),
+      source,
+      target
+    });
+  });
+
+  if (errors.length > 0) {
+    return errors;
+  }
+
+  const graphErrors = validateGraph(nodes, edges)
+    .filter((issue) => issue.level === 'error')
+    .map((issue) => issue.message);
+  return graphErrors;
+};
+
+const AUTO_LAYOUT_MARGIN_X = 80;
+const AUTO_LAYOUT_MARGIN_Y = 80;
+const AUTO_LAYOUT_HORIZONTAL_GAP = 140;
+const AUTO_LAYOUT_VERTICAL_GAP = 56;
+const AUTO_LAYOUT_COMPONENT_GAP_Y = 140;
+
+const sortNodeIdsByCanvasPosition = (nodeById: Map<string, BuilderNode>) => (left: string, right: string) => {
+  const leftNode = nodeById.get(left);
+  const rightNode = nodeById.get(right);
+  if (!leftNode || !rightNode) return left.localeCompare(right);
+  if (leftNode.position.y !== rightNode.position.y) {
+    return leftNode.position.y - rightNode.position.y;
+  }
+  if (leftNode.position.x !== rightNode.position.x) {
+    return leftNode.position.x - rightNode.position.x;
+  }
+  return left.localeCompare(right);
+};
+
+export const autoLayoutNodes = (nodes: BuilderNode[], edges: BuilderEdge[]): BuilderNode[] => {
+  if (nodes.length === 0) return [];
+
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map<string, string[]>();
+  const undirected = new Map<string, Set<string>>();
+
+  nodes.forEach((node) => {
+    outgoing.set(node.id, []);
+    incoming.set(node.id, []);
+    undirected.set(node.id, new Set<string>());
+  });
+
+  edges.forEach((edge) => {
+    if (!nodeById.has(edge.source) || !nodeById.has(edge.target)) return;
+    outgoing.get(edge.source)?.push(edge.target);
+    incoming.get(edge.target)?.push(edge.source);
+    undirected.get(edge.source)?.add(edge.target);
+    undirected.get(edge.target)?.add(edge.source);
+  });
+
+  const compareNodeIds = sortNodeIdsByCanvasPosition(nodeById);
+  const sortedNodeIds = [...nodeById.keys()].sort(compareNodeIds);
+
+  const components: string[][] = [];
+  const visited = new Set<string>();
+  sortedNodeIds.forEach((seedId) => {
+    if (visited.has(seedId)) return;
+    const queue = [seedId];
+    const component: string[] = [];
+    visited.add(seedId);
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) continue;
+      component.push(current);
+      (undirected.get(current) || []).forEach((next) => {
+        if (visited.has(next)) return;
+        visited.add(next);
+        queue.push(next);
+      });
+    }
+    component.sort(compareNodeIds);
+    components.push(component);
+  });
+
+  const nextDepthMap = (ids: string[]) => {
+    const idSet = new Set(ids);
+    const depth = new Map<string, number>();
+    const startRoots = ids.filter((id) => nodeById.get(id)?.type === 'start');
+    let roots = startRoots;
+    if (roots.length === 0) {
+      roots = ids.filter((id) => {
+        const parentCount = (incoming.get(id) || []).filter((from) => idSet.has(from)).length;
+        return parentCount === 0;
+      });
+    }
+    if (roots.length === 0 && ids.length > 0) {
+      roots = [ids[0]];
+    }
+
+    roots = [...new Set(roots)].sort(compareNodeIds);
+    const queue: string[] = [];
+    roots.forEach((root) => {
+      depth.set(root, 0);
+      queue.push(root);
+    });
+
+    let maxDepth = roots.length > 0 ? 0 : -1;
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) continue;
+      const currentDepth = depth.get(current) ?? 0;
+      (outgoing.get(current) || []).forEach((next) => {
+        if (!idSet.has(next)) return;
+        const candidate = currentDepth + 1;
+        const existing = depth.get(next);
+        if (existing === undefined || candidate < existing) {
+          depth.set(next, candidate);
+          queue.push(next);
+          if (candidate > maxDepth) maxDepth = candidate;
+        }
+      });
+    }
+
+    const unresolved = new Set(ids.filter((id) => !depth.has(id)));
+    while (unresolved.size > 0) {
+      const unresolvedIds = [...unresolved];
+      unresolvedIds.sort((left, right) => {
+        const leftParents = (incoming.get(left) || []).filter((id) => unresolved.has(id)).length;
+        const rightParents = (incoming.get(right) || []).filter((id) => unresolved.has(id)).length;
+        if (leftParents !== rightParents) return leftParents - rightParents;
+        return compareNodeIds(left, right);
+      });
+      const seed = unresolvedIds[0];
+      if (!seed) break;
+      const seedDepth = maxDepth + 1;
+      depth.set(seed, seedDepth);
+      maxDepth = Math.max(maxDepth, seedDepth);
+      unresolved.delete(seed);
+
+      const localQueue = [seed];
+      while (localQueue.length > 0) {
+        const current = localQueue.shift();
+        if (!current) continue;
+        const currentDepth = depth.get(current) ?? seedDepth;
+        (outgoing.get(current) || []).forEach((next) => {
+          if (!unresolved.has(next)) return;
+          const nextDepth = currentDepth + 1;
+          depth.set(next, nextDepth);
+          unresolved.delete(next);
+          localQueue.push(next);
+          maxDepth = Math.max(maxDepth, nextDepth);
+        });
+      }
+    }
+
+    return depth;
+  };
+
+  const positions = new Map<string, NodePosition>();
+  let top = AUTO_LAYOUT_MARGIN_Y;
+
+  components.forEach((component) => {
+    const depth = nextDepthMap(component);
+    const layers = new Map<number, string[]>();
+    component.forEach((id) => {
+      const layer = depth.get(id) ?? 0;
+      const group = layers.get(layer) || [];
+      group.push(id);
+      layers.set(layer, group);
+    });
+
+    const sortedLayers = [...layers.keys()].sort((left, right) => left - right);
+    let componentBottom = top;
+
+    sortedLayers.forEach((layer) => {
+      const layerIds = (layers.get(layer) || []).sort(compareNodeIds);
+      layerIds.forEach((id, index) => {
+        const x = AUTO_LAYOUT_MARGIN_X + layer * (NODE_DIMENSIONS.width + AUTO_LAYOUT_HORIZONTAL_GAP);
+        const y = top + index * (NODE_DIMENSIONS.height + AUTO_LAYOUT_VERTICAL_GAP);
+        positions.set(id, { x, y });
+        componentBottom = Math.max(componentBottom, y + NODE_DIMENSIONS.height);
+      });
+    });
+
+    top = componentBottom + AUTO_LAYOUT_COMPONENT_GAP_Y;
+  });
+
+  return nodes.map((node) => ({
+    ...node,
+    position: positions.get(node.id) || node.position
+  }));
+};
+
 export const validateGraph = (nodes: BuilderNode[], edges: BuilderEdge[]): ValidationIssue[] => {
   const issues: ValidationIssue[] = [];
   const nodeIds = new Set<string>();

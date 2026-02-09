@@ -28,6 +28,7 @@ ChatKit advanced integration service (`POST /chatkit`) and thread-to-run executi
 3. Run not published or invalid workflow version reference.
 4. Missing DB migrations for `chatkit_*` tables.
 5. Idempotency conflict for repeated actions.
+6. External client does not persist `thread_id`/`run_id`, causing duplicate sessions and orphaned actions.
 
 ## Remediation steps
 1. Re-apply migrations:
@@ -43,6 +44,9 @@ ChatKit advanced integration service (`POST /chatkit`) and thread-to-run executi
 - Open `/chatkit.html`, provide valid `api_url`, `domain_key`, `workflow_id`.
 - Send a message and confirm run starts.
 - Trigger an interrupt and confirm widget/action resumes run.
+- Restart client/network and confirm reconnect path:
+  - chat request retries stay idempotent
+  - `GET /runs/{run_id}/stream` with `Last-Event-ID` continues from last seen event
 
 ## Escalation criteria
 - Broad user inability to start chats

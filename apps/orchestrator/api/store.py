@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +28,7 @@ class InMemoryRunStore:
         tenant = tenant_id or self._run_tenant(run, self.tenant_id)
         run.metadata = dict(run.metadata or {})
         run.metadata["tenant_id"] = tenant
+        _apply_run_timestamps(run)
         self.runs[run.id] = run
 
     def get(self, run_id: str, tenant_id: Optional[str] = None) -> Optional[Run]:
@@ -97,6 +99,20 @@ def _parse_text(value: Any) -> Optional[str]:
     return str(parsed)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _apply_run_timestamps(run: Run) -> None:
+    metadata = dict(run.metadata or {})
+    now_iso = _now_iso()
+    created_at = metadata.get("created_at")
+    if not isinstance(created_at, str) or not created_at:
+        metadata["created_at"] = now_iso
+    metadata["updated_at"] = now_iso
+    run.metadata = metadata
+
+
 @dataclass
 class PostgresRunStore:
     pool: asyncpg.Pool
@@ -116,6 +132,7 @@ class PostgresRunStore:
         tenant = self._resolve_tenant(run, self.tenant_id, override=tenant_id)
         run.metadata = dict(run.metadata or {})
         run.metadata["tenant_id"] = tenant
+        _apply_run_timestamps(run)
         mode = run.mode if isinstance(run.mode, str) and run.mode else "live"
         outputs_json = _jsonb(run.outputs) if run.outputs is not None else None
         node_outputs_json = _jsonb(run.node_outputs or {})
@@ -289,7 +306,8 @@ class PostgresRunStore:
             """
             select
                 id, workflow_id, version_id, status, inputs, state, outputs, mode, metadata,
-                node_outputs, branch_selection, loop_state, skipped_nodes
+                node_outputs, branch_selection, loop_state, skipped_nodes,
+                created_at, updated_at, started_at, completed_at
             from runs
             where id = $1 and tenant_id = $2
             """,
@@ -368,6 +386,15 @@ class PostgresRunStore:
 
         skipped_nodes = {str(item) for item in _parse_list(row["skipped_nodes"])}
         mode = row["mode"] if isinstance(row["mode"], str) and row["mode"] else "live"
+        metadata = _parse_dict(row["metadata"])
+        if row["created_at"]:
+            metadata["created_at"] = row["created_at"].isoformat()
+        if row["updated_at"]:
+            metadata["updated_at"] = row["updated_at"].isoformat()
+        if row["started_at"]:
+            metadata["started_at"] = row["started_at"].isoformat()
+        if row["completed_at"]:
+            metadata["completed_at"] = row["completed_at"].isoformat()
 
         return Run(
             id=str(row["id"]),
@@ -378,7 +405,7 @@ class PostgresRunStore:
             state=_parse_dict(row["state"]),
             mode=mode,
             outputs=_parse_json(row["outputs"]),
-            metadata=_parse_dict(row["metadata"]),
+            metadata=metadata,
             node_runs=node_runs,
             node_outputs=_parse_dict(row["node_outputs"]),
             interrupts=interrupts,

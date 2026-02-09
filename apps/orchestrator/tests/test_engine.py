@@ -54,13 +54,20 @@ class RuntimeEngineTests(unittest.TestCase):
             emit("message_generated", {"text": "hello"})
             from apps.orchestrator.executors.types import ExecutorResult
 
-            return ExecutorResult(output={"ok": True})
+            return ExecutorResult(
+                output={"ok": True},
+                usage={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+            )
 
         engine = self._engine(nodes, edges, executors={"agent": fake_agent_executor})
         run = engine.start_run({})
         events = engine.execute_until_blocked(run)
 
         self.assertTrue(any(evt.type == "message_generated" for evt in events))
+        self.assertEqual(
+            run.node_runs["agent"].usage,
+            {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+        )
 
     def test_agent_prompt_templates(self):
         nodes = [

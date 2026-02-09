@@ -1,10 +1,12 @@
 import asyncio
 import os
 import unittest
+from unittest import mock
 
 from starlette.testclient import TestClient
 
 from apps.orchestrator.api import create_app
+from apps.orchestrator.api.app import validate_runtime_security_env
 from apps.orchestrator.api.workflow_store import InMemoryWorkflowStore
 from apps.orchestrator.streaming.sse import _event_stream
 
@@ -33,12 +35,18 @@ class ApiTests(unittest.TestCase):
         workflow_id, _ = self._create_workflow()
         response = self.client.post(f"/workflows/{workflow_id}/runs", json={"inputs": {}})
         self.assertEqual(response.status_code, 201)
-        run_id = response.json()["run_id"]
-        self.assertEqual(response.json().get("mode"), "live")
+        created = response.json()
+        run_id = created["run_id"]
+        self.assertEqual(created.get("mode"), "live")
+        self.assertTrue(created.get("created_at"))
+        self.assertTrue(created.get("updated_at"))
 
         get_response = self.client.get(f"/runs/{run_id}")
         self.assertEqual(get_response.status_code, 200)
-        self.assertEqual(get_response.json()["run_id"], run_id)
+        loaded = get_response.json()
+        self.assertEqual(loaded["run_id"], run_id)
+        self.assertTrue(loaded.get("created_at"))
+        self.assertTrue(loaded.get("updated_at"))
 
     def test_start_run_test_mode(self):
         workflow_id, _ = self._create_workflow()
@@ -268,6 +276,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(markdown_response.status_code, 200)
         self.assertIn("WorkCore Agent Integration Kit", markdown_response.text)
         self.assertIn("/openapi.yaml", markdown_response.text)
+        self.assertIn("/agent-integration-logs", markdown_response.text)
 
         json_response = self.client.get("/agent-integration-kit.json")
         self.assertEqual(json_response.status_code, 200)
@@ -275,6 +284,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["title"], "WorkCore Agent Integration Kit")
         self.assertIn("urls", payload)
         self.assertIn("schemas", payload)
+        self.assertIn("integration_logs", payload["urls"])
         self.assertEqual(
             payload["schemas"]["workflow_export_v1"]["properties"]["schema_version"]["const"],
             "workflow_export_v1",
@@ -302,6 +312,23 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(report["summary"]["status"], "PASS")
         self.assertGreater(report["summary"]["total"], 0)
 
+        integration_logs = self.client.get("/agent-integration-logs")
+        self.assertEqual(integration_logs.status_code, 200)
+        log_payload = integration_logs.json()
+        self.assertEqual(log_payload["title"], "WorkCore Agent Integration Logs")
+        self.assertGreater(log_payload["summary"]["returned"], 0)
+        self.assertTrue(any(item["event"] == "integration.kit.read" for item in log_payload["entries"]))
+
+        first_corr_id = log_payload["entries"][0].get("correlation_id")
+        if first_corr_id:
+            filtered_logs = self.client.get(
+                "/agent-integration-logs",
+                params={"correlation_id": first_corr_id, "limit": 50},
+            )
+            self.assertEqual(filtered_logs.status_code, 200)
+            filtered_payload = filtered_logs.json()
+            self.assertTrue(all(item.get("correlation_id") == first_corr_id for item in filtered_payload["entries"]))
+
         valid_draft_response = self.client.post(
             "/agent-integration-test/validate-draft",
             json={
@@ -322,6 +349,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(invalid_draft_response.status_code, 200)
         self.assertFalse(invalid_draft_response.json()["valid"])
         self.assertGreater(len(invalid_draft_response.json()["errors"]), 0)
+
+    def test_agent_integration_logs_reject_invalid_limit(self):
+        response = self.client.get("/agent-integration-logs", params={"limit": "bad"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        too_large = self.client.get("/agent-integration-logs", params={"limit": 9999})
+        self.assertEqual(too_large.status_code, 400)
+        self.assertEqual(too_large.json()["error"]["code"], "INVALID_ARGUMENT")
 
     def test_delete_workflow(self):
         workflow_id, _ = self._create_workflow()
@@ -419,6 +455,9 @@ class ApiAuthTests(unittest.TestCase):
         integration_test_json_response = self.client.get("/agent-integration-test.json")
         self.assertEqual(integration_test_json_response.status_code, 200)
 
+        logs_response = self.client.get("/agent-integration-logs")
+        self.assertEqual(logs_response.status_code, 200)
+
         schema_response = self.client.get("/schemas/workflow-draft.schema.json")
         self.assertEqual(schema_response.status_code, 200)
 
@@ -432,6 +471,107 @@ class ApiAuthTests(unittest.TestCase):
             },
         )
         self.assertEqual(validate_response.status_code, 200)
+
+
+class ApiCorsTests(unittest.TestCase):
+    def setUp(self):
+        self._previous_cors = os.environ.get("CORS_ALLOW_ORIGINS")
+        os.environ["CORS_ALLOW_ORIGINS"] = "http://workcore.build:8080,https://workcore.build:8443"
+        self.client = TestClient(create_app(workflow_store=InMemoryWorkflowStore()))
+
+    def tearDown(self):
+        if self._previous_cors is None:
+            os.environ.pop("CORS_ALLOW_ORIGINS", None)
+        else:
+            os.environ["CORS_ALLOW_ORIGINS"] = self._previous_cors
+
+    def test_preflight_allows_configured_origin(self):
+        response = self.client.options(
+            "/workflows",
+            headers={
+                "Origin": "http://workcore.build:8080",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://workcore.build:8080")
+
+    def test_preflight_rejects_unknown_origin(self):
+        response = self.client.options(
+            "/workflows",
+            headers={
+                "Origin": "http://evil.example",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        self.assertNotEqual(response.headers.get("access-control-allow-origin"), "http://evil.example")
+
+    def test_preflight_allows_default_workcore_https_origin(self):
+        with mock.patch.dict(os.environ, {"CORS_ALLOW_ORIGINS": ""}, clear=False):
+            client = TestClient(create_app(workflow_store=InMemoryWorkflowStore()))
+            response = client.options(
+                "/workflows",
+                headers={
+                    "Origin": "https://workcore.build",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "https://workcore.build")
+
+
+class ApiSecurityEnvValidationTests(unittest.TestCase):
+    def test_validate_runtime_security_env_requires_bearer_token(self):
+        env = {
+            "WORKCORE_ALLOW_INSECURE_DEV": "0",
+            "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
+            "CORS_ALLOW_ORIGINS": "http://workcore.build:8080",
+        }
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with self.assertRaises(RuntimeError):
+            with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+                validate_runtime_security_env()
+
+    def test_validate_runtime_security_env_requires_webhook_secret(self):
+        env = {
+            "WORKCORE_ALLOW_INSECURE_DEV": "0",
+            "WORKCORE_API_AUTH_TOKEN": "token_ok",
+            "CORS_ALLOW_ORIGINS": "http://workcore.build:8080",
+        }
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with self.assertRaises(RuntimeError):
+            with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+                validate_runtime_security_env()
+
+    def test_validate_runtime_security_env_rejects_wildcard_cors(self):
+        env = {
+            "WORKCORE_ALLOW_INSECURE_DEV": "0",
+            "WORKCORE_API_AUTH_TOKEN": "token_ok",
+            "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
+            "CORS_ALLOW_ORIGINS": "https://workcore.build,*",
+        }
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with self.assertRaises(RuntimeError):
+            with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+                validate_runtime_security_env()
+
+    def test_validate_runtime_security_env_allows_insecure_override(self):
+        env = {"WORKCORE_ALLOW_INSECURE_DEV": "1"}
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+            validate_runtime_security_env()
 
 
 if __name__ == "__main__":

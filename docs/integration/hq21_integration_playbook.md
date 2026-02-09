@@ -1,7 +1,7 @@
 # HQ21 Integration Playbook (WorkCore v1)
 
 ## Scope
-Operational integration guidance for HQ21 backend/client teams using WorkCore workflow/run APIs.
+Operational integration guidance for HQ21 backend/client teams using WorkCore workflow/run APIs and ChatKit interactions.
 
 ## Base contract
 - Source of truth: `docs/api/openapi.yaml`
@@ -20,6 +20,12 @@ Recommended:
 - `X-User-Id`
 - `Idempotency-Key` for mutating requests
 
+For ChatKit (`POST /chatkit`) include integration metadata in request body:
+- `metadata.workflow_id` (required on `threads.create`)
+- `metadata.workflow_version_id` (optional)
+- `metadata.external_user_id` (recommended)
+- `metadata.external_session_id` (recommended)
+
 ## Field mapping (HQ21 -> WorkCore)
 Minimum run-start mapping:
 - `tenant_id` -> `X-Tenant-Id`
@@ -36,11 +42,18 @@ Run correlation storage in HQ21:
 ## Recommended integration sequence
 1. Create or fetch target workflow.
 2. Publish workflow version.
-3. Start run with idempotency key.
-4. Track run status via:
+3. Start user interaction via chat:
+   - `POST /chatkit` with `type=threads.create`
+   - persist returned `thread_id`
+4. Continue user interaction via chat:
+   - `type=threads.add_user_message` for regular messages
+   - `type=threads.custom_action` for widget actions (approve/reject/submit)
+   - pass action idempotency key in payload when available
+5. Track run status via:
    - `GET /runs/{run_id}`
    - `GET /runs/{run_id}/stream` (SSE)
-5. Resume interrupts when `WAITING_FOR_INPUT`.
+6. Use webhook fallback for delayed consumers:
+   - outbound subscriptions to `interrupt_created`, `run_completed`, `run_failed`, `node_failed`
 
 ## Retry policy
 Use idempotency-safe retries for mutating calls:
@@ -68,8 +81,9 @@ Do not auto-retry:
 1. Auth and tenant headers are enforced.
 2. Idempotency behavior verified for retries.
 3. SSE reconnect tested with `Last-Event-ID`.
-4. Interrupt resume path tested end-to-end.
-5. Runbook and incident SOP available to on-call.
+4. Chat thread create/message/action flow tested end-to-end.
+5. Interrupt resume path tested through chat widget/action and direct API fallback.
+6. Runbook and incident SOP available to on-call.
 
 ## References
 - Runbook: `docs/runbooks/orchestrator-runtime.md`

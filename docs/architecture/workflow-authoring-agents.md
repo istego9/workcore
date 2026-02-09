@@ -6,6 +6,30 @@ Status: Draft
 ## Purpose
 This guide defines a strict, repeatable process for AI agents to create or update workflows in the Builder UI without breaking runtime constraints.
 
+## When to create a workflow (and why)
+Create a workflow when you need a repeatable, auditable multi-step process with explicit control flow.
+
+Use a workflow when:
+- The process has 2+ dependent steps (`Start -> ... -> End`), not a single stateless API call.
+- You need branching/looping logic (`if_else`, `while`) based on runtime data.
+- You need human-in-the-loop checkpoints (`interaction`, `approval`).
+- You need stable run telemetry/history for operations and debugging.
+
+Do not create a workflow when:
+- The task is a one-off manual action with no reuse.
+- A simple synchronous backend call is sufficient and no runtime orchestration is needed.
+- Required inputs/decisions are still unknown (record TODOs first, then implement).
+
+## Workflow objective template (mandatory before modeling)
+Before opening Builder, define:
+1. Business goal: what business outcome this workflow must produce.
+2. Success criteria: measurable condition that means run is successful.
+3. Required inputs: minimal payload expected at `Start`.
+4. Final output contract: what must be available before `End`.
+5. Failure policy: how failures/interrupts should be handled.
+
+If any item is missing, add explicit TODOs and do not invent behavior.
+
 ## Process schema
 ```mermaid
 flowchart TD
@@ -66,14 +90,15 @@ Do not introduce custom node types.
 
 ## Required process (Builder UI)
 1. Open/create workflow: `New` or `Browse`.
-2. Build minimal path first: exactly one `Start` and at least one `End`.
-3. Add intermediate nodes from `Node palette` and connect nodes on canvas.
+2. Define target path from objective template (`Start -> ... -> End`).
+3. Build minimal path first: exactly one `Start` and at least one `End`.
 4. Configure selected node in `Inspector` tab only with supported fields.
-5. Open `Validation` tab and fix all `Error` issues.
-6. Click `Save`.
-7. Click `Publish` (publish is blocked when validation has errors).
-8. Run smoke execution with `Run` (`Test` mode first, then `Live` if required).
-9. For handoff/sharing, use `More -> Export JSON`.
+5. Add intermediate nodes from `Node palette` and connect nodes on canvas.
+6. Open `Validation` tab and fix all `Error` issues.
+7. Click `Save`.
+8. Click `Publish` (publish is blocked when validation has errors).
+9. Run smoke execution with `Run` (`Test` mode first, then `Live` if required).
+10. For handoff/sharing, use `More -> Export JSON`.
 
 ## Minimum config requirements by node type
 - `start`

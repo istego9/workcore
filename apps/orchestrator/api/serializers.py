@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 from typing import Any, Dict
 
 from apps.orchestrator.api.workflow_store import WorkflowRecord, WorkflowSummary, WorkflowVersionRecord
@@ -7,8 +9,63 @@ from apps.orchestrator.api.workflow_store import WorkflowRecord, WorkflowSummary
 from apps.orchestrator.runtime.models import Interrupt, Run
 
 
+def _to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(value)
+
+
+def _estimate_tokens(value: Any) -> int:
+    text = _to_text(value)
+    if not text:
+        return 0
+    return max(1, math.ceil(len(text) / 4))
+
+
+def _backfill_mock_usage(node_output: Any) -> Dict[str, Any] | None:
+    if not isinstance(node_output, dict):
+        return None
+    if node_output.get("mock") is not True:
+        return None
+    input_tokens = _estimate_tokens(node_output.get("resolved_instructions")) + _estimate_tokens(
+        node_output.get("resolved_input")
+    )
+    output_tokens = _estimate_tokens(node_output)
+    return {
+        "provider": "mock",
+        "estimated": True,
+        "requests": 0,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 0},
+    }
+
+
 def run_to_dict(run: Run) -> Dict[str, Any]:
     metadata = dict(run.metadata or {})
+    node_runs = []
+    for node_id, node_run in run.node_runs.items():
+        usage = node_run.usage
+        if not isinstance(usage, dict):
+            usage = _backfill_mock_usage(node_run.output)
+        node_runs.append(
+            {
+                "node_id": node_id,
+                "status": node_run.status,
+                "attempt": node_run.attempt,
+                "output": node_run.output,
+                "last_error": node_run.last_error,
+                "trace_id": node_run.trace_id,
+                "usage": usage,
+            }
+        )
     return {
         "run_id": run.id,
         "workflow_id": run.workflow_id,
@@ -24,18 +81,9 @@ def run_to_dict(run: Run) -> Dict[str, Any]:
         "tenant_id": metadata.get("tenant_id"),
         "project_id": metadata.get("project_id"),
         "import_run_id": metadata.get("import_run_id"),
-        "node_runs": [
-            {
-                "node_id": node_id,
-                "status": node_run.status,
-                "attempt": node_run.attempt,
-                "output": node_run.output,
-                "last_error": node_run.last_error,
-                "trace_id": node_run.trace_id,
-                "usage": node_run.usage,
-            }
-            for node_id, node_run in run.node_runs.items()
-        ],
+        "created_at": metadata.get("created_at"),
+        "updated_at": metadata.get("updated_at"),
+        "node_runs": node_runs,
     }
 
 

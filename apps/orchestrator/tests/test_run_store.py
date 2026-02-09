@@ -65,6 +65,24 @@ class InMemoryRunStoreTests(unittest.TestCase):
         self.assertIsNone(store.get("run_tenant_a", tenant_id="tenant_b"))
         self.assertEqual([run.id for run in store.list(tenant_id="tenant_b")], ["run_tenant_b"])
 
+    def test_save_sets_created_and_updated_timestamps(self):
+        store = InMemoryRunStore()
+        run = Run(
+            id="run_with_timestamps",
+            workflow_id="wf_a",
+            version_id="v1",
+            status="RUNNING",
+            inputs={},
+            state={},
+        )
+
+        store.save(run)
+        created_at = run.metadata.get("created_at")
+        updated_at = run.metadata.get("updated_at")
+
+        self.assertIsInstance(created_at, str)
+        self.assertIsInstance(updated_at, str)
+
 
 @unittest.skipUnless(_database_url(), "DATABASE_URL or CHATKIT_DATABASE_URL is required")
 class PostgresRunStoreTests(unittest.IsolatedAsyncioTestCase):
@@ -175,6 +193,8 @@ class PostgresRunStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.metadata.get("correlation_id"), "corr_pg")
         self.assertEqual(loaded.metadata.get("trace_id"), "trace_pg")
         self.assertEqual(loaded.metadata.get("tenant_id"), "tenant_pg")
+        self.assertIsInstance(loaded.metadata.get("created_at"), str)
+        self.assertIsInstance(loaded.metadata.get("updated_at"), str)
         self.assertEqual(loaded.node_outputs["approval"], {"partial": True})
         self.assertEqual(loaded.branch_selection, {"if_1": "path_yes"})
         self.assertEqual(loaded.loop_state, {"while_1": 3})

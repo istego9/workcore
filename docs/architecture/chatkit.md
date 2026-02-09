@@ -11,11 +11,23 @@ Status: Draft
 ## Endpoints
 - `POST /chatkit` — ChatKit Server endpoint (streaming + non-streaming requests).
 
+## External client contract (supported request types)
+- `threads.create`:
+  - Starts a new thread and usually starts a new run from the first user message.
+  - `metadata.workflow_id` is required for a new thread.
+  - `metadata.workflow_version_id` is optional; when omitted active/latest published version is used.
+- `threads.add_user_message`:
+  - Appends a user message to an existing thread and continues run execution.
+- `threads.custom_action`:
+  - Sends widget actions (`interrupt.approve`, `interrupt.reject`, `interrupt.submit`, `interrupt.cancel`).
+  - Runtime currently rejects `interrupt.cancel` with an explicit error event.
+
 ## Thread ↔ Run mapping
 - `thread.metadata.run_id` stores the active run.
 - `thread.metadata.last_event_id` tracks last streamed run event to avoid replay.
 - `thread.metadata.workflow_id` is stored for visibility.
 - `metadata.workflow_id` is required on `threads.create` to select which published workflow to run.
+- External integrators should also persist their own identifiers in metadata (for example `external_user_id`, `external_session_id`) for cross-system reconciliation.
 
 ## Message handling
 - New user message:
@@ -40,6 +52,13 @@ Status: Draft
 - `interrupt.reject`
 - `interrupt.submit`
 - `interrupt.cancel` (not supported in MVP; returns an error)
+
+Action payload fields consumed by runtime:
+- `run_id` (optional when thread metadata already has run_id)
+- `interrupt_id` (optional if there is a single OPEN interrupt)
+- `input` / `form` / `form_data` / `fields` (for submit data)
+- `files` (uploaded file refs)
+- `idempotency_key` or `action_id` (optional client-supplied dedupe key)
 
 ## Streaming behavior
 - Run events are mapped to ChatKit stream events:
@@ -67,6 +86,12 @@ Status: Draft
 - Actions are deduped via `idempotency_keys` (scope `chatkit_action`).
 - Default key: `{run_id}:{interrupt_id}:{action_type}` unless the payload includes `idempotency_key`.
 - TTL configurable via `CHATKIT_IDEMPOTENCY_TTL_SECONDS`.
+
+## Delivery and fallback strategy for third-party clients
+- Primary: consume ChatKit SSE response stream from `POST /chatkit`.
+- Run-level fallback: subscribe to `GET /runs/{run_id}/stream` using `Last-Event-ID` for reconnect.
+- Webhook fallback: subscribe to outbound webhook events (`interrupt_created`, `run_completed`, `run_failed`, `node_failed`) for offline or delayed consumer scenarios.
+- Persist `thread_id`, `run_id`, and open `interrupt_id` in the external system so retries and reconnects stay idempotent.
 
 ## Next steps
 - Add action idempotency and richer widget schemas.

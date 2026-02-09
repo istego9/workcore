@@ -16,6 +16,7 @@ import {
   Popover,
   ScrollArea,
   Select,
+  SimpleGrid,
   Stack,
   Switch,
   Tabs,
@@ -31,6 +32,7 @@ import {
   API_BASE,
   createWorkflow,
   getWorkflow,
+  listRuns,
   listWorkflows,
   publishWorkflow,
   rollbackWorkflow,
@@ -39,16 +41,19 @@ import {
   updateDraft,
   updateWorkflowMeta
 } from './api';
+import type { RunRecord } from './api';
 import { buildIntegrationKitLinks } from './integration-kit';
 import {
   DEFAULT_DRAFT,
   NODE_DIMENSIONS,
   NODE_PALETTE,
+  autoLayoutNodes,
   buildDraft,
   createEdgeId,
   createNode,
   defaultNodeConfig,
   parseDraft,
+  validateImportedDraft,
   validateGraph
 } from './builder/graph';
 import type {
@@ -76,10 +81,29 @@ const OUTPUT_FORMAT_OPTIONS = [
 ];
 
 const WIDGET_TEMPLATES = [{ value: 'ux_presentations', label: 'UX Presentations' }];
-const CHATKIT_PAGE =
-  import.meta.env.VITE_CHATKIT_PAGE || (window.location.origin + '/chatkit.html');
-const CHATKIT_API_URL =
-  import.meta.env.VITE_CHATKIT_API_URL || 'http://chatkit.localhost:8080/chatkit';
+const inferRootHost = (hostname: string) => {
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return 'localhost';
+  }
+  if (hostname.startsWith('builder.')) return hostname.slice('builder.'.length);
+  if (hostname.startsWith('api.')) return hostname.slice('api.'.length);
+  if (hostname.startsWith('chatkit.')) return hostname.slice('chatkit.'.length);
+  return hostname;
+};
+
+const inferChatkitApiUrl = () => {
+  if (typeof window === 'undefined') {
+    return 'http://chatkit.localhost/chatkit';
+  }
+  const { protocol, hostname, port } = window.location;
+  const rootHost = inferRootHost(hostname);
+  const chatkitHost = rootHost === 'localhost' ? 'chatkit.localhost' : `chatkit.${rootHost}`;
+  return `${protocol}//${chatkitHost}${port ? `:${port}` : ''}/chatkit`;
+};
+
+const appOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
+const CHATKIT_PAGE = import.meta.env.VITE_CHATKIT_PAGE || `${appOrigin}/chatkit.html`;
+const CHATKIT_API_URL = import.meta.env.VITE_CHATKIT_API_URL || inferChatkitApiUrl();
 const CHATKIT_DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY || '';
 const CHATKIT_AUTH_TOKEN = import.meta.env.VITE_CHATKIT_AUTH_TOKEN || '';
 const EXPORT_SCHEMA_VERSION = 'workflow_export_v1';
@@ -113,6 +137,291 @@ const formatTimestamp = (value?: string | null) => {
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
 };
+
+const runStatusBadgeColor = (status: string) => {
+  if (status === 'COMPLETED') return 'teal';
+  if (status === 'FAILED') return 'red';
+  if (status === 'CANCELLED') return 'gray';
+  if (status === 'WAITING_FOR_INPUT') return 'yellow';
+  return 'blue';
+};
+
+const nodeStatusBadgeColor = (status: string) => {
+  if (status === 'SUCCESS' || status === 'COMPLETED') return 'teal';
+  if (status === 'ERROR' || status === 'FAILED') return 'red';
+  if (status === 'SKIPPED' || status === 'CANCELLED') return 'gray';
+  if (status === 'WAITING_FOR_INPUT') return 'yellow';
+  return 'blue';
+};
+
+const runFailureReason = (run: RunRecord) => {
+  if (run.status !== 'FAILED') return null;
+  const failedNode =
+    run.node_runs?.find((nodeRun) => nodeRun.status === 'ERROR' && nodeRun.last_error) ||
+    run.node_runs?.find((nodeRun) => !!nodeRun.last_error);
+  if (!failedNode?.last_error) return null;
+  return String(failedNode.last_error);
+};
+
+type RunNodeRecord = NonNullable<RunRecord['node_runs']>[number];
+type TokenSummary = { inputTokens: number; outputTokens: number; totalTokens: number };
+type DailyRunSummary = {
+  day: string;
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  totalCostUsd: number;
+  avgTokens: number;
+  avgCostUsd: number;
+};
+type HistorySummary = {
+  runCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  totalCostUsd: number;
+  avgTokensPerRun: number;
+  avgCostPerRun: number;
+  days: DailyRunSummary[];
+};
+
+const TOKENS_IN_MILLION = 1_000_000;
+
+const asUsageNumber = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+};
+
+const nodeTokenSummary = (nodeRun: RunNodeRecord): TokenSummary | null => {
+  const usage = nodeRun.usage;
+  if (!usage || typeof usage !== 'object') return null;
+  const inputTokens = asUsageNumber(usage.input_tokens);
+  const outputTokens = asUsageNumber(usage.output_tokens);
+  const totalTokens = asUsageNumber(usage.total_tokens) || inputTokens + outputTokens;
+  if (!totalTokens && !inputTokens && !outputTokens) return null;
+  return { inputTokens, outputTokens, totalTokens };
+};
+
+const runTokenSummary = (run: RunRecord) => {
+  const totals = (run.node_runs || []).reduce<TokenSummary>(
+    (acc, nodeRun) => {
+      const nodeTotals = nodeTokenSummary(nodeRun);
+      if (!nodeTotals) return acc;
+      return {
+        inputTokens: acc.inputTokens + nodeTotals.inputTokens,
+        outputTokens: acc.outputTokens + nodeTotals.outputTokens,
+        totalTokens: acc.totalTokens + nodeTotals.totalTokens
+      };
+    },
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+  );
+
+  if (!totals.totalTokens && !totals.inputTokens && !totals.outputTokens) {
+    return null;
+  }
+  return totals;
+};
+
+const runNodeStats = (run: RunRecord) =>
+  (run.node_runs || []).reduce(
+    (acc, nodeRun) => {
+      acc.total += 1;
+      if (nodeRun.status === 'COMPLETED' || nodeRun.status === 'SUCCESS' || nodeRun.status === 'RESOLVED') {
+        acc.completed += 1;
+      } else if (nodeRun.status === 'FAILED' || nodeRun.status === 'ERROR') {
+        acc.failed += 1;
+      } else if (nodeRun.status === 'WAITING_FOR_INPUT') {
+        acc.waiting += 1;
+      } else if (nodeRun.status === 'IN_PROGRESS') {
+        acc.inProgress += 1;
+      } else {
+        acc.todo += 1;
+      }
+      return acc;
+    },
+    { total: 0, completed: 0, failed: 0, waiting: 0, inProgress: 0, todo: 0 }
+  );
+
+const asUsdRate = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 0;
+};
+
+const DEFAULT_INPUT_RATE_USD_PER_1M = asUsdRate(import.meta.env.VITE_USAGE_COST_INPUT_USD_PER_1M);
+const DEFAULT_OUTPUT_RATE_USD_PER_1M = asUsdRate(import.meta.env.VITE_USAGE_COST_OUTPUT_USD_PER_1M);
+
+const estimateCostUsd = (
+  tokens: TokenSummary | null,
+  inputRateUsdPer1M: number,
+  outputRateUsdPer1M: number
+) => {
+  if (!tokens) return 0;
+  const inputCost = (tokens.inputTokens / TOKENS_IN_MILLION) * inputRateUsdPer1M;
+  const outputCost = (tokens.outputTokens / TOKENS_IN_MILLION) * outputRateUsdPer1M;
+  return inputCost + outputCost;
+};
+
+const runDayKey = (run: RunRecord) => {
+  const value = run.created_at || run.updated_at;
+  if (!value) return 'Unknown date';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown date';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const summarizeHistory = (
+  runs: RunRecord[],
+  inputRateUsdPer1M: number,
+  outputRateUsdPer1M: number
+): HistorySummary => {
+  const daily = new Map<
+    string,
+    {
+      runs: number;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      totalCostUsd: number;
+    }
+  >();
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let totalCostUsd = 0;
+
+  runs.forEach((run) => {
+    const tokens = runTokenSummary(run) || { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    const runCost = estimateCostUsd(tokens, inputRateUsdPer1M, outputRateUsdPer1M);
+    const day = runDayKey(run);
+    const dayState = daily.get(day) || {
+      runs: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      totalCostUsd: 0
+    };
+
+    dayState.runs += 1;
+    dayState.inputTokens += tokens.inputTokens;
+    dayState.outputTokens += tokens.outputTokens;
+    dayState.totalTokens += tokens.totalTokens;
+    dayState.totalCostUsd += runCost;
+    daily.set(day, dayState);
+
+    inputTokens += tokens.inputTokens;
+    outputTokens += tokens.outputTokens;
+    totalTokens += tokens.totalTokens;
+    totalCostUsd += runCost;
+  });
+
+  const days: DailyRunSummary[] = Array.from(daily.entries())
+    .map(([day, totals]) => ({
+      day,
+      runs: totals.runs,
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      totalTokens: totals.totalTokens,
+      totalCostUsd: totals.totalCostUsd,
+      avgTokens: totals.runs > 0 ? totals.totalTokens / totals.runs : 0,
+      avgCostUsd: totals.runs > 0 ? totals.totalCostUsd / totals.runs : 0
+    }))
+    .sort((a, b) => {
+      if (a.day === 'Unknown date') return 1;
+      if (b.day === 'Unknown date') return -1;
+      return a.day < b.day ? 1 : -1;
+    });
+
+  const runCount = runs.length;
+  return {
+    runCount,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    totalCostUsd,
+    avgTokensPerRun: runCount > 0 ? totalTokens / runCount : 0,
+    avgCostPerRun: runCount > 0 ? totalCostUsd / runCount : 0,
+    days
+  };
+};
+
+const formatUsd = (value: number) => {
+  const safeValue = Number.isFinite(value) && value > 0 ? value : 0;
+  if (safeValue > 0 && safeValue < 0.0001) return '< $0.0001';
+  const digits = safeValue >= 1 ? 2 : 4;
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  }).format(safeValue);
+};
+
+const hasContent = (value: unknown) => {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+};
+
+const formatJson = (value: unknown) => {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
+type JsonPreviewCardProps = {
+  title: string;
+  value: unknown;
+  emptyLabel?: string;
+  maxHeight?: number;
+};
+
+function JsonPreviewCard({ title, value, emptyLabel = 'No data', maxHeight = 220 }: JsonPreviewCardProps) {
+  const contentVisible = hasContent(value);
+  return (
+    <Card withBorder radius="sm" padding="sm">
+      <Stack gap={6}>
+        <Group justify="space-between" align="center">
+          <Text size="xs" fw={600}>
+            {title}
+          </Text>
+          {!contentVisible && (
+            <Text size="xs" c="dimmed">
+              {emptyLabel}
+            </Text>
+          )}
+        </Group>
+        {contentVisible && (
+          <ScrollArea.Autosize mah={maxHeight}>
+            <Text
+              component="pre"
+              fz="xs"
+              ff="monospace"
+              style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+            >
+              {formatJson(value)}
+            </Text>
+          </ScrollArea.Autosize>
+        )}
+      </Stack>
+    </Card>
+  );
+}
 
 function JsonEditor({ label, value, onApply, description }: JsonEditorProps) {
   const [draft, setDraft] = useState(() => JSON.stringify(value ?? {}, null, 2));
@@ -400,6 +709,7 @@ function TemplateTextarea({
 export default function App() {
   const [listOpen, { open: openList, close: closeList }] = useDisclosure(false);
   const [integrationOpen, { open: openIntegration, close: closeIntegration }] = useDisclosure(false);
+  const [runHistoryOpen, { open: openRunHistory, close: closeRunHistory }] = useDisclosure(false);
   const [workflowId, setWorkflowId] = useState('');
   const [workflowInput, setWorkflowInput] = useState('');
   const [workflowName, setWorkflowName] = useState('');
@@ -428,6 +738,15 @@ export default function App() {
   const [workflowList, setWorkflowList] = useState<WorkflowSummary[]>([]);
   const [workflowQuery, setWorkflowQuery] = useState('');
   const [workflowListLoading, setWorkflowListLoading] = useState(false);
+  const [runHistory, setRunHistory] = useState<RunRecord[]>([]);
+  const [runHistoryLoading, setRunHistoryLoading] = useState(false);
+  const [runHistoryExpandedId, setRunHistoryExpandedId] = useState<string | null>(null);
+  const [historyInputRateUsdPer1M, setHistoryInputRateUsdPer1M] = useState(
+    DEFAULT_INPUT_RATE_USD_PER_1M
+  );
+  const [historyOutputRateUsdPer1M, setHistoryOutputRateUsdPer1M] = useState(
+    DEFAULT_OUTPUT_RATE_USD_PER_1M
+  );
 
   const isTestEnv = typeof navigator !== 'undefined' && navigator.webdriver;
   const appOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
@@ -460,6 +779,12 @@ export default function App() {
   });
 
   }, [workflowList, workflowQuery]);
+
+  const historySummary = useMemo(
+    () => summarizeHistory(runHistory, historyInputRateUsdPer1M, historyOutputRateUsdPer1M),
+    [runHistory, historyInputRateUsdPer1M, historyOutputRateUsdPer1M]
+  );
+  const hasCostRates = historyInputRateUsdPer1M > 0 || historyOutputRateUsdPer1M > 0;
 
   const variableOptions = useMemo<VariableOption[]>(() => {
     const options: VariableOption[] = [];
@@ -676,6 +1001,12 @@ export default function App() {
     markDirty();
   };
 
+  const handleAutoLayout = () => {
+    setNodes((prev) => autoLayoutNodes(prev, edges));
+    markDirty();
+    setStatus({ tone: 'ok', label: 'Auto layout applied' });
+  };
+
   const resetDraftToDefault = () => {
     const parsed = parseDraft(DEFAULT_DRAFT);
     setNodes(parsed.nodes);
@@ -738,6 +1069,12 @@ export default function App() {
       if (!draft || !Array.isArray(draft.nodes) || !Array.isArray(draft.edges)) {
         throw new Error('Draft is missing nodes or edges');
       }
+      const importErrors = validateImportedDraft(draft);
+      if (importErrors.length > 0) {
+        const preview = importErrors.slice(0, 3).join(' | ');
+        const suffix = importErrors.length > 3 ? ` (+${importErrors.length - 3} more)` : '';
+        throw new Error(`Draft validation failed: ${preview}${suffix}`);
+      }
       const name = String(data.workflow?.name || 'Imported workflow').trim() || 'Imported workflow';
       const description =
         data.workflow?.description !== undefined && data.workflow?.description !== null
@@ -764,9 +1101,11 @@ export default function App() {
       setWorkflowName(workflow.name);
       setWorkflowDescription(workflow.description || '');
       setActiveVersionId(workflow.active_version_id || null);
+      setRunHistory([]);
       setDirty(false);
       setMetaDirty(false);
       void fetchWorkflows();
+      void fetchRunHistory(workflow.workflow_id);
       setStatus({ tone: 'ok', label: 'Import completed', detail: workflow.workflow_id });
     } catch (err: any) {
       setStatus({ tone: 'error', label: 'Import failed', detail: err?.message || 'Invalid file' });
@@ -799,7 +1138,9 @@ export default function App() {
     setWorkflowName(workflow.name);
     setWorkflowDescription(workflow.description || '');
     setActiveVersionId(workflow.active_version_id || null);
+    setRunHistory([]);
     setMetaDirty(false);
+    void fetchRunHistory(workflow.workflow_id);
     setStatus({ tone: 'ok', label: 'Workflow created', detail: workflow.workflow_id });
     setCreatingWorkflow(false);
     if (options?.auto) {
@@ -852,7 +1193,9 @@ export default function App() {
     setWorkflowDescription(workflow.description || '');
     setActiveVersionId(workflow.active_version_id || null);
     setWorkflowInput(workflow.workflow_id);
+    setRunHistory([]);
     setDirty(false);
+    void fetchRunHistory(workflow.workflow_id);
     setStatus({ tone: 'ok', label: 'Workflow loaded' });
   };
 
@@ -874,6 +1217,23 @@ export default function App() {
     }
     setWorkflowList(result.data?.items || []);
     setWorkflowListLoading(false);
+  };
+
+  const fetchRunHistory = async (workflowIdToLoad?: string) => {
+    const targetWorkflowId = (workflowIdToLoad || workflowId).trim();
+    if (!targetWorkflowId) {
+      setRunHistory([]);
+      return;
+    }
+    setRunHistoryLoading(true);
+    const result = await listRuns({ workflowId: targetWorkflowId, limit: 100 });
+    if (result.error) {
+      setStatus({ tone: 'error', label: 'Run history failed', detail: result.error.message });
+      setRunHistoryLoading(false);
+      return;
+    }
+    setRunHistory(result.data?.items || []);
+    setRunHistoryLoading(false);
   };
 
   const handleSaveDraft = async () => {
@@ -959,6 +1319,22 @@ export default function App() {
       label: runMode === 'test' ? 'Test run started' : 'Run started',
       detail: result.data?.run_id
     });
+    void fetchRunHistory(workflowId);
+  };
+
+  const handleOpenRunHistory = async () => {
+    if (!workflowId) {
+      setStatus({ tone: 'warn', label: 'Select a workflow first' });
+      return;
+    }
+    setRunHistoryExpandedId(null);
+    openRunHistory();
+    await fetchRunHistory(workflowId);
+  };
+
+  const handleCloseRunHistory = () => {
+    setRunHistoryExpandedId(null);
+    closeRunHistory();
   };
 
   const chatkitUrl = useMemo(() => {
@@ -1569,6 +1945,9 @@ export default function App() {
             <Button variant="light" onClick={handleSaveDraft}>
               Save
             </Button>
+            <Button variant="light" onClick={handleAutoLayout} data-testid="auto-layout">
+              Auto layout
+            </Button>
             <Button variant="filled" onClick={handlePublish}>
               Publish
             </Button>
@@ -1583,6 +1962,9 @@ export default function App() {
             />
             <Button color="teal" variant="filled" onClick={handleRun}>
               Run
+            </Button>
+            <Button variant="light" onClick={handleOpenRunHistory}>
+              History
             </Button>
             <Button
               variant="light"
@@ -1613,6 +1995,15 @@ export default function App() {
                   }}
                 >
                   Refresh list
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    handleAutoLayout();
+                  }}
+                  data-testid="auto-layout-menu"
+                >
+                  Auto layout
                 </Menu.Item>
                 <Menu.Item
                   onClick={() => {
@@ -2022,6 +2413,356 @@ export default function App() {
                     )}
                   </Card>
                 ))
+              )}
+            </Stack>
+          </ScrollArea>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={runHistoryOpen}
+        onClose={handleCloseRunHistory}
+        title="Execution history"
+        centered
+        size="lg"
+      >
+        <Stack gap="sm">
+          <Group justify="space-between" align="center">
+            <Text size="sm" c="dimmed">
+              {workflowId ? `Workflow ${workflowId}` : 'No workflow selected'}
+            </Text>
+            <Button
+              variant="light"
+              loading={runHistoryLoading}
+              onClick={() => void fetchRunHistory(workflowId)}
+              disabled={!workflowId}
+            >
+              Refresh
+            </Button>
+          </Group>
+          <ScrollArea h={360}>
+            <Stack gap="sm">
+              <Card withBorder radius="md" padding="sm">
+                <Stack gap="xs">
+                  <Group justify="space-between" align="center">
+                    <Text size="sm" fw={600}>
+                      Cost settings
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      USD per 1M tokens
+                    </Text>
+                  </Group>
+                  <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                    <NumberInput
+                      label="Input tokens rate"
+                      value={historyInputRateUsdPer1M}
+                      onChange={(value) => setHistoryInputRateUsdPer1M(asUsdRate(value))}
+                      min={0}
+                      decimalScale={4}
+                      fixedDecimalScale={false}
+                      allowNegative={false}
+                    />
+                    <NumberInput
+                      label="Output tokens rate"
+                      value={historyOutputRateUsdPer1M}
+                      onChange={(value) => setHistoryOutputRateUsdPer1M(asUsdRate(value))}
+                      min={0}
+                      decimalScale={4}
+                      fixedDecimalScale={false}
+                      allowNegative={false}
+                    />
+                  </SimpleGrid>
+                  {!hasCostRates && (
+                    <Text size="xs" c="dimmed">
+                      Set token rates to see money estimates.
+                    </Text>
+                  )}
+                </Stack>
+              </Card>
+
+              <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">
+                <Card withBorder radius="sm" padding="sm">
+                  <Text size="xs" c="dimmed">
+                    Runs
+                  </Text>
+                  <Text fw={700}>{historySummary.runCount}</Text>
+                </Card>
+                <Card withBorder radius="sm" padding="sm">
+                  <Text size="xs" c="dimmed">
+                    Total tokens
+                  </Text>
+                  <Text fw={700}>{Math.round(historySummary.totalTokens).toLocaleString()}</Text>
+                </Card>
+                <Card withBorder radius="sm" padding="sm">
+                  <Text size="xs" c="dimmed">
+                    Avg tokens / run
+                  </Text>
+                  <Text fw={700}>{Math.round(historySummary.avgTokensPerRun).toLocaleString()}</Text>
+                </Card>
+                <Card withBorder radius="sm" padding="sm">
+                  <Text size="xs" c="dimmed">
+                    Total est. cost
+                  </Text>
+                  <Text fw={700}>{formatUsd(historySummary.totalCostUsd)}</Text>
+                </Card>
+              </SimpleGrid>
+
+              <Card withBorder radius="md" padding="sm">
+                <Stack gap="xs">
+                  <Group justify="space-between" align="center">
+                    <Text size="sm" fw={600}>
+                      Daily totals
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Avg cost/run {formatUsd(historySummary.avgCostPerRun)}
+                    </Text>
+                  </Group>
+                  {historySummary.days.length === 0 ? (
+                    <Text size="xs" c="dimmed">
+                      No day-level data yet.
+                    </Text>
+                  ) : (
+                    historySummary.days.map((day, index) => (
+                      <Stack key={day.day} gap={6}>
+                        {index > 0 && <Divider />}
+                        <Group justify="space-between" align="flex-start">
+                          <Stack gap={2}>
+                            <Text size="sm" fw={600}>
+                              {day.day}
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                              {day.runs} run{day.runs === 1 ? '' : 's'}
+                            </Text>
+                          </Stack>
+                          <Group gap={6} wrap="wrap" justify="flex-end">
+                            <Badge variant="outline" color="gray">
+                              Tokens {Math.round(day.totalTokens).toLocaleString()}
+                            </Badge>
+                            <Badge variant="outline" color="gray">
+                              Avg {Math.round(day.avgTokens).toLocaleString()} / run
+                            </Badge>
+                            <Badge variant="light" color="indigo">
+                              {formatUsd(day.totalCostUsd)}
+                            </Badge>
+                          </Group>
+                        </Group>
+                      </Stack>
+                    ))
+                  )}
+                </Stack>
+              </Card>
+
+              {runHistoryLoading ? (
+                <Text size="sm" c="dimmed">
+                  Loading run history...
+                </Text>
+              ) : runHistory.length === 0 ? (
+                <Text size="sm" c="dimmed">
+                  No executions yet.
+                </Text>
+              ) : (
+                runHistory.map((run) => {
+                  const failureReason = runFailureReason(run);
+                  const tokenSummary = runTokenSummary(run);
+                  const runEstimatedCost = estimateCostUsd(
+                    tokenSummary,
+                    historyInputRateUsdPer1M,
+                    historyOutputRateUsdPer1M
+                  );
+                  const nodeStats = runNodeStats(run);
+                  const isExpanded = runHistoryExpandedId === run.run_id;
+                  return (
+                    <Card key={run.run_id} withBorder radius="md">
+                      <Group justify="space-between" align="flex-start">
+                        <Stack gap={2}>
+                          <Text fw={600}>{run.run_id}</Text>
+                          <Text size="xs" c="dimmed">
+                            Version {run.version_id}
+                          </Text>
+                        </Stack>
+                        <Stack gap={4} align="flex-end">
+                          <Badge color={runStatusBadgeColor(run.status)} variant="light">
+                            {run.status}
+                          </Badge>
+                          {run.mode && (
+                            <Badge color="gray" variant="outline">
+                              {run.mode.toUpperCase()}
+                            </Badge>
+                          )}
+                          <Button
+                            size="xs"
+                            variant="subtle"
+                            onClick={() =>
+                              setRunHistoryExpandedId((prev) => (prev === run.run_id ? null : run.run_id))
+                            }
+                          >
+                            {isExpanded ? 'Hide details' : 'Show details'}
+                          </Button>
+                        </Stack>
+                      </Group>
+                      <Group gap={6} mt="xs" wrap="wrap">
+                        <Badge variant="outline" color="gray">
+                          Nodes {nodeStats.total}
+                        </Badge>
+                        {nodeStats.completed > 0 && (
+                          <Badge variant="light" color="teal">
+                            Resolved {nodeStats.completed}
+                          </Badge>
+                        )}
+                        {nodeStats.failed > 0 && (
+                          <Badge variant="light" color="red">
+                            Failed {nodeStats.failed}
+                          </Badge>
+                        )}
+                        {nodeStats.waiting > 0 && (
+                          <Badge variant="light" color="yellow">
+                            Waiting {nodeStats.waiting}
+                          </Badge>
+                        )}
+                        {nodeStats.inProgress > 0 && (
+                          <Badge variant="light" color="blue">
+                            Running {nodeStats.inProgress}
+                          </Badge>
+                        )}
+                        {tokenSummary && (
+                          <Badge variant="light" color="indigo">
+                            Tokens {tokenSummary.totalTokens}
+                          </Badge>
+                        )}
+                        {tokenSummary && (
+                          <Badge variant="light" color="green">
+                            {formatUsd(runEstimatedCost)}
+                          </Badge>
+                        )}
+                      </Group>
+                      {(run.created_at || run.updated_at) && (
+                        <Stack gap={2} mt="xs">
+                          {run.created_at && (
+                            <Text size="xs" c="dimmed">
+                              Started {formatTimestamp(run.created_at)}
+                            </Text>
+                          )}
+                          {run.updated_at && (
+                            <Text size="xs" c="dimmed">
+                              Updated {formatTimestamp(run.updated_at)}
+                            </Text>
+                          )}
+                        </Stack>
+                      )}
+                      {failureReason && (
+                        <Text size="xs" c="red" mt="xs">
+                          Error: {failureReason}
+                        </Text>
+                      )}
+                      {isExpanded && (
+                        <Stack gap="sm" mt="sm">
+                          <Divider />
+                          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                            <JsonPreviewCard title="Inputs sent" value={run.inputs || {}} emptyLabel="No inputs" />
+                            <JsonPreviewCard title="Run outputs" value={run.outputs} emptyLabel="No outputs" />
+                          </SimpleGrid>
+
+                          <JsonPreviewCard title="Metadata" value={run.metadata} emptyLabel="No metadata" maxHeight={160} />
+
+                          {tokenSummary && (
+                            <Group gap={8} wrap="wrap">
+                              <Badge variant="outline" color="gray">
+                                Input tokens {tokenSummary.inputTokens}
+                              </Badge>
+                              <Badge variant="outline" color="gray">
+                                Output tokens {tokenSummary.outputTokens}
+                              </Badge>
+                              <Badge variant="light" color="indigo">
+                                Total tokens {tokenSummary.totalTokens}
+                              </Badge>
+                              <Badge variant="light" color="green">
+                                Est. cost {formatUsd(runEstimatedCost)}
+                              </Badge>
+                            </Group>
+                          )}
+
+                          <Stack gap="xs">
+                            <Text size="xs" fw={600}>
+                              Node execution log
+                            </Text>
+                            {(run.node_runs || []).length === 0 ? (
+                              <Text size="xs" c="dimmed">
+                                No node details for this run.
+                              </Text>
+                            ) : (
+                              (run.node_runs || []).map((nodeRun) => {
+                                const nodeTokens = nodeTokenSummary(nodeRun);
+                                const nodeCost = estimateCostUsd(
+                                  nodeTokens,
+                                  historyInputRateUsdPer1M,
+                                  historyOutputRateUsdPer1M
+                                );
+                                return (
+                                  <Card
+                                    key={`${run.run_id}-${nodeRun.node_id}`}
+                                    withBorder
+                                    radius="sm"
+                                    padding="sm"
+                                  >
+                                    <Stack gap="xs">
+                                      <Group justify="space-between" align="flex-start">
+                                        <Stack gap={2}>
+                                          <Text size="sm" fw={600}>
+                                            {nodeRun.node_id}
+                                          </Text>
+                                          <Group gap={6} wrap="wrap">
+                                            {typeof nodeRun.attempt === 'number' && (
+                                              <Badge variant="outline" color="gray">
+                                                Attempt {nodeRun.attempt}
+                                              </Badge>
+                                            )}
+                                            {nodeTokens && (
+                                              <Badge variant="outline" color="indigo">
+                                                Tokens {nodeTokens.totalTokens}
+                                              </Badge>
+                                            )}
+                                            {nodeTokens && (
+                                              <Badge variant="outline" color="green">
+                                                {formatUsd(nodeCost)}
+                                              </Badge>
+                                            )}
+                                            {nodeRun.trace_id && (
+                                              <Text size="xs" c="dimmed" ff="monospace">
+                                                Trace {nodeRun.trace_id}
+                                              </Text>
+                                            )}
+                                          </Group>
+                                        </Stack>
+                                        <Badge color={nodeStatusBadgeColor(nodeRun.status)} variant="light">
+                                          {nodeRun.status}
+                                        </Badge>
+                                      </Group>
+                                      {nodeRun.last_error && (
+                                        <Text size="xs" c="red" mt="xs">
+                                          {nodeRun.last_error}
+                                        </Text>
+                                      )}
+                                      {(hasContent(nodeRun.output) || hasContent(nodeRun.usage)) && (
+                                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                                          {hasContent(nodeRun.output) && (
+                                            <JsonPreviewCard title="Output" value={nodeRun.output} maxHeight={160} />
+                                          )}
+                                          {hasContent(nodeRun.usage) && (
+                                            <JsonPreviewCard title="Usage" value={nodeRun.usage} maxHeight={160} />
+                                          )}
+                                        </SimpleGrid>
+                                      )}
+                                    </Stack>
+                                  </Card>
+                                );
+                              })
+                            )}
+                          </Stack>
+                        </Stack>
+                      )}
+                    </Card>
+                  );
+                })
               )}
             </Stack>
           </ScrollArea>

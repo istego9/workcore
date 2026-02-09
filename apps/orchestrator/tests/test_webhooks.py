@@ -47,6 +47,24 @@ class WebhooksTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertIn("run_id", response.json())
 
+    def test_inbound_webhook_rejects_invalid_signature(self):
+        payload = {"action": "start_run", "workflow_id": self.workflow_id, "inputs": {}}
+        body = json.dumps(payload).encode("utf-8")
+        ts = str(int(time.time()))
+        bad_signature = sign_payload("wrong_secret", ts, body)
+
+        response = self.client.post(
+            "/webhooks/inbound/default",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Webhook-Timestamp": ts,
+                "X-Webhook-Signature": bad_signature,
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["code"], "UNAUTHORIZED")
+
     def test_outbound_registration(self):
         response = self.client.post(
             "/webhooks/outbound",

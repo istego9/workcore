@@ -98,7 +98,7 @@
       <div class="bar">
         <div>
           <label for="apiUrl">API URL</label>
-          <input id="apiUrl" placeholder="http://chatkit.localhost:8080/chatkit" />
+          <input id="apiUrl" placeholder="auto" />
         </div>
         <div>
           <label for="domainKey">Domain key</label>
@@ -156,10 +156,30 @@
       const embed = params.get('embed') === '1';
       const autoStartEnabled = params.get('auto_start') === '1';
       let autoStartTriggered = false;
+
+      function inferRootHost(hostname) {
+        if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+          return 'localhost';
+        }
+        if (hostname.startsWith('builder.')) return hostname.slice('builder.'.length);
+        if (hostname.startsWith('api.')) return hostname.slice('api.'.length);
+        if (hostname.startsWith('chatkit.')) return hostname.slice('chatkit.'.length);
+        return hostname;
+      }
+
+      function inferDefaultApiUrl() {
+        const rootHost = inferRootHost(window.location.hostname);
+        const chatkitHost = rootHost === 'localhost' ? 'chatkit.localhost' : `chatkit.${rootHost}`;
+        const port = window.location.port ? `:${window.location.port}` : '';
+        return `${window.location.protocol}//${chatkitHost}${port}/chatkit`;
+      }
+
+      const defaultApiUrl = inferDefaultApiUrl();
       if (embed) {
         document.body.classList.add('embedded');
       }
-      apiUrlInput.value = params.get('api_url') || 'http://chatkit.localhost:8080/chatkit';
+      apiUrlInput.placeholder = defaultApiUrl;
+      apiUrlInput.value = params.get('api_url') || defaultApiUrl;
       domainKeyInput.value = params.get('domain_key') || '';
       workflowIdInput.value = params.get('workflow_id') || '';
       workflowVersionIdInput.value = params.get('workflow_version_id') || '';

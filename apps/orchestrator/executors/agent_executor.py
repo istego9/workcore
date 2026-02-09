@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
 try:
@@ -63,15 +63,16 @@ class AgentExecutor:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            output = asyncio.run(self._run_streamed(agent, config, emit))
+            streamed_result = asyncio.run(self._run_streamed(agent, config, emit))
         else:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                output = executor.submit(
+                streamed_result = executor.submit(
                     lambda: asyncio.run(self._run_streamed(agent, config, emit))
                 ).result()
 
+        output, usage = self._split_stream_output(streamed_result)
         self._validate_output(config, output)
-        return ExecutorResult(output=output, trace_id=trace_id)
+        return ExecutorResult(output=output, trace_id=trace_id, usage=usage)
 
     async def _run_streamed(
         self,
@@ -91,7 +92,47 @@ class AgentExecutor:
                 if text:
                     emit("message_generated", {"text": text})
 
-        return result.final_output
+        return result
+
+    @classmethod
+    def _split_stream_output(cls, streamed_result: Any) -> tuple[Any, Optional[Dict[str, Any]]]:
+        output = getattr(streamed_result, "final_output", streamed_result)
+        context_wrapper = getattr(streamed_result, "context_wrapper", None)
+        usage = cls._usage_to_dict(getattr(context_wrapper, "usage", None))
+        return output, usage
+
+    @classmethod
+    def _usage_to_dict(cls, usage: Any) -> Optional[Dict[str, Any]]:
+        if usage is None:
+            return None
+        normalized = cls._to_jsonable(usage)
+        if not isinstance(normalized, dict):
+            return None
+        return normalized
+
+    @classmethod
+    def _to_jsonable(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(key): cls._to_jsonable(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [cls._to_jsonable(item) for item in value]
+        if hasattr(value, "model_dump"):
+            try:
+                return cls._to_jsonable(value.model_dump(mode="json"))
+            except TypeError:
+                return cls._to_jsonable(value.model_dump())
+        if is_dataclass(value):
+            return cls._to_jsonable(asdict(value))
+        if hasattr(value, "to_dict"):
+            try:
+                return cls._to_jsonable(value.to_dict())
+            except Exception:
+                pass
+        if hasattr(value, "__dict__"):
+            return cls._to_jsonable(dict(value.__dict__))
+        return str(value)
 
     def _build_agent(self, config: AgentNodeConfig, model: str) -> Agent:
         tools = self._select_tools(config.allowed_tools)

@@ -35,8 +35,13 @@ Common error codes:
 ## Tenant scope and auth
 - Tenant scope is resolved from `X-Tenant-Id` (`local` fallback) and enforced on workflow/run reads and writes.
 - Cross-tenant reads return `NOT_FOUND` to avoid data leakage.
-- If `WORKCORE_API_AUTH_TOKEN` is configured, API endpoints require `Authorization: Bearer <token>`.
+- WorkCore runtime profile must configure `WORKCORE_API_AUTH_TOKEN`; API endpoints require `Authorization: Bearer <token>`.
 - `/health` and signed inbound webhooks (`/webhooks/inbound/{integration_key}`) are intentionally excluded from bearer-token enforcement.
+- Inbound webhook processing requires `WEBHOOK_DEFAULT_INBOUND_SECRET` (or an equivalent registered integration secret).
+
+## CORS
+- Do not use wildcard origins in shared environments.
+- `CORS_ALLOW_ORIGINS` must be an explicit allowlist of known UI origins (scheme + host + port when non-default).
 
 ## Run metadata transparency
 - `POST /workflows/{workflow_id}/runs` accepts integration metadata:
@@ -52,6 +57,11 @@ Common error codes:
 - Use `Idempotency-Key` for non-safe operations (run start/cancel/rerun, interrupt resume, inbound webhooks, chat actions).
 - The same key within TTL returns the original response.
 - Keys are scoped by `(tenant_id, idempotency_key, operation)`.
+
+For ChatKit custom actions (`type=threads.custom_action`):
+- Preferred payload key: `idempotency_key`.
+- Backward-compatible alias: `action_id`.
+- If neither key is provided, runtime derives a deterministic key from `run_id`, `interrupt_id`, and action type.
 
 ## Pagination
 - List endpoints accept `limit` and `cursor`.

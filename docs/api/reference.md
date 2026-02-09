@@ -10,13 +10,27 @@ Primary contract source: `/openapi.yaml` (OpenAPI 3.0.3).
 - Production: use your deployed API URL.
 
 ## Authentication
-- If `WORKCORE_API_AUTH_TOKEN` is set, send:
+- WorkCore runtime profile requires `WORKCORE_API_AUTH_TOKEN`; send:
   - `Authorization: Bearer <token>`
 - No bearer token is required for:
   - `GET /health`
   - `GET /openapi.yaml`
   - `GET /api-reference`
+  - `GET /workflow-authoring-guide`
+  - `GET /agent-integration-kit`
+  - `GET /agent-integration-kit.json`
+  - `GET /agent-integration-test`
+  - `GET /agent-integration-test.json`
+  - `GET /agent-integration-logs`
+  - `POST /agent-integration-test/validate-draft`
   - `POST /webhooks/inbound/{integration_key}` (signature-based)
+
+Inbound webhooks require signature headers generated with `WEBHOOK_DEFAULT_INBOUND_SECRET`:
+- `X-Webhook-Timestamp`
+- `X-Webhook-Signature`
+
+ChatKit service auth is configured independently:
+- If `CHATKIT_AUTH_TOKEN` is set on ChatKit, `POST /chatkit` requires the matching bearer token.
 
 ## Required integration headers
 - `X-Tenant-Id`: tenant scope for all workflow/run operations.
@@ -52,7 +66,29 @@ All API errors use:
 - Workflow authoring guide: `/workflow-authoring-guide`
 - Integration test UI: `/agent-integration-test`
 - Integration test JSON report: `/agent-integration-test.json`
+- Detailed integration logs: `/agent-integration-logs`
 - Draft validator: `POST /agent-integration-test/validate-draft`
+
+## Detailed integration logging for agent onboarding
+Use `GET /agent-integration-logs` to quickly diagnose integration issues when an external agent calls integration-kit/test endpoints.
+
+Supported query params:
+- `limit` (default `100`, max `500`)
+- `correlation_id`
+- `trace_id`
+- `event`
+
+Each log entry includes:
+- `log_id`, `timestamp`, `level`
+- `event`, `detail`
+- `http_method`, `path`, `status_code`
+- context fields: `correlation_id`, `trace_id`, `tenant_id`, `client_ip`, `user_agent`
+- `context` object with endpoint-specific diagnostic metadata (for example, draft node/edge counts, validation errors count, check summary)
+
+Example:
+```bash
+curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_123&limit=50"
+```
 
 ## Core workflow lifecycle
 1. `POST /workflows` create workflow draft
@@ -64,6 +100,71 @@ All API errors use:
 7. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
 8. `POST /runs/{run_id}/cancel` cancel run
 9. `POST /runs/{run_id}/rerun-node` rerun node
+
+## Chat-first integration for external clients
+For full user interaction (approval/forms/files) integrate `POST /chatkit` in addition to run APIs.
+
+- Supported interactive request types:
+  - `threads.create`
+  - `threads.add_user_message`
+  - `threads.custom_action`
+- For `threads.create` pass `metadata.workflow_id` (and optional `metadata.workflow_version_id`).
+- Recommended metadata keys for reconciliation:
+  - `external_user_id`
+  - `external_session_id`
+- Persist and reconcile:
+  - `thread_id` (chat session identity)
+  - `run_id` (workflow execution identity)
+  - `interrupt_id` (human-interaction step identity)
+
+If `CHATKIT_AUTH_TOKEN` is configured on the ChatKit service, include:
+- `Authorization: Bearer <token>`
+
+## Example: start chat thread and run (SSE)
+```bash
+curl -N -X POST "https://api.workcore.build/chatkit" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "workflow_id": "wf_chat",
+      "workflow_version_id": "v1",
+      "external_user_id": "u_77",
+      "external_session_id": "sess_123"
+    },
+    "type": "threads.create",
+    "params": {
+      "input": {
+        "content": [{"type": "input_text", "text": "start"}],
+        "attachments": [],
+        "inference_options": {}
+      }
+    }
+  }'
+```
+
+## Example: submit interrupt action from chat widget
+```bash
+curl -N -X POST "https://api.workcore.build/chatkit" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "threads.custom_action",
+    "params": {
+      "thread_id": "thr_01",
+      "action": {
+        "type": "interrupt.approve",
+        "payload": {
+          "run_id": "run_01",
+          "interrupt_id": "intr_01",
+          "idempotency_key": "approve_intr_01_v1"
+        }
+      }
+    }
+  }'
+```
+
+Fallback recommendations:
+- Use `GET /runs/{run_id}/stream` with `Last-Event-ID` for reconnect.
+- Subscribe to outbound webhooks (`interrupt_created`, `run_completed`, `run_failed`, `node_failed`) for delayed/offline processing.
 
 ## Example: create + publish + run
 ```bash

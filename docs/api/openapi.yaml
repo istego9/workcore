@@ -1,11 +1,11 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.2.4
+  version: 0.2.7
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
-    When `WORKCORE_API_AUTH_TOKEN` is configured, requests (except `/health` and signed inbound webhooks) must include
-    `Authorization: Bearer <token>`.
+    WorkCore runtime profiles should set `WORKCORE_API_AUTH_TOKEN` and `WEBHOOK_DEFAULT_INBOUND_SECRET`.
+    API requests (except `/health` and signed inbound webhooks) must include `Authorization: Bearer <token>`.
 servers:
   - url: https://api.example.com
 
@@ -150,27 +150,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentDraftValidationResult'
+  /agent-integration-logs:
+    get:
+      tags: [workflows]
+      summary: Detailed integration logs for external agents
+      security: []
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - in: query
+          name: correlation_id
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: trace_id
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: event
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Filtered integration log report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIntegrationLogReport'
   /chatkit:
     post:
       tags: [chatkit]
       summary: ChatKit advanced integration endpoint
-      description: Handles ChatKit thread/message/action requests. Streaming responses are sent as SSE.
+      description: >
+        Handles ChatKit thread/message/action requests for external clients.
+        For interactive operations (`threads.create`, `threads.add_user_message`, `threads.custom_action`)
+        the response is streamed as SSE where each `data:` line is a JSON ChatKit stream event.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
+              $ref: '#/components/schemas/ChatKitRequest'
+            examples:
+              thread_create:
+                summary: Create thread and start run
+                value:
+                  metadata:
+                    workflow_id: wf_chat
+                    workflow_version_id: v1
+                    external_user_id: user_42
+                    external_session_id: session_abc
+                  type: threads.create
+                  params:
+                    input:
+                      content:
+                        - type: input_text
+                          text: start
+                      attachments: []
+                      inference_options: {}
+              add_user_message:
+                summary: Continue existing thread with a user message
+                value:
+                  metadata:
+                    external_user_id: user_42
+                    external_session_id: session_abc
+                  type: threads.add_user_message
+                  params:
+                    thread_id: thr_01
+                    input:
+                      content:
+                        - type: input_text
+                          text: please continue
+                      attachments: []
+                      inference_options: {}
+              interrupt_action:
+                summary: Approve interrupt from widget/action button
+                value:
+                  metadata:
+                    external_user_id: user_42
+                    external_session_id: session_abc
+                  type: threads.custom_action
+                  params:
+                    thread_id: thr_01
+                    item_id: null
+                    action:
+                      type: interrupt.approve
+                      payload:
+                        run_id: run_01
+                        interrupt_id: intr_01
+                        idempotency_key: action_approve_01
       responses:
         '200':
-          description: ChatKit response (JSON or SSE stream)
+          description: >
+            ChatKit response (JSON or SSE stream). For stream responses each `data:` line
+            is a JSON object matching `ChatKitStreamEvent`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatKitJsonResponse'
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                data: {"type":"thread.created","thread":{"id":"thr_01"}}
+                data: {"type":"progress_update","text":"Run started"}
+                data: {"type":"thread.item.done","item":{"type":"widget"}}
+        '401':
+          description: Unauthorized (when CHATKIT_AUTH_TOKEN is configured and missing/invalid)
           content:
             application/json:
               schema:
                 type: object
-            text/event-stream:
-              schema:
-                type: string
+                properties:
+                  error: { type: string }
   /workflows:
     parameters:
       - $ref: '#/components/parameters/TenantId'
@@ -548,6 +649,7 @@ paths:
     post:
       tags: [webhooks]
       summary: Inbound webhook trigger
+      description: Requires a valid webhook signature (`X-Webhook-Timestamp`, `X-Webhook-Signature`).
       security: []
       parameters:
         - in: path
@@ -737,6 +839,171 @@ components:
           code: INVALID_ARGUMENT
           message: "workflow_id is required"
         correlation_id: "corr_123"
+
+    ChatKitJsonResponse:
+      type: object
+      additionalProperties: true
+      description: Non-streaming ChatKit response payload.
+
+    ChatKitRequest:
+      oneOf:
+        - $ref: '#/components/schemas/ChatKitThreadCreateRequest'
+        - $ref: '#/components/schemas/ChatKitAddUserMessageRequest'
+        - $ref: '#/components/schemas/ChatKitCustomActionRequest'
+      description: Supported interactive ChatKit request types for external clients.
+
+    ChatKitRequestMetadata:
+      type: object
+      description: >
+        Integration metadata forwarded by ChatKit clients.
+        `workflow_id` (and optional `workflow_version_id`) is required on `threads.create`
+        to bind a new thread to a workflow run.
+      properties:
+        workflow_id: { type: string }
+        workflow_version_id: { type: string }
+        external_user_id: { type: string }
+        external_session_id: { type: string }
+      additionalProperties: true
+
+    ChatKitThreadCreateRequest:
+      type: object
+      properties:
+        metadata:
+          allOf:
+            - $ref: '#/components/schemas/ChatKitRequestMetadata'
+            - type: object
+              required: [workflow_id]
+        type:
+          type: string
+          enum: [threads.create]
+        params:
+          type: object
+          properties:
+            input:
+              $ref: '#/components/schemas/ChatKitUserInput'
+          required: [input]
+      required: [type, params]
+
+    ChatKitAddUserMessageRequest:
+      type: object
+      properties:
+        metadata:
+          $ref: '#/components/schemas/ChatKitRequestMetadata'
+        type:
+          type: string
+          enum: [threads.add_user_message]
+        params:
+          type: object
+          properties:
+            thread_id: { type: string }
+            input:
+              $ref: '#/components/schemas/ChatKitUserInput'
+          required: [thread_id, input]
+      required: [type, params]
+
+    ChatKitCustomActionRequest:
+      type: object
+      properties:
+        metadata:
+          $ref: '#/components/schemas/ChatKitRequestMetadata'
+        type:
+          type: string
+          enum: [threads.custom_action]
+        params:
+          type: object
+          properties:
+            thread_id: { type: string }
+            item_id: { type: string, nullable: true }
+            action:
+              $ref: '#/components/schemas/ChatKitAction'
+          required: [thread_id, action]
+      required: [type, params]
+
+    ChatKitUserInput:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatKitInputContent'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatKitAttachmentRef'
+        quoted_text:
+          type: string
+          nullable: true
+        inference_options:
+          type: object
+          additionalProperties: true
+      required: [content, attachments]
+
+    ChatKitInputContent:
+      oneOf:
+        - type: object
+          properties:
+            type: { type: string, enum: [input_text] }
+            text: { type: string }
+          required: [type, text]
+        - type: object
+          properties:
+            type: { type: string, enum: [input_tag] }
+            text: { type: string }
+          required: [type, text]
+
+    ChatKitAttachmentRef:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        mime_type: { type: string }
+      additionalProperties: true
+
+    ChatKitAction:
+      type: object
+      description: >
+        `interrupt.cancel` is accepted by protocol but currently returns an explicit
+        error event in runtime.
+      properties:
+        type:
+          type: string
+          enum:
+            - interrupt.approve
+            - interrupt.reject
+            - interrupt.submit
+            - interrupt.cancel
+        payload:
+          $ref: '#/components/schemas/ChatKitActionPayload'
+      required: [type]
+
+    ChatKitActionPayload:
+      type: object
+      properties:
+        run_id: { type: string }
+        interrupt_id: { type: string }
+        idempotency_key: { type: string }
+        action_id: { type: string }
+        input: { type: object }
+        form: { type: object }
+        form_data: { type: object }
+        fields: { type: object }
+        files:
+          type: array
+          items: { type: object }
+      additionalProperties: true
+
+    ChatKitStreamEvent:
+      type: object
+      properties:
+        type: { type: string }
+        thread: { type: object }
+        item: { type: object }
+        text: { type: string }
+        message: { type: string }
+        level: { type: string }
+        stream_options: { type: object }
+      required: [type]
+      additionalProperties: true
 
     WorkflowCreateRequest:
       type: object
@@ -1017,6 +1284,7 @@ components:
             integration_kit_json: { type: string, format: uri }
             integration_test_ui: { type: string, format: uri }
             integration_test_json: { type: string, format: uri }
+            integration_logs: { type: string, format: uri }
             validate_draft: { type: string, format: uri }
             openapi: { type: string, format: uri }
             api_reference: { type: string, format: uri }
@@ -1059,6 +1327,7 @@ components:
             integration_kit_json: { type: string, format: uri }
             integration_test_ui: { type: string, format: uri }
             integration_test_json: { type: string, format: uri }
+            integration_logs: { type: string, format: uri }
             validate_draft: { type: string, format: uri }
             openapi: { type: string, format: uri }
             api_reference: { type: string, format: uri }
@@ -1088,3 +1357,50 @@ components:
           items: { type: string }
         correlation_id: { type: string }
       required: [valid, errors]
+
+    AgentIntegrationLogEntry:
+      type: object
+      properties:
+        log_id: { type: string }
+        timestamp: { type: string, format: date-time }
+        level: { type: string, enum: [INFO, WARNING, ERROR] }
+        event: { type: string }
+        detail: { type: string }
+        http_method: { type: string }
+        path: { type: string }
+        status_code:
+          type: integer
+          nullable: true
+        correlation_id: { type: string, nullable: true }
+        trace_id: { type: string, nullable: true }
+        tenant_id: { type: string, nullable: true }
+        client_ip: { type: string, nullable: true }
+        user_agent: { type: string, nullable: true }
+        context: { type: object }
+      required: [log_id, timestamp, level, event, detail, http_method, path]
+
+    AgentIntegrationLogReport:
+      type: object
+      properties:
+        title: { type: string }
+        generated_at: { type: string, format: date-time }
+        correlation_id: { type: string }
+        filters:
+          type: object
+          properties:
+            limit: { type: integer }
+            correlation_id: { type: string, nullable: true }
+            trace_id: { type: string, nullable: true }
+            event: { type: string, nullable: true }
+        summary:
+          type: object
+          properties:
+            total: { type: integer }
+            returned: { type: integer }
+            has_more: { type: boolean }
+          required: [total, returned, has_more]
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentIntegrationLogEntry'
+      required: [title, generated_at, filters, summary, entries]
