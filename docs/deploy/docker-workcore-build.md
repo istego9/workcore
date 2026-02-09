@@ -5,7 +5,10 @@ This guide runs WorkCore as an isolated Docker stack with domain-based routing:
 - `api.workcore.build` -> Orchestrator API
 - `chatkit.workcore.build` -> ChatKit API
 
-TLS is supported on local HTTPS (default host port `443`).
+TLS is supported on local HTTPS (default host port `8443`).
+
+For deployment readiness gates and temporary public exposure via Cloudflare Tunnel, see:
+- `docs/deploy/deployment-e2e-cloudflare-plan.md`
 
 ## 1) Prepare environment
 ```bash
@@ -16,7 +19,12 @@ Adjust `.env.docker` if needed:
 - ports/domain hostnames
 - OpenAI settings
 - ChatKit auth token
+- API auth token + inbound webhook secret
 - CORS origins
+
+Recommended dev defaults:
+- `WORKCORE_HTTP_PORT=8080`
+- `WORKCORE_HTTPS_PORT=8443`
 
 ## 2) Add local DNS mapping
 Add to `/etc/hosts`:
@@ -57,6 +65,22 @@ Or directly:
 docker compose --env-file .env.docker -f docker-compose.workcore.yml up -d --build
 ```
 
+### 3.1) Coexist with HQ21 on the same machine
+Default local profile already uses `8080/8443`. If needed, override with:
+
+```bash
+./scripts/docker_up_with_hq21.sh
+```
+
+If your HQ21 edge proxy routes `workcore.build` domains to WorkCore (`host.docker.internal:8080`), keep using:
+- `https://workcore.build`
+- `https://api.workcore.build`
+- `https://chatkit.workcore.build`
+
+Without edge routing, use explicit ports:
+- `http://workcore.build:8080`
+- `https://workcore.build:8443`
+
 ## 4) Verify
 ```bash
 curl -sS https://api.workcore.build/health
@@ -93,7 +117,10 @@ This runs:
 - builder Playwright E2E
 
 ## Notes
-- To avoid conflicts with other projects, set custom host ports via:
-  - `WORKCORE_HTTP_PORT`
-  - `WORKCORE_HTTPS_PORT`
-- If `WORKCORE_API_AUTH_TOKEN` is set, API requests require `Authorization: Bearer <token>` (except health/spec/reference and inbound webhook endpoint).
+- Host ports are controlled by:
+  - `WORKCORE_HTTP_PORT` (default `8080`)
+  - `WORKCORE_HTTPS_PORT` (default `8443`)
+- `WORKCORE_API_AUTH_TOKEN` is required in the WorkCore runtime profile; API requests require `Authorization: Bearer <token>` (except health/spec/reference and inbound webhook endpoint).
+- `WEBHOOK_DEFAULT_INBOUND_SECRET` is required for signed inbound webhooks.
+- `CORS_ALLOW_ORIGINS` should be an explicit allowlist of real UI origins (no `*`).
+- Temporary local bypass only: set `WORKCORE_ALLOW_INSECURE_DEV=1` to skip strict startup checks.

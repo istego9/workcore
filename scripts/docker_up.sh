@@ -27,11 +27,33 @@ set -a
 source "${ENV_FILE}"
 set +a
 
-WORKCORE_HTTP_PORT="${WORKCORE_HTTP_PORT:-80}"
-WORKCORE_HTTPS_PORT="${WORKCORE_HTTPS_PORT:-443}"
+WORKCORE_HTTP_PORT="${WORKCORE_HTTP_PORT:-8080}"
+WORKCORE_HTTPS_PORT="${WORKCORE_HTTPS_PORT:-8443}"
 PUBLIC_BUILDER_HOST="${PUBLIC_BUILDER_HOST:-workcore.build}"
 PUBLIC_API_HOST="${PUBLIC_API_HOST:-api.workcore.build}"
 PUBLIC_CHATKIT_HOST="${PUBLIC_CHATKIT_HOST:-chatkit.workcore.build}"
+WORKCORE_ALLOW_INSECURE_DEV="${WORKCORE_ALLOW_INSECURE_DEV:-0}"
+
+require_env() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ -z "${value}" ]]; then
+    echo "Missing required env: ${name}" >&2
+    echo "Set it in ${ENV_FILE} or run with WORKCORE_ALLOW_INSECURE_DEV=1 for temporary local troubleshooting." >&2
+    exit 1
+  fi
+}
+
+if [[ "${WORKCORE_ALLOW_INSECURE_DEV}" != "1" ]]; then
+  require_env "WORKCORE_API_AUTH_TOKEN"
+  require_env "WEBHOOK_DEFAULT_INBOUND_SECRET"
+  require_env "CORS_ALLOW_ORIGINS"
+  if [[ "${CORS_ALLOW_ORIGINS}" == *"*"* ]]; then
+    echo "CORS_ALLOW_ORIGINS must not contain '*' in secure mode." >&2
+    echo "Set explicit origins or run with WORKCORE_ALLOW_INSECURE_DEV=1 for temporary local troubleshooting." >&2
+    exit 1
+  fi
+fi
 
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" build orchestrator builder
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d

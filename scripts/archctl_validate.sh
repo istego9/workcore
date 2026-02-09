@@ -70,5 +70,40 @@ if len(names) != len(set(names)):
     print("duplicate migration filenames detected", file=sys.stderr)
     sys.exit(1)
 
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        print(f"missing required env file: {path}", file=sys.stderr)
+        sys.exit(1)
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+docker_env_example = parse_env_file(root / ".env.docker.example")
+
+for required in ("WORKCORE_API_AUTH_TOKEN", "WEBHOOK_DEFAULT_INBOUND_SECRET", "CORS_ALLOW_ORIGINS"):
+    if not docker_env_example.get(required):
+        print(f".env.docker.example must set non-empty {required}", file=sys.stderr)
+        sys.exit(1)
+
+if docker_env_example.get("WORKCORE_HTTP_PORT") != "8080":
+    print(".env.docker.example must set WORKCORE_HTTP_PORT=8080", file=sys.stderr)
+    sys.exit(1)
+
+if docker_env_example.get("WORKCORE_HTTPS_PORT") != "8443":
+    print(".env.docker.example must set WORKCORE_HTTPS_PORT=8443", file=sys.stderr)
+    sys.exit(1)
+
+cors_allow_origins = docker_env_example.get("CORS_ALLOW_ORIGINS", "")
+if "*" in cors_allow_origins:
+    print(".env.docker.example CORS_ALLOW_ORIGINS must not contain '*'", file=sys.stderr)
+    sys.exit(1)
+
 print("fallback validation passed")
 PY
