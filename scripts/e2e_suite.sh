@@ -18,6 +18,11 @@ E2E_BASE_URL="${E2E_BASE_URL:-http://workcore.build}"
 E2E_API_BASE_URL="${E2E_API_BASE_URL:-http://api.workcore.build}"
 E2E_CHATKIT_API_URL="${E2E_CHATKIT_API_URL:-http://chatkit.workcore.build/chatkit}"
 E2E_API_AUTH_TOKEN="${E2E_API_AUTH_TOKEN:-${WORKCORE_API_AUTH_TOKEN:-}}"
+ACCEPTANCE_TASK_ID="${ACCEPTANCE_TASK_ID:-e2e-$(date -u +%Y%m%d-%H%M%S)}"
+ACCEPTANCE_URL="${ACCEPTANCE_URL:-${E2E_BASE_URL%/}/?e2e=1}"
+ACCEPTANCE_WAIT_MS="${ACCEPTANCE_WAIT_MS:-3000}"
+ACCEPTANCE_SELECTOR="${ACCEPTANCE_SELECTOR:-body}"
+ACCEPTANCE_FULL_PAGE="${ACCEPTANCE_FULL_PAGE:-0}"
 
 cleanup_workflow_ids=()
 
@@ -101,5 +106,20 @@ echo "[e2e] builder playwright"
   E2E_API_AUTH_TOKEN="${E2E_API_AUTH_TOKEN}" \
   npm run test:e2e
 )
+
+echo "[e2e] acceptance package (mandatory)"
+acceptance_cmd=(
+  "${ROOT}/scripts/acceptance_package.sh"
+  --task-id "${ACCEPTANCE_TASK_ID}"
+  --url "${ACCEPTANCE_URL}"
+  --wait-ms "${ACCEPTANCE_WAIT_MS}"
+)
+if [[ -n "${ACCEPTANCE_SELECTOR}" ]]; then
+  acceptance_cmd+=(--selector "${ACCEPTANCE_SELECTOR}")
+fi
+if [[ "${ACCEPTANCE_FULL_PAGE}" == "1" ]]; then
+  acceptance_cmd+=(--full-page)
+fi
+"${acceptance_cmd[@]}"
 
 echo "[e2e] all suites passed"

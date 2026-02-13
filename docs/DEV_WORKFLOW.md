@@ -37,6 +37,32 @@ When applicable:
 - `./scripts/dev_check.sh`
 - `USE_PROXY=1 RUN_E2E=1 ./scripts/dev_check.sh` (domain mode + full E2E)
 
+## Acceptance package artifacts
+Use this helper to generate acceptance screenshots (desktop + mobile) and a ZIP package:
+
+- `./scripts/acceptance_package.sh --task-id <task-id>`
+- `./scripts/acceptance_package.sh --task-id <task-id> --url <page-url> --selector "<css-selector>"`
+
+Outputs:
+- `artifacts/acceptance/<task-id>/ACCEPTANCE.md`
+- `artifacts/acceptance/<task-id>/screenshots/desktop.png`
+- `artifacts/acceptance/<task-id>/screenshots/mobile.png`
+- `artifacts/acceptance/<task-id>.zip` (unless `--no-zip` is used)
+
+Mandatory in `./scripts/e2e_suite.sh`:
+- The suite now always runs acceptance packaging after Playwright E2E.
+- Defaults:
+  - `ACCEPTANCE_TASK_ID=e2e-<UTC timestamp>`
+  - `ACCEPTANCE_URL=${E2E_BASE_URL}/?e2e=1`
+  - `ACCEPTANCE_SELECTOR=body`
+  - `ACCEPTANCE_WAIT_MS=3000`
+- Optional overrides via env vars:
+  - `ACCEPTANCE_TASK_ID`
+  - `ACCEPTANCE_URL`
+  - `ACCEPTANCE_SELECTOR`
+  - `ACCEPTANCE_WAIT_MS`
+  - `ACCEPTANCE_FULL_PAGE=1`
+
 If a required check cannot be run, the PR must include:
 - exact blocking reason
 - risk statement
