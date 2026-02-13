@@ -29,7 +29,7 @@ test('workflow export and import create a new workflow', async ({ page, request 
     workflowId = workflow.workflow_id;
     expect(workflowId).toBeTruthy();
 
-    await page.goto('/');
+    await page.goto('/?e2e=1');
     await page.getByRole('button', { name: 'Browse' }).click();
     const modal = page.getByRole('dialog', { name: 'Workflows' });
     await modal.getByRole('button', { name: 'Refresh' }).click();

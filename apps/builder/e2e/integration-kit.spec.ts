@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('integration kit modal exposes shareable URLs', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/?e2e=1');
   await page.evaluate(() => {
     const item = document.querySelector('[data-testid="open-integration-kit"]');
     if (item instanceof HTMLElement) {

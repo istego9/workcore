@@ -46,7 +46,7 @@ test('agent output format shows json and widget controls', async ({ page, reques
     });
     expect(publishResponse.ok()).toBeTruthy();
 
-    await page.goto('/');
+    await page.goto('/?e2e=1');
 
     await page.getByRole('button', { name: 'Browse' }).click();
     const modal = page.getByRole('dialog', { name: 'Workflows' });

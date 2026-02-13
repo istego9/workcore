@@ -5,17 +5,33 @@
 (workcore_routes) {
   @builder host {$PUBLIC_BUILDER_HOST:workcore.build}
   handle @builder {
-    reverse_proxy {$BUILDER_UPSTREAM:builder:5173}
+    reverse_proxy {$BUILDER_UPSTREAM_HOST:builder}:{$BUILDER_UPSTREAM_PORT:5173}
   }
 
   @api host {$PUBLIC_API_HOST:api.workcore.build}
   handle @api {
-    reverse_proxy {$API_UPSTREAM:orchestrator:8000}
+    reverse_proxy {$API_UPSTREAM_HOST:orchestrator}:{$API_UPSTREAM_PORT:8000}
   }
 
   @chatkit host {$PUBLIC_CHATKIT_HOST:chatkit.workcore.build}
   handle @chatkit {
-    reverse_proxy {$CHATKIT_UPSTREAM:chatkit:8001}
+    reverse_proxy {$CHATKIT_UPSTREAM_HOST:chatkit}:{$CHATKIT_UPSTREAM_PORT:8001}
+  }
+
+  @oilvibes host {$PUBLIC_OILVIBES_HOST:oil.build}
+  handle @oilvibes {
+    handle /api/* {
+      reverse_proxy {$OILVIBES_API_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_API_UPSTREAM_PORT:4000}
+    }
+    handle_path /gis/* {
+      reverse_proxy {$OILVIBES_GIS_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_GIS_UPSTREAM_PORT:4030}
+    }
+    handle_path /reserves/* {
+      reverse_proxy {$OILVIBES_RESERVES_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_RESERVES_UPSTREAM_PORT:4090}
+    }
+    handle {
+      reverse_proxy {$OILVIBES_WEB_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_WEB_UPSTREAM_PORT:5174}
+    }
   }
 
   handle {

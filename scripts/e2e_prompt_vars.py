@@ -12,6 +12,9 @@ def _request(base_url: str, path: str, payload: dict | None = None, method: str 
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
+    token = os.getenv("ORCH_AUTH_TOKEN") or os.getenv("WORKCORE_API_AUTH_TOKEN") or os.getenv("E2E_API_AUTH_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode("utf-8")
@@ -53,45 +56,55 @@ def main() -> int:
         "variables_schema": {},
     }
 
-    workflow = _request(base_url, "/workflows", {"name": "E2E prompt vars", "draft": draft}, method="POST")
-    workflow_id = workflow.get("workflow_id")
-    if not workflow_id:
-        raise RuntimeError(f"Missing workflow_id in response: {workflow}")
+    workflow_id: str | None = None
+    try:
+        workflow = _request(base_url, "/workflows", {"name": "E2E prompt vars", "draft": draft}, method="POST")
+        workflow_id = workflow.get("workflow_id")
+        if not workflow_id:
+            raise RuntimeError(f"Missing workflow_id in response: {workflow}")
 
-    publish = _request(base_url, f"/workflows/{workflow_id}/publish", method="POST")
-    version_id = publish.get("version_id")
-    if not version_id:
-        raise RuntimeError(f"Missing version_id in response: {publish}")
+        publish = _request(base_url, f"/workflows/{workflow_id}/publish", method="POST")
+        version_id = publish.get("version_id")
+        if not version_id:
+            raise RuntimeError(f"Missing version_id in response: {publish}")
 
-    run = _request(
-        base_url,
-        f"/workflows/{workflow_id}/runs",
-        {
-            "inputs": {"user": "Alice", "source": "webhook", "order_id": 42},
-            "version_id": version_id,
-            "mode": "test",
-        },
-        method="POST",
-    )
-    run_id = run.get("run_id")
-    if not run_id:
-        raise RuntimeError(f"Missing run_id in response: {run}")
+        run = _request(
+            base_url,
+            f"/workflows/{workflow_id}/runs",
+            {
+                "inputs": {"user": "Alice", "source": "webhook", "order_id": 42},
+                "version_id": version_id,
+                "mode": "test",
+            },
+            method="POST",
+        )
+        run_id = run.get("run_id")
+        if not run_id:
+            raise RuntimeError(f"Missing run_id in response: {run}")
 
-    fetched = _request(base_url, f"/runs/{run_id}")
-    output = _agent_output(fetched)
-    if isinstance(output, dict):
-        if output.get("resolved_instructions") != "Hello Alice from webhook prev=Alice":
-            raise RuntimeError(f"Unexpected resolved instructions: {output}")
-        if output.get("resolved_input") != "order 42":
-            raise RuntimeError(f"Unexpected resolved input: {output}")
-    elif isinstance(output, str):
-        if not output.strip():
-            raise RuntimeError("Agent returned an empty string output")
-    else:
-        raise RuntimeError(f"Unexpected agent output type: {type(output).__name__}")
+        fetched = _request(base_url, f"/runs/{run_id}")
+        output = _agent_output(fetched)
+        if isinstance(output, dict):
+            if output.get("resolved_instructions") != "Hello Alice from webhook prev=Alice":
+                raise RuntimeError(f"Unexpected resolved instructions: {output}")
+            if output.get("resolved_input") != "order 42":
+                raise RuntimeError(f"Unexpected resolved input: {output}")
+        elif isinstance(output, str):
+            if not output.strip():
+                raise RuntimeError("Agent returned an empty string output")
+        else:
+            raise RuntimeError(f"Unexpected agent output type: {type(output).__name__}")
 
-    print("ok: prompt variables resolved end-to-end")
-    return 0
+        print("ok: prompt variables resolved end-to-end")
+        return 0
+    finally:
+        if workflow_id:
+            try:
+                _request(base_url, f"/workflows/{workflow_id}", method="DELETE")
+            except RuntimeError as exc:
+                if sys.exc_info()[0] is None:
+                    raise
+                print(f"cleanup warning: failed to delete workflow {workflow_id}: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
     const version = await publishResponse.json();
     versionId = version.version_id;
 
-    await page.goto('/');
+    await page.goto('/?e2e=1');
     await page.getByRole('button', { name: 'Browse' }).click();
     const modal = page.getByRole('dialog', { name: 'Workflows' });
     await modal.getByRole('button', { name: 'Refresh' }).click();

@@ -64,6 +64,7 @@ import type {
   WorkflowExport,
   WorkflowSummary
 } from './builder/types';
+import { shouldAutoCreateWorkflow } from './workflow-auto-create';
 import './styles.css';
 
 const statusTone = {
@@ -207,8 +208,8 @@ const nodeTokenSummary = (nodeRun: RunNodeRecord): TokenSummary | null => {
   return { inputTokens, outputTokens, totalTokens };
 };
 
-const runTokenSummary = (run: RunRecord) => {
-  const totals = (run.node_runs || []).reduce<TokenSummary>(
+const runTokenSummary = (run: RunRecord): TokenSummary =>
+  (run.node_runs || []).reduce<TokenSummary>(
     (acc, nodeRun) => {
       const nodeTotals = nodeTokenSummary(nodeRun);
       if (!nodeTotals) return acc;
@@ -220,12 +221,6 @@ const runTokenSummary = (run: RunRecord) => {
     },
     { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
   );
-
-  if (!totals.totalTokens && !totals.inputTokens && !totals.outputTokens) {
-    return null;
-  }
-  return totals;
-};
 
 const runNodeStats = (run: RunRecord) =>
   (run.node_runs || []).reduce(
@@ -303,7 +298,7 @@ const summarizeHistory = (
   let totalCostUsd = 0;
 
   runs.forEach((run) => {
-    const tokens = runTokenSummary(run) || { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    const tokens = runTokenSummary(run);
     const runCost = estimateCostUsd(tokens, inputRateUsdPer1M, outputRateUsdPer1M);
     const day = runDayKey(run);
     const dayState = daily.get(day) || {
@@ -749,6 +744,9 @@ export default function App() {
   );
 
   const isTestEnv = typeof navigator !== 'undefined' && navigator.webdriver;
+  const hasE2eQueryFlag =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('e2e') === '1';
+  const skipAutoCreate = isTestEnv || hasE2eQueryFlag;
   const appOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -887,10 +885,10 @@ export default function App() {
   }, [workflowId, metaDirty, workflowName, workflowDescription]);
 
   useEffect(() => {
-    if (workflowId || autoCreatedRef.current) return;
+    if (!shouldAutoCreateWorkflow(workflowId, autoCreatedRef.current, skipAutoCreate)) return;
     autoCreatedRef.current = true;
     void createNewWorkflow(undefined, { auto: true });
-  }, [workflowId]);
+  }, [workflowId, skipAutoCreate]);
 
   useEffect(() => {
     if (!isTestEnv || !autoCreatedWorkflowId) return;
@@ -2624,16 +2622,12 @@ export default function App() {
                             Running {nodeStats.inProgress}
                           </Badge>
                         )}
-                        {tokenSummary && (
-                          <Badge variant="light" color="indigo">
-                            Tokens {tokenSummary.totalTokens}
-                          </Badge>
-                        )}
-                        {tokenSummary && (
-                          <Badge variant="light" color="green">
-                            {formatUsd(runEstimatedCost)}
-                          </Badge>
-                        )}
+                        <Badge variant="light" color="indigo">
+                          Tokens {Math.round(tokenSummary.totalTokens).toLocaleString()}
+                        </Badge>
+                        <Badge variant="light" color="green">
+                          {formatUsd(runEstimatedCost)}
+                        </Badge>
                       </Group>
                       {(run.created_at || run.updated_at) && (
                         <Stack gap={2} mt="xs">
@@ -2664,22 +2658,20 @@ export default function App() {
 
                           <JsonPreviewCard title="Metadata" value={run.metadata} emptyLabel="No metadata" maxHeight={160} />
 
-                          {tokenSummary && (
-                            <Group gap={8} wrap="wrap">
-                              <Badge variant="outline" color="gray">
-                                Input tokens {tokenSummary.inputTokens}
-                              </Badge>
-                              <Badge variant="outline" color="gray">
-                                Output tokens {tokenSummary.outputTokens}
-                              </Badge>
-                              <Badge variant="light" color="indigo">
-                                Total tokens {tokenSummary.totalTokens}
-                              </Badge>
-                              <Badge variant="light" color="green">
-                                Est. cost {formatUsd(runEstimatedCost)}
-                              </Badge>
-                            </Group>
-                          )}
+                          <Group gap={8} wrap="wrap">
+                            <Badge variant="outline" color="gray">
+                              Input tokens {Math.round(tokenSummary.inputTokens).toLocaleString()}
+                            </Badge>
+                            <Badge variant="outline" color="gray">
+                              Output tokens {Math.round(tokenSummary.outputTokens).toLocaleString()}
+                            </Badge>
+                            <Badge variant="light" color="indigo">
+                              Total tokens {Math.round(tokenSummary.totalTokens).toLocaleString()}
+                            </Badge>
+                            <Badge variant="light" color="green">
+                              Est. cost {formatUsd(runEstimatedCost)}
+                            </Badge>
+                          </Group>
 
                           <Stack gap="xs">
                             <Text size="xs" fw={600}>

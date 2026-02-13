@@ -21,6 +21,7 @@ set +a
 PUBLIC_BUILDER_HOST="${PUBLIC_BUILDER_HOST:-workcore.build}"
 PUBLIC_API_HOST="${PUBLIC_API_HOST:-api.workcore.build}"
 PUBLIC_CHATKIT_HOST="${PUBLIC_CHATKIT_HOST:-chatkit.workcore.build}"
+PUBLIC_OILVIBES_HOST="${PUBLIC_OILVIBES_HOST:-oil.build}"
 CERTS_DIR="${WORKCORE_CERTS_DIR:-${ROOT}/.certs}"
 CERT_FILE="${WORKCORE_CERT_FILE:-${CERTS_DIR}/workcore.build.pem}"
 KEY_FILE="${WORKCORE_CERT_KEY_FILE:-${CERTS_DIR}/workcore.build-key.pem}"
@@ -31,6 +32,7 @@ DOMAINS=(
   "${PUBLIC_BUILDER_HOST}"
   "${PUBLIC_API_HOST}"
   "${PUBLIC_CHATKIT_HOST}"
+  "${PUBLIC_OILVIBES_HOST}"
   "localhost"
   "127.0.0.1"
 )
@@ -98,7 +100,15 @@ if command -v mkcert >/dev/null 2>&1; then
 fi
 
 echo "mkcert not found, generating self-signed cert with openssl (browser may show warning)." >&2
-SAN_LIST="DNS:${PUBLIC_BUILDER_HOST},DNS:${PUBLIC_API_HOST},DNS:${PUBLIC_CHATKIT_HOST},DNS:localhost,IP:127.0.0.1"
+SAN_ENTRIES=()
+for host in "${DOMAINS[@]}"; do
+  if is_ipv4 "${host}"; then
+    SAN_ENTRIES+=("IP:${host}")
+  else
+    SAN_ENTRIES+=("DNS:${host}")
+  fi
+done
+SAN_LIST="$(IFS=, ; echo "${SAN_ENTRIES[*]}")"
 openssl req \
   -x509 \
   -nodes \

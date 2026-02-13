@@ -52,7 +52,7 @@ test('variable picker supports nested schema and node outputs', async ({ page, r
     });
     expect(publishResponse.ok()).toBeTruthy();
 
-    await page.goto('/');
+    await page.goto('/?e2e=1');
 
     await page.getByRole('button', { name: 'Browse' }).click();
     const modal = page.getByRole('dialog', { name: 'Workflows' });
