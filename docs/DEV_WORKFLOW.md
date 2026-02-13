@@ -38,7 +38,7 @@ When applicable:
 - `USE_PROXY=1 RUN_E2E=1 ./scripts/dev_check.sh` (domain mode + full E2E)
 
 ## Acceptance package artifacts
-Use this helper to generate acceptance screenshots (desktop + mobile) and a ZIP package:
+Use this helper to run the acceptance screenshot Playwright test (desktop + mobile) and build a ZIP package:
 
 - `./scripts/acceptance_package.sh --task-id <task-id>`
 - `./scripts/acceptance_package.sh --task-id <task-id> --url <page-url> --selector "<css-selector>"`

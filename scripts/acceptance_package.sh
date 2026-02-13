@@ -8,10 +8,10 @@ Usage:
 
 Options:
   --task-id <id>       Required. Artifact folder name (letters, numbers, ., _, -).
-  --url <url>          Page URL for screenshots.
+  --url <url>          Page URL for acceptance screenshot test.
                        Default: ${E2E_BASE_URL:-http://workcore.build}/?e2e=1
-  --wait-ms <ms>       Delay before screenshot. Default: 3000
-  --selector <css>     Optional CSS selector to wait for before screenshot.
+  --wait-ms <ms>       Delay before screenshot capture. Default: 3000
+  --selector <css>     Optional CSS selector to wait for before capture.
   --full-page          Capture full-page screenshots.
   --no-zip             Skip ZIP creation.
   -h, --help           Show this help.
@@ -80,8 +80,8 @@ if ! [[ "${WAIT_MS}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "npx is required but not found in PATH." >&2
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required but not found in PATH." >&2
   exit 1
 fi
 
@@ -95,38 +95,14 @@ CAPTURED_AT_UTC="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
 mkdir -p "${SCREENSHOTS_DIR}"
 
-desktop_args=(
-  playwright
-  screenshot
-  --browser chromium
-  --ignore-https-errors
-  --wait-for-timeout "${WAIT_MS}"
-  --viewport-size "1440,900"
-)
-
-mobile_args=(
-  playwright
-  screenshot
-  --browser chromium
-  --ignore-https-errors
-  --wait-for-timeout "${WAIT_MS}"
-  --device "iPhone 11"
-)
-
-if [[ -n "${WAIT_SELECTOR}" ]]; then
-  desktop_args+=(--wait-for-selector "${WAIT_SELECTOR}")
-  mobile_args+=(--wait-for-selector "${WAIT_SELECTOR}")
-fi
-
-if [[ "${FULL_PAGE}" -eq 1 ]]; then
-  desktop_args+=(--full-page)
-  mobile_args+=(--full-page)
-fi
-
 (
   cd "${BUILD_DIR}"
-  npx "${desktop_args[@]}" "${TARGET_URL}" "${SCREENSHOTS_DIR}/desktop.png"
-  npx "${mobile_args[@]}" "${TARGET_URL}" "${SCREENSHOTS_DIR}/mobile.png"
+  ACCEPTANCE_SCREENSHOTS_DIR="${SCREENSHOTS_DIR}" \
+  ACCEPTANCE_URL="${TARGET_URL}" \
+  ACCEPTANCE_WAIT_MS="${WAIT_MS}" \
+  ACCEPTANCE_SELECTOR="${WAIT_SELECTOR}" \
+  ACCEPTANCE_FULL_PAGE="${FULL_PAGE}" \
+  npm run test:e2e:acceptance
 )
 
 if [[ ! -f "${REPORT_PATH}" ]]; then
