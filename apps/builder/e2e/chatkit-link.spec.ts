@@ -1,9 +1,18 @@
 import { expect, test } from '@playwright/test';
-import { apiAuthHeaders, apiBaseUrl, chatkitApiUrl, resolveUrl } from './env';
+import {
+  apiAuthHeaders,
+  apiBaseUrl,
+  chatkitApiUrl,
+  e2eApiAuthToken,
+  e2eTenantId,
+  installApiAuthRoute,
+  resolveUrl
+} from './env';
 
 test('open chat button builds chatkit url', async ({ page, request }) => {
   let workflowId: string | null = null;
   let versionId: string | null = null;
+  const projectId = `proj_e2e_${Date.now()}`;
   const workflowName = `E2E Chat ${Date.now()}`;
   const draft = {
     nodes: [
@@ -17,7 +26,7 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
   try {
     const createResponse = await request.post(`${apiBaseUrl}/workflows`, {
       data: { name: workflowName, draft },
-      headers: apiAuthHeaders()
+      headers: apiAuthHeaders(projectId)
     });
     expect(createResponse.ok()).toBeTruthy();
     const workflow = await createResponse.json();
@@ -25,13 +34,22 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
     expect(workflowId).toBeTruthy();
 
     const publishResponse = await request.post(`${apiBaseUrl}/workflows/${workflowId}/publish`, {
-      headers: apiAuthHeaders()
+      headers: apiAuthHeaders(projectId)
     });
     expect(publishResponse.ok()).toBeTruthy();
     const version = await publishResponse.json();
     versionId = version.version_id;
 
+    await installApiAuthRoute(page, projectId);
+    await page.addInitScript(
+      ({ token, tenant }) => {
+        if (token) window.localStorage.setItem('workcore.api_auth_token', token);
+        if (tenant) window.localStorage.setItem('workcore.tenant_id', tenant);
+      },
+      { token: e2eApiAuthToken, tenant: e2eTenantId }
+    );
     await page.goto('/?e2e=1');
+    await page.getByTestId('project-selector').fill(projectId);
     await page.getByRole('button', { name: 'Browse' }).click();
     const modal = page.getByRole('dialog', { name: 'Workflows' });
     await modal.getByRole('button', { name: 'Refresh' }).click();
@@ -39,7 +57,6 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
     await modal.getByText(`${workflowName}`).waitFor({ timeout: 10000 });
     await modal.getByText(`${workflowName}`).click();
     await expect(modal).toBeHidden({ timeout: 10000 });
-
     await expect(page.getByText(`Workflow ${workflowId}`)).toBeVisible();
 
     const openChatButton = page.getByTestId('open-chatkit');
@@ -50,6 +67,7 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
     expect(url.pathname.endsWith('/chatkit.html')).toBeTruthy();
     expect(url.searchParams.get('workflow_id')).toBe(workflowId);
     expect(url.searchParams.get('workflow_version_id')).toBe(versionId);
+    expect(url.searchParams.get('project_id')).toBe(projectId);
     const apiUrlParam = url.searchParams.get('api_url');
     expect(apiUrlParam).toBeTruthy();
     const expectedChatkitApi = resolveUrl(chatkitApiUrl);
@@ -59,7 +77,7 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
   } finally {
     if (workflowId) {
       const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${workflowId}`, {
-        headers: apiAuthHeaders()
+        headers: apiAuthHeaders(projectId)
       });
       expect(deleteResponse.ok()).toBeTruthy();
     }

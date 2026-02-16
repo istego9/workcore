@@ -1,3 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { Page } from '@playwright/test';
+
 const DEFAULT_BASE_URL = 'http://workcore.build';
 
 const stripTrailingSlash = (value: string) => value.replace(/\/+$/, '');
@@ -20,10 +25,61 @@ export const apiBaseUrl = stripTrailingSlash(
 export const chatkitApiUrl =
   process.env.E2E_CHATKIT_API_URL || `${baseUrl.protocol}//${inferredChatkitHost}${basePort}/chatkit`;
 
-export const apiAuthHeaders = (): Record<string, string> => {
-  const token = process.env.E2E_API_AUTH_TOKEN;
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+const readTokenFromEnvFile = (filename: string): string => {
+  const filePath = path.join(repoRoot, filename);
+  if (!fs.existsSync(filePath)) {
+    return '';
+  }
+  const content = fs.readFileSync(filePath, 'utf-8');
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+    const [key, ...rest] = line.split('=');
+    if (key === 'WORKCORE_API_AUTH_TOKEN') {
+      return rest.join('=').trim();
+    }
+  }
+  return '';
+};
+
+const resolvedApiAuthToken =
+  process.env.E2E_API_AUTH_TOKEN ||
+  process.env.WORKCORE_API_AUTH_TOKEN ||
+  readTokenFromEnvFile('.env.docker') ||
+  readTokenFromEnvFile('.env.docker.example');
+
+const resolvedTenantId = (process.env.E2E_TENANT_ID || 'local').trim();
+export const e2eApiAuthToken = resolvedApiAuthToken;
+export const e2eTenantId = resolvedTenantId;
+
+export const apiAuthHeaders = (projectId?: string): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  if (resolvedApiAuthToken) {
+    headers.Authorization = `Bearer ${resolvedApiAuthToken}`;
+  }
+  if (resolvedTenantId) {
+    headers['X-Tenant-Id'] = resolvedTenantId;
+  }
+  if (projectId && projectId.trim()) {
+    headers['X-Project-Id'] = projectId.trim();
+  }
+  return headers;
+};
+
+export const installApiAuthRoute = async (page: Page, projectId?: string): Promise<void> => {
+  const base = apiBaseUrl.replace(/\/+$/, '');
+  await page.route(`${base}/**`, async (route) => {
+    const request = route.request();
+    const headers = {
+      ...request.headers(),
+      ...apiAuthHeaders(projectId)
+    };
+    await route.continue({ headers });
+  });
 };
 
 export const resolveUrl = (value: string): URL => {

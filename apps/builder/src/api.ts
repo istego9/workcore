@@ -22,6 +22,7 @@ const inferApiBase = () => {
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || inferApiBase();
 const API_AUTH_TOKEN = import.meta.env.VITE_API_AUTH_TOKEN || '';
+const API_TENANT_ID = import.meta.env.VITE_TENANT_ID || '';
 
 type ApiError = {
   code: string;
@@ -30,6 +31,39 @@ type ApiError = {
 };
 
 type ApiResult<T> = { data?: T; error?: ApiError };
+
+const readStorageValue = (key: string): string => {
+  if (typeof window === 'undefined') return '';
+  try {
+    const value = window.localStorage.getItem(key);
+    return typeof value === 'string' ? value.trim() : '';
+  } catch {
+    return '';
+  }
+};
+
+const readQueryValue = (key: string): string => {
+  if (typeof window === 'undefined') return '';
+  try {
+    const value = new URLSearchParams(window.location.search).get(key);
+    return typeof value === 'string' ? value.trim() : '';
+  } catch {
+    return '';
+  }
+};
+
+const resolveAuthToken = (): string =>
+  API_AUTH_TOKEN || readQueryValue('api_token') || readStorageValue('workcore.api_auth_token');
+
+const resolveTenantId = (): string =>
+  API_TENANT_ID || readQueryValue('tenant_id') || readStorageValue('workcore.tenant_id');
+
+const projectHeaders = (projectId?: string): Record<string, string> => {
+  if (typeof projectId !== 'string') return {};
+  const normalized = projectId.trim();
+  if (!normalized) return {};
+  return { 'X-Project-Id': normalized };
+};
 
 export type RunRecord = {
   run_id: string;
@@ -60,15 +94,19 @@ export type RunRecord = {
 };
 
 const request = async <T>(path: string, options?: RequestInit): Promise<ApiResult<T>> => {
+  const authToken = resolveAuthToken();
+  const tenantId = resolveTenantId();
+  const requestHeaders = {
+    'Content-Type': 'application/json',
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    ...(tenantId ? { 'X-Tenant-Id': tenantId } : {}),
+    ...(options?.headers || {})
+  };
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(API_AUTH_TOKEN ? { Authorization: `Bearer ${API_AUTH_TOKEN}` } : {}),
-        ...(options?.headers || {})
-      },
-      ...options
+      ...options,
+      headers: requestHeaders
     });
   } catch (error: any) {
     return {
@@ -96,58 +134,87 @@ export const createWorkflow = async (payload: {
   name: string;
   description?: string;
   draft: WorkflowDraft;
-}): Promise<ApiResult<WorkflowRecord>> => {
-  return request('/workflows', { method: 'POST', body: JSON.stringify(payload) });
+}, projectId?: string): Promise<ApiResult<WorkflowRecord>> => {
+  return request('/workflows', {
+    method: 'POST',
+    headers: projectHeaders(projectId),
+    body: JSON.stringify(payload)
+  });
 };
 
-export const getWorkflow = async (workflowId: string): Promise<ApiResult<WorkflowRecord>> => {
-  return request(`/workflows/${workflowId}`);
+export const getWorkflow = async (workflowId: string, projectId?: string): Promise<ApiResult<WorkflowRecord>> => {
+  return request(`/workflows/${workflowId}`, { headers: projectHeaders(projectId) });
 };
 
 export const listWorkflows = async (
-  limit = 50
+  limit = 50,
+  projectId?: string
 ): Promise<ApiResult<{ items: WorkflowSummary[]; next_cursor?: string | null }>> => {
-  return request(`/workflows?limit=${limit}`);
+  return request(`/workflows?limit=${limit}`, { headers: projectHeaders(projectId) });
 };
 
 export const updateWorkflowMeta = async (
   workflowId: string,
-  payload: { name?: string; description?: string | null }
+  payload: { name?: string; description?: string | null },
+  projectId?: string
 ): Promise<ApiResult<WorkflowRecord>> => {
   return request(`/workflows/${workflowId}`, {
     method: 'PATCH',
+    headers: projectHeaders(projectId),
     body: JSON.stringify(payload)
   });
 };
 
 export const updateDraft = async (
   workflowId: string,
-  draft: WorkflowDraft
+  draft: WorkflowDraft,
+  projectId?: string
 ): Promise<ApiResult<WorkflowRecord>> => {
   return request(`/workflows/${workflowId}/draft`, {
     method: 'PUT',
+    headers: projectHeaders(projectId),
     body: JSON.stringify(draft)
   });
 };
 
-export const publishWorkflow = async (workflowId: string): Promise<ApiResult<WorkflowVersion>> => {
-  return request(`/workflows/${workflowId}/publish`, { method: 'POST' });
+export const publishWorkflow = async (
+  workflowId: string,
+  projectId?: string
+): Promise<ApiResult<WorkflowVersion>> => {
+  return request(`/workflows/${workflowId}/publish`, {
+    method: 'POST',
+    headers: projectHeaders(projectId)
+  });
 };
 
-export const rollbackWorkflow = async (workflowId: string): Promise<ApiResult<WorkflowRecord>> => {
-  return request(`/workflows/${workflowId}/rollback`, { method: 'POST' });
+export const rollbackWorkflow = async (
+  workflowId: string,
+  projectId?: string
+): Promise<ApiResult<WorkflowRecord>> => {
+  return request(`/workflows/${workflowId}/rollback`, {
+    method: 'POST',
+    headers: projectHeaders(projectId)
+  });
 };
 
-export const deleteWorkflow = async (workflowId: string): Promise<ApiResult<null>> => {
-  return request(`/workflows/${workflowId}`, { method: 'DELETE' });
+export const deleteWorkflow = async (
+  workflowId: string,
+  projectId?: string
+): Promise<ApiResult<null>> => {
+  return request(`/workflows/${workflowId}`, {
+    method: 'DELETE',
+    headers: projectHeaders(projectId)
+  });
 };
 
 export const startRun = async (
   workflowId: string,
-  payload: { inputs?: Record<string, any>; version_id?: string; mode?: string }
+  payload: { inputs?: Record<string, any>; version_id?: string; mode?: string },
+  projectId?: string
 ): Promise<ApiResult<{ run_id: string; status: string }>> => {
   return request(`/workflows/${workflowId}/runs`, {
     method: 'POST',
+    headers: projectHeaders(projectId),
     body: JSON.stringify(payload)
   });
 };

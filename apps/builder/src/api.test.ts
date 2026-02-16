@@ -3,9 +3,22 @@ import { API_BASE, listRuns, listWorkflows } from './api';
 
 describe('api listRuns', () => {
   const fetchMock = vi.fn();
+  const clearStorage = () => {
+    const storage: any = (window as any).localStorage;
+    if (!storage) return;
+    if (typeof storage.removeItem === 'function') {
+      storage.removeItem('workcore.api_auth_token');
+      storage.removeItem('workcore.tenant_id');
+      return;
+    }
+    delete storage['workcore.api_auth_token'];
+    delete storage['workcore.tenant_id'];
+  };
 
   beforeEach(() => {
     vi.stubGlobal('fetch', fetchMock);
+    clearStorage();
+    window.history.replaceState({}, '', '/');
   });
 
   afterEach(() => {
@@ -53,5 +66,29 @@ describe('api listRuns', () => {
 
     const result = await listWorkflows();
     expect(result.error).toEqual({ code: 'NETWORK_ERROR', message: 'Failed to fetch' });
+  });
+
+  it('merges auth/tenant headers with project scope headers', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: null })
+    } as Response);
+
+    window.history.replaceState({}, '', '/?api_token=token_local&tenant_id=tenant_local');
+
+    await listWorkflows(50, 'proj_merge');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/workflows?limit=50`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token_local',
+          'X-Tenant-Id': 'tenant_local',
+          'X-Project-Id': 'proj_merge'
+        })
+      })
+    );
   });
 });

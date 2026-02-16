@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+explicit_orch_url="${ORCH_URL:-}"
+explicit_builder_url="${BUILDER_URL:-}"
+
 if [[ "${USE_PROXY:-}" == "1" ]]; then
   PROXY_PORT="${PROXY_PORT:-${WORKCORE_HTTP_PORT:-8080}}"
   BUILDER_HOST="${BUILDER_HOST:-builder.localhost}"
@@ -20,8 +23,38 @@ else
   BUILDER_URL="${BUILDER_URL:-http://127.0.0.1:${BUILDER_PORT}/}"
 fi
 
-curl -fsS "${ORCH_URL}" >/dev/null
-curl -fsS "${BUILDER_URL}" >/dev/null
+check_url() {
+  local url="$1"
+  curl -fsS "${url}" >/dev/null 2>&1
+}
+
+if ! check_url "${ORCH_URL}" || ! check_url "${BUILDER_URL}"; then
+  if [[ "${USE_PROXY:-}" != "1" && -z "${explicit_orch_url}" && -z "${explicit_builder_url}" ]]; then
+    PROXY_PORT="${WORKCORE_HTTP_PORT:-80}"
+    PROXY_ORCH_URL="http://api.workcore.build/health"
+    PROXY_BUILDER_URL="http://workcore.build/"
+    if [[ "${PROXY_PORT}" != "80" ]]; then
+      PROXY_ORCH_URL="http://api.workcore.build:${PROXY_PORT}/health"
+      PROXY_BUILDER_URL="http://workcore.build:${PROXY_PORT}/"
+    fi
+    if check_url "${PROXY_ORCH_URL}" && check_url "${PROXY_BUILDER_URL}"; then
+      ORCH_URL="${PROXY_ORCH_URL}"
+      BUILDER_URL="${PROXY_BUILDER_URL}"
+    else
+      echo "health check failed for local and proxy URLs" >&2
+      echo "local orchestrator: ${ORCH_URL}" >&2
+      echo "local builder: ${BUILDER_URL}" >&2
+      echo "proxy orchestrator: ${PROXY_ORCH_URL}" >&2
+      echo "proxy builder: ${PROXY_BUILDER_URL}" >&2
+      exit 1
+    fi
+  else
+    echo "health check failed" >&2
+    echo "orchestrator: ${ORCH_URL}" >&2
+    echo "builder: ${BUILDER_URL}" >&2
+    exit 1
+  fi
+fi
 
 (cd apps/builder && npm run test:unit)
 

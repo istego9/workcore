@@ -2,12 +2,19 @@ import { expect, test } from '@playwright/test';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { apiAuthHeaders, apiBaseUrl } from './env';
+import {
+  apiAuthHeaders,
+  apiBaseUrl,
+  e2eApiAuthToken,
+  e2eTenantId,
+  installApiAuthRoute
+} from './env';
 
 test('workflow export and import create a new workflow', async ({ page, request }) => {
   let workflowId: string | null = null;
   let importedWorkflowId: string | null = null;
   let exportPath: string | null = null;
+  const projectId = `proj_export_${Date.now()}`;
 
   const draft = {
     nodes: [
@@ -22,14 +29,23 @@ test('workflow export and import create a new workflow', async ({ page, request 
     const workflowName = `E2E Export ${Date.now()}`;
     const createResponse = await request.post(`${apiBaseUrl}/workflows`, {
       data: { name: workflowName, draft },
-      headers: apiAuthHeaders()
+      headers: apiAuthHeaders(projectId)
     });
     expect(createResponse.ok()).toBeTruthy();
     const workflow = await createResponse.json();
     workflowId = workflow.workflow_id;
     expect(workflowId).toBeTruthy();
 
+    await installApiAuthRoute(page, projectId);
+    await page.addInitScript(
+      ({ token, tenant }) => {
+        if (token) window.localStorage.setItem('workcore.api_auth_token', token);
+        if (tenant) window.localStorage.setItem('workcore.tenant_id', tenant);
+      },
+      { token: e2eApiAuthToken, tenant: e2eTenantId }
+    );
     await page.goto('/?e2e=1');
+    await page.getByTestId('project-selector').fill(projectId);
     await page.getByRole('button', { name: 'Browse' }).click();
     const modal = page.getByRole('dialog', { name: 'Workflows' });
     await modal.getByRole('button', { name: 'Refresh' }).click();
@@ -68,13 +84,13 @@ test('workflow export and import create a new workflow', async ({ page, request 
   } finally {
     if (workflowId) {
       const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${workflowId}`, {
-        headers: apiAuthHeaders()
+        headers: apiAuthHeaders(projectId)
       });
       expect(deleteResponse.ok()).toBeTruthy();
     }
     if (importedWorkflowId) {
       const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${importedWorkflowId}`, {
-        headers: apiAuthHeaders()
+        headers: apiAuthHeaders(projectId)
       });
       expect(deleteResponse.ok()).toBeTruthy();
     }
