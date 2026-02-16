@@ -1,9 +1,10 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.2.7
+  version: 0.4.3
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
+    Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
     WorkCore runtime profiles should set `WORKCORE_API_AUTH_TOKEN` and `WEBHOOK_DEFAULT_INBOUND_SECRET`.
     API requests (except `/health` and signed inbound webhooks) must include `Authorization: Bearer <token>`.
 servers:
@@ -13,12 +14,14 @@ security:
   - bearerAuth: []
 
 tags:
+  - name: projects
   - name: workflows
   - name: runs
   - name: interrupts
   - name: streaming
   - name: webhooks
   - name: chatkit
+  - name: orchestrator
 
 paths:
   /openapi.yaml:
@@ -73,6 +76,18 @@ paths:
     get:
       tags: [workflows]
       summary: JSON Schema for workflow export v1 payloads
+      security: []
+      responses:
+        '200':
+          description: JSON Schema document
+          content:
+            application/json:
+              schema:
+                type: object
+  /schemas/routing-decision.schema.json:
+    get:
+      tags: [orchestrator]
+      summary: JSON Schema for strict orchestrator routing decisions
       security: []
       responses:
         '200':
@@ -272,11 +287,159 @@ paths:
                 type: object
                 properties:
                   error: { type: string }
+  /orchestrator/messages:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [orchestrator]
+      summary: Route user message by project orchestrator or direct workflow hints
+      description: >
+        Unified chat entrypoint. `project_id` is required. If `workflow_id` is provided,
+        the API uses direct workflow mode. Otherwise it resolves orchestrator mode using
+        `orchestrator_id` or the project's default orchestrator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorMessageRequest'
+      responses:
+        '200':
+          description: Routed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorMessageResponse'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+
+  /orchestrator/sessions/{session_id}/stack:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+      - $ref: '#/components/parameters/ProjectIdQuery'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [orchestrator]
+      summary: Get workflow run stack for project session
+      responses:
+        '200':
+          description: Session stack
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowStackResponse'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /projects:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [projects]
+      summary: Create project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectCreateRequest'
+            example:
+              project_id: proj_hq21
+              settings:
+                orchestrator_enabled: true
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+  /projects/{project_id}/orchestrators:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdPath'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [projects]
+      summary: Upsert project orchestrator configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorConfigUpsertRequest'
+            example:
+              orchestrator_id: orc_default
+              name: Default orchestrator
+              routing_policy:
+                confidence_threshold: 0.6
+                switch_margin: 0.2
+                max_disambiguation_turns: 2
+                top_k_candidates: 10
+              fallback_workflow_id: wf_fallback
+              prompt_profile: default
+              set_as_default: true
+      responses:
+        '201':
+          description: Created/updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorConfig'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+  /projects/{project_id}/workflow-definitions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdPath'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [projects]
+      summary: Upsert project workflow definition for routing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDefinitionUpsertRequest'
+            example:
+              workflow_id: wf_91ca7892
+              name: Future bank demo
+              description: Handles onboarding flow
+              tags: [banking, onboarding]
+              examples: [open account, start onboarding]
+              active: true
+              is_fallback: false
+      responses:
+        '201':
+          description: Created/updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDefinition'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
   /workflows:
     parameters:
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/ProjectIdRequired'
     get:
       tags: [workflows]
       summary: List workflows
@@ -290,6 +453,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkflowList'
+        '422': { $ref: '#/components/responses/ErrorResponse' }
     post:
       tags: [workflows]
       summary: Create workflow
@@ -319,12 +483,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/Workflow'
         '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /workflows/{workflow_id}:
     parameters:
       - $ref: '#/components/parameters/WorkflowId'
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/ProjectIdRequired'
     patch:
       tags: [workflows]
       summary: Update workflow metadata
@@ -346,6 +512,7 @@ paths:
                 $ref: '#/components/schemas/Workflow'
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
     get:
       tags: [workflows]
       summary: Get workflow
@@ -357,6 +524,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Workflow'
         '404': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
     delete:
       tags: [workflows]
       summary: Delete workflow
@@ -364,12 +532,14 @@ paths:
         '204':
           description: Deleted
         '404': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /workflows/{workflow_id}/draft:
     parameters:
       - $ref: '#/components/parameters/WorkflowId'
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/ProjectIdRequired'
     put:
       tags: [workflows]
       summary: Update workflow draft
@@ -387,12 +557,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/Workflow'
         '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /workflows/{workflow_id}/publish:
     parameters:
       - $ref: '#/components/parameters/WorkflowId'
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/ProjectIdRequired'
     post:
       tags: [workflows]
       summary: Publish workflow
@@ -404,12 +576,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/WorkflowVersion'
         '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /workflows/{workflow_id}/rollback:
     parameters:
       - $ref: '#/components/parameters/WorkflowId'
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/ProjectIdRequired'
     post:
       tags: [workflows]
       summary: Rollback draft to active published version
@@ -421,12 +595,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/Workflow'
         '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /workflows/{workflow_id}/versions:
     parameters:
       - $ref: '#/components/parameters/WorkflowId'
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/ProjectIdRequired'
     get:
       tags: [workflows]
       summary: List published versions
@@ -440,6 +616,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedWorkflowVersions'
+        '422': { $ref: '#/components/responses/ErrorResponse' }
 
   /workflows/{workflow_id}/runs:
     parameters:
@@ -452,6 +629,7 @@ paths:
     post:
       tags: [runs]
       summary: Start a run
+      description: Project scope must be provided via `X-Project-Id` header or `metadata.project_id`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -476,6 +654,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Run'
         '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
 
   /runs/{run_id}:
     parameters:
@@ -742,6 +921,11 @@ components:
       name: run_id
       required: true
       schema: { type: string }
+    SessionId:
+      in: path
+      name: session_id
+      required: true
+      schema: { type: string }
     InterruptId:
       in: path
       name: interrupt_id
@@ -777,12 +961,30 @@ components:
       required: false
       schema: { type: string }
       description: Optional project context, merged into run metadata.
+    ProjectIdRequired:
+      in: header
+      name: X-Project-Id
+      required: true
+      schema: { type: string }
+      description: Required project scope for workflow authoring operations.
+    ProjectIdPath:
+      in: path
+      name: project_id
+      required: true
+      schema: { type: string }
+      description: Project scope for project-registry bootstrap endpoints.
     ImportRunId:
       in: header
       name: X-Import-Run-Id
       required: false
       schema: { type: string }
       description: Optional import run identifier, merged into run metadata.
+    ProjectIdQuery:
+      in: query
+      name: project_id
+      required: true
+      schema: { type: string }
+      description: Project scope for orchestrator diagnostics endpoints.
     PaginationLimit:
       in: query
       name: limit
@@ -825,6 +1027,15 @@ components:
                 - RATE_LIMITED
                 - PRECONDITION_FAILED
                 - INTERNAL
+                - ERR_PROJECT_ID_REQUIRED
+                - ERR_PROJECT_NOT_FOUND
+                - ERR_ORCHESTRATOR_NOT_IN_PROJECT
+                - ERR_WORKFLOW_NOT_IN_PROJECT
+                - ERR_WORKFLOW_ENGINE_UNAVAILABLE
+                - ERR_LLM_UNAVAILABLE
+                - ERR_LLM_BAD_SCHEMA_OUTPUT
+                - ERR_CANCEL_NOT_ALLOWED
+                - ERR_CONTEXT_FETCH_FAILED
             message: { type: string }
             details:
               oneOf:
@@ -1005,6 +1216,275 @@ components:
       required: [type]
       additionalProperties: true
 
+    OrchestratorUserMessage:
+      type: object
+      properties:
+        id: { type: string }
+        text: { type: string }
+      required: [id, text]
+
+    OrchestratorMessageRequest:
+      type: object
+      properties:
+        session_id: { type: string }
+        user_id: { type: string }
+        project_id: { type: string }
+        orchestrator_id:
+          type: string
+          nullable: true
+        workflow_id:
+          type: string
+          nullable: true
+        message:
+          $ref: '#/components/schemas/OrchestratorUserMessage'
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [session_id, user_id, project_id, message]
+
+    RoutingDecision:
+      type: object
+      properties:
+        route_type:
+          type: string
+          enum:
+            - RESUME_CURRENT
+            - START_WORKFLOW
+            - SWITCH_WORKFLOW
+            - DISAMBIGUATE
+            - FALLBACK
+            - CANCEL
+            - OPERATOR
+        workflow_id:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items: { type: string }
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        switch_margin:
+          type: number
+          minimum: 0
+          maximum: 1
+        reason_codes:
+          type: array
+          items:
+            type: string
+            enum:
+              - STOP_INTENT
+              - OPERATOR_REQUEST
+              - HIGH_CONFIDENCE_MATCH
+              - LOW_CONFIDENCE
+              - AMBIGUOUS
+              - NO_CANDIDATES
+              - SWITCH_MARGIN_MET
+              - STAY_IN_FLOW
+        clarifying_question:
+          type: string
+          nullable: true
+        clarifying_options:
+          type: array
+          items: { type: string }
+      required:
+        - route_type
+        - workflow_id
+        - tags
+        - confidence
+        - switch_margin
+        - reason_codes
+        - clarifying_question
+        - clarifying_options
+      additionalProperties: false
+
+    WorkflowAdapterEvent:
+      type: object
+      properties:
+        type: { type: string }
+        payload: { type: object }
+      required: [type]
+
+    WorkflowStackItem:
+      type: object
+      properties:
+        run_id: { type: string }
+        workflow_id: { type: string }
+        status: { type: string }
+        transition_reason: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [run_id, workflow_id, transition_reason]
+
+    OrchestratorResponseMessage:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [assistant_message, clarification, system]
+        text: { type: string }
+        options:
+          type: array
+          items: { type: string }
+      required: [type, text]
+
+    OrchestratorMessageResponse:
+      type: object
+      properties:
+        decision_id: { type: string }
+        mode:
+          type: string
+          enum: [direct, orchestrated]
+        orchestrator_id:
+          type: string
+          nullable: true
+        chosen_action:
+          type: string
+        chosen_workflow_id:
+          type: string
+          nullable: true
+        run_id:
+          type: string
+          nullable: true
+        active_run_id:
+          type: string
+          nullable: true
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        decision:
+          $ref: '#/components/schemas/RoutingDecision'
+        message:
+          $ref: '#/components/schemas/OrchestratorResponseMessage'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowAdapterEvent'
+        stack:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStackItem'
+        correlation_id: { type: string }
+      required: [decision_id, mode, chosen_action, message]
+
+    WorkflowStackResponse:
+      type: object
+      properties:
+        project_id: { type: string }
+        session_id: { type: string }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStackItem'
+        correlation_id: { type: string }
+      required: [project_id, session_id, items]
+
+    ProjectCreateRequest:
+      type: object
+      properties:
+        project_id: { type: string }
+        default_orchestrator_id:
+          type: string
+          nullable: true
+        settings:
+          type: object
+      required: [project_id]
+
+    Project:
+      type: object
+      properties:
+        project_id: { type: string }
+        tenant_id: { type: string }
+        default_orchestrator_id:
+          type: string
+          nullable: true
+        settings:
+          type: object
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [project_id, tenant_id, settings, created_at, updated_at]
+
+    OrchestratorConfigUpsertRequest:
+      type: object
+      properties:
+        orchestrator_id: { type: string }
+        name: { type: string }
+        routing_policy:
+          type: object
+        fallback_workflow_id:
+          type: string
+          nullable: true
+        prompt_profile:
+          type: string
+          nullable: true
+        set_as_default:
+          type: boolean
+      required: [orchestrator_id, name]
+
+    OrchestratorConfig:
+      type: object
+      properties:
+        project_id: { type: string }
+        orchestrator_id: { type: string }
+        name: { type: string }
+        routing_policy:
+          type: object
+        fallback_workflow_id:
+          type: string
+          nullable: true
+        prompt_profile:
+          type: string
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [project_id, orchestrator_id, name, routing_policy, created_at, updated_at]
+
+    WorkflowDefinitionUpsertRequest:
+      type: object
+      properties:
+        workflow_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        examples:
+          type: array
+          items: { type: string }
+        active: { type: boolean }
+        is_fallback: { type: boolean }
+      required: [workflow_id, name, description]
+
+    WorkflowDefinition:
+      type: object
+      properties:
+        project_id: { type: string }
+        workflow_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        examples:
+          type: array
+          items: { type: string }
+        active: { type: boolean }
+        is_fallback: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required:
+        - project_id
+        - workflow_id
+        - name
+        - description
+        - tags
+        - examples
+        - active
+        - is_fallback
+        - created_at
+        - updated_at
+
     WorkflowCreateRequest:
       type: object
       properties:
@@ -1024,6 +1504,7 @@ components:
       type: object
       properties:
         workflow_id: { type: string }
+        project_id: { type: string }
         name: { type: string }
         description: { type: string }
         draft:
@@ -1031,18 +1512,19 @@ components:
         active_version_id: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [workflow_id, name]
+      required: [workflow_id, project_id, name]
 
     WorkflowSummary:
       type: object
       properties:
         workflow_id: { type: string }
+        project_id: { type: string }
         name: { type: string }
         description: { type: string }
         active_version_id: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [workflow_id, name]
+      required: [workflow_id, project_id, name]
 
     WorkflowList:
       type: object
@@ -1118,6 +1600,7 @@ components:
         run_id: { type: string }
         workflow_id: { type: string }
         version_id: { type: string }
+        resolved_version: { type: string }
         status: { type: string }
         mode: { type: string }
         inputs: { type: object }
@@ -1129,6 +1612,7 @@ components:
             correlation_id: { type: string }
             tenant_id: { type: string }
             project_id: { type: string }
+            session_id: { type: string }
             import_run_id: { type: string }
             trace_id: { type: string }
             user_id: { type: string }
@@ -1136,7 +1620,10 @@ components:
         trace_id: { type: string }
         tenant_id: { type: string }
         project_id: { type: string }
+        session_id: { type: string }
         import_run_id: { type: string }
+        cancellable: { type: boolean }
+        commit_point_reached: { type: boolean }
         node_runs:
           type: array
           items: { $ref: '#/components/schemas/NodeRun' }
@@ -1291,6 +1778,12 @@ components:
             workflow_authoring_guide: { type: string, format: uri }
             workflow_draft_schema: { type: string, format: uri }
             workflow_export_schema: { type: string, format: uri }
+            routing_decision_schema: { type: string, format: uri }
+            projects_create: { type: string, format: uri }
+            project_orchestrator_upsert_template: { type: string }
+            project_workflow_definition_upsert_template: { type: string }
+            orchestrator_message: { type: string, format: uri }
+            orchestrator_stack_template: { type: string }
         integration_test:
           $ref: '#/components/schemas/AgentIntegrationCheckReport'
         docs:
@@ -1303,6 +1796,7 @@ components:
           properties:
             workflow_draft: { type: object }
             workflow_export_v1: { type: object }
+            routing_decision: { type: object }
       required: [title, updated_at, urls, integration_test, docs, schemas]
 
     AgentIntegrationCheckItem:
@@ -1334,6 +1828,12 @@ components:
             workflow_authoring_guide: { type: string, format: uri }
             workflow_draft_schema: { type: string, format: uri }
             workflow_export_schema: { type: string, format: uri }
+            routing_decision_schema: { type: string, format: uri }
+            projects_create: { type: string, format: uri }
+            project_orchestrator_upsert_template: { type: string }
+            project_workflow_definition_upsert_template: { type: string }
+            orchestrator_message: { type: string, format: uri }
+            orchestrator_stack_template: { type: string }
         summary:
           type: object
           properties:

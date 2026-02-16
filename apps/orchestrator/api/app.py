@@ -20,7 +20,10 @@ from starlette.routing import Route
 from apps.orchestrator.api.idempotency import IdempotencyStore, create_idempotency_store
 from apps.orchestrator.api.serializers import (
     interrupt_to_dict,
+    orchestrator_config_to_dict,
+    project_to_dict,
     run_to_dict,
+    workflow_definition_to_dict,
     workflow_summary_to_dict,
     workflow_to_dict,
     workflow_version_to_dict,
@@ -32,10 +35,18 @@ from apps.orchestrator.api.workflow_store import (
     create_workflow_store,
 )
 from apps.orchestrator.executors import AGENTS_AVAILABLE, AgentExecutor, MockAgentExecutor
+from apps.orchestrator.orchestrator_runtime import (
+    OrchestratorRuntimeError,
+    ProjectConflictError,
+    ProjectOrchestratorRuntime,
+    create_orchestration_store,
+)
+from apps.orchestrator.project_router import ProjectRouter, ProjectRouterError, RoutingRequest
 from apps.orchestrator.runtime import Edge, MultiWorkflowRuntimeService, Node, Workflow
 from apps.orchestrator.runtime.env import get_env
 from apps.orchestrator.runtime.models import Event as RuntimeEvent
 from apps.orchestrator.streaming.sse import _event_stream
+from apps.orchestrator.workflow_engine_adapter import WorkflowEngineAdapter, WorkflowEngineAdapterError
 from apps.orchestrator.webhooks.service import WebhookService
 
 _ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -44,6 +55,7 @@ _API_REFERENCE_PATH = _ROOT_DIR / "docs" / "api" / "reference.md"
 _WORKFLOW_AUTHORING_GUIDE_PATH = _ROOT_DIR / "docs" / "architecture" / "workflow-authoring-agents.md"
 _WORKFLOW_DRAFT_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "workflow-draft.schema.json"
 _WORKFLOW_EXPORT_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "workflow-export-v1.schema.json"
+_ROUTING_DECISION_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "routing-decision.schema.json"
 _AGENT_INTEGRATION_LOGGER = logging.getLogger("workcore.agent_integration")
 _DEFAULT_AGENT_INTEGRATION_LOG_LIMIT = 100
 _MAX_AGENT_INTEGRATION_LOG_LIMIT = 500
@@ -84,16 +96,22 @@ class ApiContext:
         run_store: Optional[Any] = None,
         workflow_store=None,
         runtime: Optional[MultiWorkflowRuntimeService] = None,
+        orchestration_store: Optional[Any] = None,
         default_inbound_secret: Optional[str] = None,
         default_integration_key: str = "default",
     ) -> None:
         self.run_store = run_store
         self.workflow_store = workflow_store
         self.runtime = runtime
+        self.orchestration_store = orchestration_store
         self.idempotency: Optional[IdempotencyStore] = None
+        self.project_router: Optional[ProjectRouter] = None
+        self.workflow_engine_adapter: Optional[WorkflowEngineAdapter] = None
+        self.project_orchestrator: Optional[ProjectOrchestratorRuntime] = None
         self._workflow_store_owned = False
         self._run_store_owned = False
         self._idempotency_owned = False
+        self._orchestration_store_owned = False
         self._runtime_started = False
         self.webhooks = WebhookService.create()
         if default_inbound_secret:
@@ -143,10 +161,31 @@ class ApiContext:
             self.runtime = MultiWorkflowRuntimeService.create(loader, executors=executors)
             self.runtime.event_hook = self.webhooks.handle_events
 
+    async def ensure_orchestration(self) -> None:
+        if self.orchestration_store is None:
+            await self.ensure_workflow_store()
+            self.orchestration_store = await create_orchestration_store(self.workflow_store)
+            self._orchestration_store_owned = True
+        if self.workflow_engine_adapter is None:
+            await self.ensure_runtime()
+            await self.ensure_run_store()
+            self.workflow_engine_adapter = WorkflowEngineAdapter(self.runtime, self.run_store)
+        if self.project_router is None:
+            self.project_router = ProjectRouter(self.orchestration_store)
+        if self.project_orchestrator is None:
+            self.project_orchestrator = ProjectOrchestratorRuntime(
+                self.orchestration_store,
+                self.workflow_engine_adapter,
+            )
+
     async def close(self) -> None:
         await self.webhooks.stop_background_dispatcher()
         if self._idempotency_owned and self.idempotency:
             await self.idempotency.close()
+        if self._orchestration_store_owned and self.orchestration_store:
+            close_result = self.orchestration_store.close()
+            if isawaitable(close_result):
+                await close_result
         if self._run_store_owned and self.run_store:
             close_result = self.run_store.close()
             if isawaitable(close_result):
@@ -194,8 +233,9 @@ async def _load_workflow(
     workflow_id: str,
     version_id: Optional[str],
     tenant_id: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Workflow:
-    workflow = await store.get_workflow(workflow_id, tenant_id=tenant_id)
+    workflow = await store.get_workflow(workflow_id, tenant_id=tenant_id, project_id=project_id)
     if version_id:
         version = await store.get_version(version_id, tenant_id=tenant_id)
         if version.workflow_id != workflow_id:
@@ -211,6 +251,7 @@ def create_app(
     workflow_store=None,
     run_store: Optional[Any] = None,
     runtime: Optional[MultiWorkflowRuntimeService] = None,
+    orchestration_store: Optional[Any] = None,
     default_inbound_secret: Optional[str] = None,
     default_integration_key: Optional[str] = None,
 ) -> Starlette:
@@ -222,6 +263,7 @@ def create_app(
         run_store=run_store,
         workflow_store=workflow_store,
         runtime=runtime,
+        orchestration_store=orchestration_store,
         default_inbound_secret=inbound_secret,
         default_integration_key=integration_key,
     )
@@ -240,12 +282,16 @@ def create_app(
         await ctx.ensure_run_store()
         await ctx.ensure_idempotency()
         await ctx.ensure_runtime()
+        await ctx.ensure_orchestration()
         await ctx.runtime.startup()
         await ctx.webhooks.start_background_dispatcher()
         ctx._runtime_started = True
         app.state.runtime = ctx.runtime
         app.state.run_store = ctx.run_store
         app.state.workflow_store = ctx.workflow_store
+        app.state.orchestration_store = ctx.orchestration_store
+        app.state.project_router = ctx.project_router
+        app.state.project_orchestrator = ctx.project_orchestrator
         app.state.api_context = ctx
         try:
             yield
@@ -278,6 +324,19 @@ def create_app(
         tenant_id = incoming or "local"
         request.state.tenant_id = tenant_id
         return tenant_id
+
+    def _project_id(request: Request) -> Optional[str]:
+        existing = getattr(request.state, "project_id", None)
+        if isinstance(existing, str) and existing.strip():
+            return existing.strip()
+        incoming = request.headers.get("X-Project-Id")
+        if not incoming:
+            return None
+        project_id = incoming.strip()
+        if not project_id:
+            return None
+        request.state.project_id = project_id
+        return project_id
 
     def _run_metadata(request: Request, payload_metadata: Any = None) -> Dict[str, Any]:
         metadata: Dict[str, Any] = {}
@@ -541,10 +600,221 @@ def create_app(
             app.state.workflow_store = ctx.workflow_store
         return ctx.runtime
 
+    async def _require_orchestration() -> ProjectOrchestratorRuntime:
+        await _require_runtime()
+        await ctx.ensure_orchestration()
+        if app is not None:
+            app.state.orchestration_store = ctx.orchestration_store
+            app.state.project_router = ctx.project_router
+            app.state.project_orchestrator = ctx.project_orchestrator
+        if ctx.project_orchestrator is None:
+            raise RuntimeError("orchestrator runtime is not initialized")
+        return ctx.project_orchestrator
+
+    async def create_project(request: Request) -> JSONResponse:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+        project_id_raw = payload.get("project_id")
+        if not isinstance(project_id_raw, str) or not project_id_raw.strip():
+            return _error(request, "INVALID_ARGUMENT", "project_id is required", 400)
+        default_orchestrator_id_raw = payload.get("default_orchestrator_id")
+        if default_orchestrator_id_raw is not None and (
+            not isinstance(default_orchestrator_id_raw, str) or not default_orchestrator_id_raw.strip()
+        ):
+            return _error(
+                request,
+                "INVALID_ARGUMENT",
+                "default_orchestrator_id must be a non-empty string or null",
+                400,
+            )
+        settings = payload.get("settings")
+        if settings is None:
+            settings = {}
+        if not isinstance(settings, dict):
+            return _error(request, "INVALID_ARGUMENT", "settings must be an object", 400)
+
+        await ctx.ensure_orchestration()
+        if ctx.orchestration_store is None:
+            return _error(request, "INTERNAL", "orchestration store is unavailable", 500)
+
+        try:
+            project = await ctx.orchestration_store.create_project(
+                project_id=project_id_raw.strip(),
+                tenant_id=_tenant_id(request),
+                default_orchestrator_id=(
+                    default_orchestrator_id_raw.strip()
+                    if isinstance(default_orchestrator_id_raw, str)
+                    else None
+                ),
+                settings=settings,
+            )
+        except ProjectConflictError:
+            return _error(request, "CONFLICT", "project already exists", 409)
+
+        return _json(request, project_to_dict(project), status_code=201)
+
+    def _require_string_list(payload: Dict[str, Any], field: str) -> list[str]:
+        raw = payload.get(field)
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            raise ValueError(f"{field} must be an array of strings")
+        values: list[str] = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"{field}[{index}] must be a non-empty string")
+            values.append(item.strip())
+        return values
+
+    async def upsert_project_orchestrator(request: Request) -> JSONResponse:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+
+        project_id = str(request.path_params.get("project_id") or "").strip()
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+        orchestrator_id_raw = payload.get("orchestrator_id")
+        if not isinstance(orchestrator_id_raw, str) or not orchestrator_id_raw.strip():
+            return _error(request, "INVALID_ARGUMENT", "orchestrator_id is required", 400)
+        name_raw = payload.get("name")
+        if not isinstance(name_raw, str) or not name_raw.strip():
+            return _error(request, "INVALID_ARGUMENT", "name is required", 400)
+        routing_policy_raw = payload.get("routing_policy")
+        if routing_policy_raw is None:
+            routing_policy = {}
+        elif isinstance(routing_policy_raw, dict):
+            routing_policy = dict(routing_policy_raw)
+        else:
+            return _error(request, "INVALID_ARGUMENT", "routing_policy must be an object", 400)
+
+        fallback_workflow_id_raw = payload.get("fallback_workflow_id")
+        if fallback_workflow_id_raw is not None and (
+            not isinstance(fallback_workflow_id_raw, str) or not fallback_workflow_id_raw.strip()
+        ):
+            return _error(
+                request,
+                "INVALID_ARGUMENT",
+                "fallback_workflow_id must be a non-empty string or null",
+                400,
+            )
+        fallback_workflow_id = fallback_workflow_id_raw.strip() if isinstance(fallback_workflow_id_raw, str) else None
+
+        prompt_profile_raw = payload.get("prompt_profile")
+        if prompt_profile_raw is not None and (not isinstance(prompt_profile_raw, str) or not prompt_profile_raw.strip()):
+            return _error(
+                request,
+                "INVALID_ARGUMENT",
+                "prompt_profile must be a non-empty string or null",
+                400,
+            )
+        prompt_profile = prompt_profile_raw.strip() if isinstance(prompt_profile_raw, str) else None
+
+        set_as_default_raw = payload.get("set_as_default", False)
+        if not isinstance(set_as_default_raw, bool):
+            return _error(request, "INVALID_ARGUMENT", "set_as_default must be a boolean", 400)
+        set_as_default = bool(set_as_default_raw)
+
+        await ctx.ensure_orchestration()
+        if ctx.orchestration_store is None:
+            return _error(request, "INTERNAL", "orchestration store is unavailable", 500)
+
+        tenant = _tenant_id(request)
+        project = await ctx.orchestration_store.get_project(project_id, tenant_id=tenant)
+        if project is None:
+            return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)
+
+        if fallback_workflow_id:
+            try:
+                await ctx.workflow_store.get_workflow(
+                    fallback_workflow_id,
+                    tenant_id=tenant,
+                    project_id=project_id,
+                )
+            except WorkflowNotFoundError:
+                return _error(request, "ERR_WORKFLOW_NOT_IN_PROJECT", "workflow is not registered in project", 409)
+
+        config = await ctx.orchestration_store.upsert_orchestrator_config(
+            project_id=project.project_id,
+            orchestrator_id=orchestrator_id_raw.strip(),
+            name=name_raw.strip(),
+            routing_policy=routing_policy,
+            fallback_workflow_id=fallback_workflow_id,
+            prompt_profile=prompt_profile,
+            set_as_default=set_as_default,
+        )
+        return _json(request, orchestrator_config_to_dict(config), status_code=201)
+
+    async def upsert_project_workflow_definition(request: Request) -> JSONResponse:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+
+        project_id = str(request.path_params.get("project_id") or "").strip()
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+        workflow_id_raw = payload.get("workflow_id")
+        if not isinstance(workflow_id_raw, str) or not workflow_id_raw.strip():
+            return _error(request, "INVALID_ARGUMENT", "workflow_id is required", 400)
+        name_raw = payload.get("name")
+        if not isinstance(name_raw, str) or not name_raw.strip():
+            return _error(request, "INVALID_ARGUMENT", "name is required", 400)
+        description_raw = payload.get("description")
+        if not isinstance(description_raw, str) or not description_raw.strip():
+            return _error(request, "INVALID_ARGUMENT", "description is required", 400)
+
+        try:
+            tags = _require_string_list(payload, "tags")
+            examples = _require_string_list(payload, "examples")
+        except ValueError as exc:
+            return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+
+        active_raw = payload.get("active", True)
+        if not isinstance(active_raw, bool):
+            return _error(request, "INVALID_ARGUMENT", "active must be a boolean", 400)
+        is_fallback_raw = payload.get("is_fallback", False)
+        if not isinstance(is_fallback_raw, bool):
+            return _error(request, "INVALID_ARGUMENT", "is_fallback must be a boolean", 400)
+
+        await ctx.ensure_orchestration()
+        if ctx.orchestration_store is None:
+            return _error(request, "INTERNAL", "orchestration store is unavailable", 500)
+
+        tenant = _tenant_id(request)
+        project = await ctx.orchestration_store.get_project(project_id, tenant_id=tenant)
+        if project is None:
+            return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)
+
+        workflow_id = workflow_id_raw.strip()
+        try:
+            await ctx.workflow_store.get_workflow(
+                workflow_id,
+                tenant_id=tenant,
+                project_id=project_id,
+            )
+        except WorkflowNotFoundError:
+            return _error(request, "ERR_WORKFLOW_NOT_IN_PROJECT", "workflow is not registered in project", 409)
+
+        definition = await ctx.orchestration_store.upsert_workflow_definition(
+            project_id=project.project_id,
+            workflow_id=workflow_id,
+            name=name_raw.strip(),
+            description=description_raw.strip(),
+            tags=tags,
+            examples=examples,
+            active=active_raw,
+            is_fallback=is_fallback_raw,
+        )
+        return _json(request, workflow_definition_to_dict(definition), status_code=201)
+
     async def create_workflow(request: Request) -> JSONResponse:
         payload = await request.json()
         if not isinstance(payload, dict):
             return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         name = payload.get("name")
         if not name:
             return _error(request, "INVALID_ARGUMENT", "name is required", 400)
@@ -559,10 +829,14 @@ def create_app(
             description=payload.get("description"),
             draft=draft,
             tenant_id=_tenant_id(request),
+            project_id=project_id,
         )
         return _json(request, workflow_to_dict(workflow), status_code=201)
 
     async def list_workflows(request: Request) -> JSONResponse:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         limit_raw = request.query_params.get("limit")
         limit = 50
         if limit_raw:
@@ -570,13 +844,20 @@ def create_app(
                 limit = max(1, min(200, int(limit_raw)))
             except ValueError:
                 return _error(request, "INVALID_ARGUMENT", "limit must be an integer", 400)
-        workflows = await ctx.workflow_store.list_workflows(limit=limit, tenant_id=_tenant_id(request))
+        workflows = await ctx.workflow_store.list_workflows(
+            limit=limit,
+            tenant_id=_tenant_id(request),
+            project_id=project_id,
+        )
         return _json(
             request,
             {"items": [workflow_summary_to_dict(item) for item in workflows], "next_cursor": None}
         )
 
     async def update_workflow(request: Request) -> JSONResponse:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         workflow_id = request.path_params["workflow_id"]
         payload = await request.json()
         if not isinstance(payload, dict):
@@ -597,28 +878,46 @@ def create_app(
                 update_name=update_name,
                 update_description=update_description,
                 tenant_id=_tenant_id(request),
+                project_id=project_id,
             )
         except WorkflowNotFoundError:
             return _error(request, "NOT_FOUND", "workflow not found", 404)
         return _json(request, workflow_to_dict(workflow))
 
     async def get_workflow(request: Request) -> JSONResponse:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         workflow_id = request.path_params["workflow_id"]
         try:
-            workflow = await ctx.workflow_store.get_workflow(workflow_id, tenant_id=_tenant_id(request))
+            workflow = await ctx.workflow_store.get_workflow(
+                workflow_id,
+                tenant_id=_tenant_id(request),
+                project_id=project_id,
+            )
         except WorkflowNotFoundError:
             return _error(request, "NOT_FOUND", "workflow not found", 404)
         return _json(request, workflow_to_dict(workflow))
 
     async def delete_workflow(request: Request) -> Response:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         workflow_id = request.path_params["workflow_id"]
         try:
-            await ctx.workflow_store.delete_workflow(workflow_id, tenant_id=_tenant_id(request))
+            await ctx.workflow_store.delete_workflow(
+                workflow_id,
+                tenant_id=_tenant_id(request),
+                project_id=project_id,
+            )
         except WorkflowNotFoundError:
             return _error(request, "NOT_FOUND", "workflow not found", 404)
         return Response(status_code=204)
 
     async def update_workflow_draft(request: Request) -> JSONResponse:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         workflow_id = request.path_params["workflow_id"]
         payload = await request.json()
         if not isinstance(payload, dict):
@@ -633,20 +932,36 @@ def create_app(
         draft.setdefault("edges", [])
         draft.setdefault("variables_schema", {})
         try:
-            workflow = await ctx.workflow_store.update_draft(workflow_id, draft, tenant_id=_tenant_id(request))
+            workflow = await ctx.workflow_store.update_draft(
+                workflow_id,
+                draft,
+                tenant_id=_tenant_id(request),
+                project_id=project_id,
+            )
         except WorkflowNotFoundError:
             return _error(request, "NOT_FOUND", "workflow not found", 404)
         return _json(request, workflow_to_dict(workflow))
 
     async def publish_workflow(request: Request) -> JSONResponse:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         workflow_id = request.path_params["workflow_id"]
         try:
             tenant = _tenant_id(request)
-            workflow = await ctx.workflow_store.get_workflow(workflow_id, tenant_id=tenant)
+            workflow = await ctx.workflow_store.get_workflow(
+                workflow_id,
+                tenant_id=tenant,
+                project_id=project_id,
+            )
             errors = _validate_draft(workflow.draft)
             if errors:
                 return _error(request, "INVALID_ARGUMENT", "draft is invalid", 400, details=errors)
-            version = await ctx.workflow_store.publish(workflow_id, tenant_id=tenant)
+            version = await ctx.workflow_store.publish(
+                workflow_id,
+                tenant_id=tenant,
+                project_id=project_id,
+            )
         except WorkflowNotFoundError:
             return _error(request, "NOT_FOUND", "workflow not found", 404)
         except WorkflowConflictError as exc:
@@ -654,9 +969,16 @@ def create_app(
         return _json(request, workflow_version_to_dict(version))
 
     async def rollback_workflow(request: Request) -> JSONResponse:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         workflow_id = request.path_params["workflow_id"]
         try:
-            workflow = await ctx.workflow_store.rollback(workflow_id, tenant_id=_tenant_id(request))
+            workflow = await ctx.workflow_store.rollback(
+                workflow_id,
+                tenant_id=_tenant_id(request),
+                project_id=project_id,
+            )
         except WorkflowNotFoundError:
             return _error(request, "NOT_FOUND", "workflow not found", 404)
         except WorkflowConflictError as exc:
@@ -664,6 +986,9 @@ def create_app(
         return _json(request, workflow_to_dict(workflow))
 
     async def list_workflow_versions(request: Request) -> JSONResponse:
+        project_id = _project_id(request)
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "X-Project-Id header is required", 422)
         workflow_id = request.path_params["workflow_id"]
         limit_raw = request.query_params.get("limit", "50")
         try:
@@ -677,6 +1002,7 @@ def create_app(
                 workflow_id,
                 limit=limit,
                 tenant_id=_tenant_id(request),
+                project_id=project_id,
             )
         except WorkflowNotFoundError:
             return _error(request, "NOT_FOUND", "workflow not found", 404)
@@ -713,12 +1039,17 @@ def create_app(
                 )
             try:
                 run_metadata = _run_metadata(request, metadata)
+                project_id = str(run_metadata.get("project_id") or "").strip()
+                if not project_id:
+                    return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+                run_metadata["project_id"] = project_id
                 tenant = str(run_metadata.get("tenant_id") or _tenant_id(request))
                 await _load_workflow(
                     ctx.workflow_store,
                     workflow_id,
                     version_id,
                     tenant_id=tenant,
+                    project_id=project_id,
                 )
                 runtime = await _require_runtime()
                 run = await runtime.start_run(
@@ -752,6 +1083,61 @@ def create_app(
             tenant_id=_tenant_id(request),
         )
         return _json(request, {"items": [run_to_dict(run) for run in runs], "next_cursor": None})
+
+    async def orchestrator_message(request: Request) -> Response:
+        async def _message_impl() -> Response:
+            payload = await request.json()
+            try:
+                routed_request = RoutingRequest.from_payload(payload)
+            except ProjectRouterError as exc:
+                return _error(request, exc.code, exc.message, exc.status_code)
+            except Exception as exc:
+                return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+
+            metadata = _run_metadata(request, routed_request.metadata)
+            metadata["project_id"] = routed_request.project_id
+            metadata["session_id"] = routed_request.session_id
+            metadata["user_id"] = routed_request.user_id
+
+            tenant = _tenant_id(request)
+            try:
+                await _require_orchestration()
+                if ctx.project_router is None:
+                    raise RuntimeError("project router is unavailable")
+                route = await ctx.project_router.resolve(routed_request, tenant_id=tenant)
+                payload = await ctx.project_orchestrator.handle_message(
+                    routed_request,
+                    route,
+                    tenant_id=tenant,
+                    metadata=metadata,
+                )
+            except ProjectRouterError as exc:
+                return _error(request, exc.code, exc.message, exc.status_code)
+            except OrchestratorRuntimeError as exc:
+                return _error(request, exc.code, exc.message, exc.status_code)
+            except WorkflowEngineAdapterError as exc:
+                status = 503 if exc.retryable else 500
+                return _error(request, exc.code, exc.message, status)
+            except Exception as exc:
+                return _error(request, "INTERNAL", str(exc), 500)
+            return _json(request, payload)
+
+        return await _idempotent(request, "orchestrator_message", _message_impl)
+
+    async def orchestrator_stack(request: Request) -> JSONResponse:
+        project_id = request.query_params.get("project_id")
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+        session_id = request.path_params["session_id"]
+        tenant = _tenant_id(request)
+        try:
+            runtime = await _require_orchestration()
+            payload = await runtime.get_stack(project_id, session_id, tenant_id=tenant)
+        except OrchestratorRuntimeError as exc:
+            return _error(request, exc.code, exc.message, exc.status_code)
+        except Exception as exc:
+            return _error(request, "INTERNAL", str(exc), 500)
+        return _json(request, payload)
 
     async def cancel_run(request: Request) -> Response:
         run_id = request.path_params["run_id"]
@@ -1011,6 +1397,16 @@ def create_app(
             "workflow_authoring_guide": f"{base_url}/workflow-authoring-guide",
             "workflow_draft_schema": f"{base_url}/schemas/workflow-draft.schema.json",
             "workflow_export_schema": f"{base_url}/schemas/workflow-export-v1.schema.json",
+            "routing_decision_schema": f"{base_url}/schemas/routing-decision.schema.json",
+            "projects_create": f"{base_url}/projects",
+            "project_orchestrator_upsert_template": (
+                f"{base_url}/projects/{{project_id}}/orchestrators"
+            ),
+            "project_workflow_definition_upsert_template": (
+                f"{base_url}/projects/{{project_id}}/workflow-definitions"
+            ),
+            "orchestrator_message": f"{base_url}/orchestrator/messages",
+            "orchestrator_stack_template": f"{base_url}/orchestrator/sessions/{{session_id}}/stack?project_id={{project_id}}",
         }
 
     def _integration_check_report(request: Request) -> Dict[str, Any]:
@@ -1096,6 +1492,26 @@ def create_app(
                 "missing docs/api/schemas/workflow-export-v1.schema.json",
             )
 
+        routing_schema = None
+        if _ROUTING_DECISION_SCHEMA_PATH.exists():
+            try:
+                routing_schema = json.loads(_ROUTING_DECISION_SCHEMA_PATH.read_text(encoding="utf-8"))
+                add_check("routing_schema_valid_json", "Routing decision schema is valid JSON", True, "ok")
+            except Exception as exc:
+                add_check(
+                    "routing_schema_valid_json",
+                    "Routing decision schema is valid JSON",
+                    False,
+                    str(exc),
+                )
+        else:
+            add_check(
+                "routing_schema_valid_json",
+                "Routing decision schema is valid JSON",
+                False,
+                "missing docs/api/schemas/routing-decision.schema.json",
+            )
+
         required_openapi_paths = (
             "/agent-integration-kit",
             "/agent-integration-kit.json",
@@ -1106,11 +1522,17 @@ def create_app(
             "/workflow-authoring-guide",
             "/schemas/workflow-draft.schema.json",
             "/schemas/workflow-export-v1.schema.json",
+            "/schemas/routing-decision.schema.json",
+            "/projects",
+            "/projects/{project_id}/orchestrators",
+            "/projects/{project_id}/workflow-definitions",
+            "/orchestrator/messages",
+            "/orchestrator/sessions/{session_id}/stack",
         )
         missing_paths = [path for path in required_openapi_paths if path not in openapi_text]
         add_check(
             "openapi_has_integration_paths",
-            "OpenAPI includes integration kit/test/log endpoints",
+            "OpenAPI includes integration kit/test/log and project/orchestrator endpoints",
             len(missing_paths) == 0,
             "ok" if not missing_paths else f"missing: {', '.join(missing_paths)}",
         )
@@ -1167,6 +1589,19 @@ def create_app(
                 "Draft schema declares all supported node types",
                 isinstance(node_types, list) and "start" in node_types and "end" in node_types,
                 f"node_types_count={len(node_types) if isinstance(node_types, list) else 0}",
+            )
+
+        if isinstance(routing_schema, dict):
+            route_types = (
+                routing_schema.get("properties", {})
+                .get("route_type", {})
+                .get("enum", [])
+            )
+            add_check(
+                "routing_schema_route_types",
+                "Routing schema declares required route_type variants",
+                isinstance(route_types, list) and "START_WORKFLOW" in route_types and "DISAMBIGUATE" in route_types,
+                f"route_types_count={len(route_types) if isinstance(route_types, list) else 0}",
             )
 
         passed = len([check for check in checks if check["ok"]])
@@ -1268,6 +1703,37 @@ def create_app(
         )
         return JSONResponse(payload)
 
+    async def routing_decision_schema(request: Request) -> Response:
+        if not _ROUTING_DECISION_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.routing_decision_schema.read",
+                "Routing decision schema is missing",
+                level="WARNING",
+                status_code=404,
+            )
+            return PlainTextResponse("routing decision schema not found", status_code=404)
+        try:
+            payload = json.loads(_ROUTING_DECISION_SCHEMA_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _integration_log(
+                request,
+                "integration.routing_decision_schema.read",
+                "Routing decision schema JSON is invalid",
+                level="ERROR",
+                status_code=500,
+                context={"error": str(exc)},
+            )
+            return PlainTextResponse("routing decision schema is invalid", status_code=500)
+        _integration_log(
+            request,
+            "integration.routing_decision_schema.read",
+            "Routing decision schema returned",
+            status_code=200,
+            context={"top_level_keys": len(payload) if isinstance(payload, dict) else 0},
+        )
+        return JSONResponse(payload)
+
     async def agent_integration_kit(request: Request) -> PlainTextResponse:
         urls = _public_doc_urls(request)
         updated_at = datetime.now(timezone.utc).isoformat()
@@ -1284,6 +1750,12 @@ def create_app(
             f"- Workflow authoring guide: {urls['workflow_authoring_guide']}",
             f"- Workflow draft schema: {urls['workflow_draft_schema']}",
             f"- Workflow export schema: {urls['workflow_export_schema']}",
+            f"- Routing decision schema: {urls['routing_decision_schema']}",
+            f"- Project create endpoint: {urls['projects_create']}",
+            f"- Project orchestrator upsert endpoint template: {urls['project_orchestrator_upsert_template']}",
+            f"- Project workflow-definition upsert endpoint template: {urls['project_workflow_definition_upsert_template']}",
+            f"- Orchestrator message endpoint: {urls['orchestrator_message']}",
+            f"- Orchestrator stack endpoint template: {urls['orchestrator_stack_template']}",
             f"- Integration test UI: {urls['integration_test_ui']}",
             f"- Integration test JSON: {urls['integration_test_json']}",
             f"- Integration logs JSON: {urls['integration_logs']}",
@@ -1297,13 +1769,26 @@ def create_app(
             f"- Logs endpoint: {urls['integration_logs']}",
             "- Filter logs by `correlation_id`, `trace_id`, or `event`.",
             "",
+            "## API changelog policy",
+            "- Every public API contract update must include a same-change update to `CHANGELOG.md`.",
+            "- Each API changelog entry must explicitly describe the delta vs previous API version and include:",
+            "  - `Previous API version`",
+            "  - `Current API version`",
+            "  - concrete Added/Changed/Deprecated/Removed items",
+            "",
             "## Minimum integration steps",
             "1. Read OpenAPI and API reference.",
-            "2. Define workflow goal and output, then follow workflow authoring guide.",
-            "3. Validate workflow payloads with the provided schemas.",
-            "4. Run integration checks and ensure status=PASS.",
-            "5. Use `/workflows`, `/publish`, and `/runs` lifecycle endpoints.",
-            "6. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
+            "2. Create project scope via `POST /projects` and retain `project_id` for authoring/routing.",
+            "3. Define workflow goal and output, then follow workflow authoring guide.",
+            "4. Validate workflow payloads with the provided schemas.",
+            "5. Create/publish workflow via `/workflows` and `/workflows/{workflow_id}/publish`.",
+            "6. Register workflow in project routing index via `POST /projects/{project_id}/workflow-definitions`.",
+            "7. Configure project orchestrator via `POST /projects/{project_id}/orchestrators`.",
+            "8. Run integration checks and ensure status=PASS.",
+            "9. For project routing, call `POST /orchestrator/messages` with `project_id`, `session_id`, `user_id`, and `message`.",
+            "10. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
+            "11. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...`.",
+            "12. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
         ]
         _integration_log(
             request,
@@ -1351,10 +1836,20 @@ def create_app(
                 status_code=404,
             )
             return _error(request, "NOT_FOUND", "workflow export schema not found", 404)
+        if not _ROUTING_DECISION_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "Routing decision schema is missing for kit JSON",
+                level="WARNING",
+                status_code=404,
+            )
+            return _error(request, "NOT_FOUND", "routing decision schema not found", 404)
 
         try:
             draft_schema = json.loads(_WORKFLOW_DRAFT_SCHEMA_PATH.read_text(encoding="utf-8"))
             export_schema = json.loads(_WORKFLOW_EXPORT_SCHEMA_PATH.read_text(encoding="utf-8"))
+            routing_schema = json.loads(_ROUTING_DECISION_SCHEMA_PATH.read_text(encoding="utf-8"))
         except Exception as exc:
             _integration_log(
                 request,
@@ -1380,6 +1875,7 @@ def create_app(
             "schemas": {
                 "workflow_draft": draft_schema,
                 "workflow_export_v1": export_schema,
+                "routing_decision": routing_schema,
             },
         }
         _integration_log(
@@ -1656,12 +2152,16 @@ def create_app(
         Route("/workflow-authoring-guide", workflow_authoring_guide),
         Route("/schemas/workflow-draft.schema.json", workflow_draft_schema),
         Route("/schemas/workflow-export-v1.schema.json", workflow_export_schema),
+        Route("/schemas/routing-decision.schema.json", routing_decision_schema),
         Route("/agent-integration-kit", agent_integration_kit),
         Route("/agent-integration-kit.json", agent_integration_kit_json),
         Route("/agent-integration-test", agent_integration_test),
         Route("/agent-integration-test.json", agent_integration_test_json),
         Route("/agent-integration-test/validate-draft", agent_validate_draft, methods=["POST"]),
         Route("/agent-integration-logs", agent_integration_logs),
+        Route("/projects", create_project, methods=["POST"]),
+        Route("/projects/{project_id}/orchestrators", upsert_project_orchestrator, methods=["POST"]),
+        Route("/projects/{project_id}/workflow-definitions", upsert_project_workflow_definition, methods=["POST"]),
         Route("/workflows", list_workflows, methods=["GET"]),
         Route("/workflows", create_workflow, methods=["POST"]),
         Route("/workflows/{workflow_id}", update_workflow, methods=["PATCH"]),
@@ -1672,6 +2172,8 @@ def create_app(
         Route("/workflows/{workflow_id}/rollback", rollback_workflow, methods=["POST"]),
         Route("/workflows/{workflow_id}/versions", list_workflow_versions, methods=["GET"]),
         Route("/workflows/{workflow_id}/runs", start_run, methods=["POST"]),
+        Route("/orchestrator/messages", orchestrator_message, methods=["POST"]),
+        Route("/orchestrator/sessions/{session_id}/stack", orchestrator_stack, methods=["GET"]),
         Route("/runs", list_runs, methods=["GET"]),
         Route("/runs/{run_id}", get_run, methods=["GET"]),
         Route("/runs/{run_id}/cancel", cancel_run, methods=["POST"]),

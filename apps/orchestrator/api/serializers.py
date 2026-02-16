@@ -5,6 +5,11 @@ import math
 from typing import Any, Dict
 
 from apps.orchestrator.api.workflow_store import WorkflowRecord, WorkflowSummary, WorkflowVersionRecord
+from apps.orchestrator.orchestrator_runtime import (
+    OrchestratorConfigRecord,
+    ProjectRecord,
+    WorkflowDefinitionRecord,
+)
 
 from apps.orchestrator.runtime.models import Interrupt, Run
 
@@ -70,6 +75,7 @@ def run_to_dict(run: Run) -> Dict[str, Any]:
         "run_id": run.id,
         "workflow_id": run.workflow_id,
         "version_id": run.version_id,
+        "resolved_version": metadata.get("resolved_version") or run.version_id,
         "status": run.status,
         "mode": run.mode,
         "inputs": run.inputs,
@@ -80,7 +86,10 @@ def run_to_dict(run: Run) -> Dict[str, Any]:
         "trace_id": metadata.get("trace_id"),
         "tenant_id": metadata.get("tenant_id"),
         "project_id": metadata.get("project_id"),
+        "session_id": metadata.get("session_id"),
         "import_run_id": metadata.get("import_run_id"),
+        "cancellable": bool(metadata.get("cancellable", run.status in {"RUNNING", "WAITING_FOR_INPUT"})),
+        "commit_point_reached": metadata.get("commit_point_reached"),
         "created_at": metadata.get("created_at"),
         "updated_at": metadata.get("updated_at"),
         "node_runs": node_runs,
@@ -102,9 +111,49 @@ def interrupt_to_dict(interrupt: Interrupt) -> Dict[str, Any]:
     }
 
 
+def project_to_dict(project: ProjectRecord) -> Dict[str, Any]:
+    return {
+        "project_id": project.project_id,
+        "tenant_id": project.tenant_id,
+        "default_orchestrator_id": project.default_orchestrator_id,
+        "settings": project.settings,
+        "created_at": project.created_at.isoformat(),
+        "updated_at": project.updated_at.isoformat(),
+    }
+
+
+def orchestrator_config_to_dict(config: OrchestratorConfigRecord) -> Dict[str, Any]:
+    return {
+        "project_id": config.project_id,
+        "orchestrator_id": config.orchestrator_id,
+        "name": config.name,
+        "routing_policy": config.routing_policy,
+        "fallback_workflow_id": config.fallback_workflow_id,
+        "prompt_profile": config.prompt_profile,
+        "created_at": config.created_at.isoformat(),
+        "updated_at": config.updated_at.isoformat(),
+    }
+
+
+def workflow_definition_to_dict(definition: WorkflowDefinitionRecord) -> Dict[str, Any]:
+    return {
+        "project_id": definition.project_id,
+        "workflow_id": definition.workflow_id,
+        "name": definition.name,
+        "description": definition.description,
+        "tags": definition.tags,
+        "examples": definition.examples,
+        "active": definition.active,
+        "is_fallback": definition.is_fallback,
+        "created_at": definition.created_at.isoformat(),
+        "updated_at": definition.updated_at.isoformat(),
+    }
+
+
 def workflow_to_dict(workflow: WorkflowRecord) -> Dict[str, Any]:
     return {
         "workflow_id": workflow.workflow_id,
+        "project_id": workflow.project_id,
         "name": workflow.name,
         "description": workflow.description,
         "draft": workflow.draft,
@@ -117,6 +166,7 @@ def workflow_to_dict(workflow: WorkflowRecord) -> Dict[str, Any]:
 def workflow_summary_to_dict(workflow: WorkflowSummary) -> Dict[str, Any]:
     return {
         "workflow_id": workflow.workflow_id,
+        "project_id": workflow.project_id,
         "name": workflow.name,
         "description": workflow.description,
         "active_version_id": workflow.active_version_id,

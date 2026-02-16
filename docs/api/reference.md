@@ -36,9 +36,10 @@ ChatKit service auth is configured independently:
 - `X-Tenant-Id`: tenant scope for all workflow/run operations.
 - `X-Correlation-Id`: request correlation key; echoed in responses/errors.
 - `X-Trace-Id`: distributed trace key; propagated to run metadata/events.
+- `X-Project-Id`: required for all `/workflows*` authoring/read operations.
+- `X-Project-Id` is not required for `POST /projects` (project is created from request body).
 
 Optional headers:
-- `X-Project-Id`
 - `X-Import-Run-Id`
 - `X-User-Id`
 - `Idempotency-Key` (recommended for mutating APIs)
@@ -59,11 +60,73 @@ All API errors use:
 ## JSON schemas for workflow authoring
 - Draft payload schema: `docs/api/schemas/workflow-draft.schema.json`
 - Builder import/export schema (`workflow_export_v1`): `docs/api/schemas/workflow-export-v1.schema.json`
+- Orchestrator strict routing schema: `docs/api/schemas/routing-decision.schema.json`
+
+## Projects API
+- Create project: `POST /projects`
+- Request body:
+  - `project_id` (required)
+  - `default_orchestrator_id` (optional)
+  - `settings` (optional object, default `{}`)
+- Response: `201` with `project_id`, `tenant_id`, `default_orchestrator_id`, `settings`, timestamps.
+- Conflict behavior: if `project_id` already exists, API returns `409` with `error.code = CONFLICT`.
+
+## Project registry bootstrap endpoints
+Public project-registry bootstrap no longer requires DB-side seeding.
+
+- Upsert orchestrator config for project:
+  - `POST /projects/{project_id}/orchestrators`
+  - Request body:
+    - `orchestrator_id` (required)
+    - `name` (required)
+    - `routing_policy` (optional object)
+    - `fallback_workflow_id` (optional)
+    - `prompt_profile` (optional)
+    - `set_as_default` (optional bool, default `false`)
+  - Response: `201` with persisted orchestrator config.
+
+- Upsert workflow definition in project routing index:
+  - `POST /projects/{project_id}/workflow-definitions`
+  - Request body:
+    - `workflow_id` (required)
+    - `name` (required)
+    - `description` (required)
+    - `tags` (optional string array)
+    - `examples` (optional string array)
+    - `active` (optional bool, default `true`)
+    - `is_fallback` (optional bool, default `false`)
+  - Response: `201` with persisted workflow definition.
+
+Common validation/error behavior:
+- `ERR_PROJECT_NOT_FOUND` when project is not registered in orchestrator project registry.
+- `ERR_WORKFLOW_NOT_IN_PROJECT` when referenced workflow is missing in workflow store for that project scope.
+
+## Project orchestrator entrypoint (MVP)
+- Unified chat entrypoint: `POST /orchestrator/messages`
+- `project_id` is required in request body.
+- Routing modes:
+  - `workflow_id` present -> direct workflow mode.
+  - `workflow_id` absent -> orchestrator mode (`orchestrator_id` or project default).
+- Every inbound message creates one orchestration decision log.
+
+Validation errors:
+- `ERR_PROJECT_ID_REQUIRED`
+- `ERR_PROJECT_NOT_FOUND`
+- `ERR_ORCHESTRATOR_NOT_IN_PROJECT`
+- `ERR_WORKFLOW_NOT_IN_PROJECT`
+
+Session stack diagnostics:
+- `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
 
 ## Agent integration kit URL
 - Markdown entrypoint: `/agent-integration-kit`
 - Machine-readable bundle: `/agent-integration-kit.json`
 - Workflow authoring guide: `/workflow-authoring-guide`
+- Project bootstrap endpoint: `POST /projects`
+- Project orchestrator config endpoint: `POST /projects/{project_id}/orchestrators`
+- Project workflow definition endpoint: `POST /projects/{project_id}/workflow-definitions`
+- Orchestrator message endpoint: `POST /orchestrator/messages`
+- Orchestrator stack diagnostics: `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
 - Integration test UI: `/agent-integration-test`
 - Integration test JSON report: `/agent-integration-test.json`
 - Detailed integration logs: `/agent-integration-logs`
@@ -91,15 +154,19 @@ curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_
 ```
 
 ## Core workflow lifecycle
-1. `POST /workflows` create workflow draft
-2. `PUT /workflows/{workflow_id}/draft` update draft
-3. `POST /workflows/{workflow_id}/publish` publish immutable version
-4. `POST /workflows/{workflow_id}/runs` start run
-5. `GET /runs/{run_id}` read state
-6. `GET /runs/{run_id}/stream` consume SSE events
-7. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
-8. `POST /runs/{run_id}/cancel` cancel run
-9. `POST /runs/{run_id}/rerun-node` rerun node
+1. `POST /projects` create project scope
+2. `POST /workflows` create workflow draft
+3. `PUT /workflows/{workflow_id}/draft` update draft
+4. `POST /workflows/{workflow_id}/publish` publish immutable version
+5. `POST /projects/{project_id}/workflow-definitions` register workflow in project routing index
+6. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
+7. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
+8. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
+9. `GET /runs/{run_id}` read state
+10. `GET /runs/{run_id}/stream` consume SSE events
+11. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
+12. `POST /runs/{run_id}/cancel` cancel run
+13. `POST /runs/{run_id}/rerun-node` rerun node
 
 ## Chat-first integration for external clients
 For full user interaction (approval/forms/files) integrate `POST /chatkit` in addition to run APIs.
