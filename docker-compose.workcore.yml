@@ -163,6 +163,7 @@ services:
       PROXY_TLS_PORT: "8443"
       PUBLIC_BUILDER_HOST: ${PUBLIC_BUILDER_HOST:-workcore.build}
       PUBLIC_API_HOST: ${PUBLIC_API_HOST:-api.workcore.build}
+      PUBLIC_API_HOST_ALT: ${PUBLIC_API_HOST_ALT:-api.workcore.build}
       PUBLIC_CHATKIT_HOST: ${PUBLIC_CHATKIT_HOST:-chatkit.workcore.build}
       PUBLIC_OILVIBES_HOST: ${PUBLIC_OILVIBES_HOST:-oil.build}
       BUILDER_UPSTREAM_HOST: ${BUILDER_UPSTREAM_HOST:-builder}

@@ -18,9 +18,11 @@ cp .env.docker.example .env.docker
 Adjust `.env.docker` if needed:
 - ports/domain hostnames
 - OpenAI settings
+- optional Azure OpenAI settings (`AZURE_OPENAI_*`) for Agent executor and LLM router
 - ChatKit auth token
 - API auth token + inbound webhook secret
 - CORS origins
+- optional API alias host accepted by proxy: `PUBLIC_API_HOST_ALT`
 
 Recommended dev defaults:
 - `WORKCORE_HTTP_PORT=8080`
@@ -115,6 +117,71 @@ This runs:
 - backend run-mode E2E
 - ChatKit interrupt/resume E2E
 - builder Playwright E2E
+
+## 7) Public API via Cloudflare (`api.runwcr.com`)
+If you keep local host routing as `PUBLIC_API_HOST=api.workcore.build` but need external API on `api.runwcr.com`, use:
+
+1. In `.env.docker` keep:
+   - `PUBLIC_API_HOST=api.workcore.build`
+   - `PUBLIC_API_HOST_ALT=api.runwcr.com`
+2. In `~/.cloudflared/config.yml`, route `api.runwcr.com` to your local proxy port:
+   - if `WORKCORE_HTTP_PORT=80`: `service: http://127.0.0.1:80`
+   - if `WORKCORE_HTTP_PORT=8080`: `service: http://127.0.0.1:8080`
+3. If you do not set `PUBLIC_API_HOST_ALT`, add host-header override:
+
+```yaml
+ingress:
+  - hostname: api.runwcr.com
+    service: http://127.0.0.1:80
+    originRequest:
+      httpHostHeader: api.workcore.build
+  - service: http_status:404
+```
+
+Verify:
+
+```bash
+curl -sS https://api.runwcr.com/health
+```
+
+## 8) Autostart on macOS (`launchd`)
+Install and load user LaunchAgents:
+
+```bash
+./scripts/workcore_autostart_install.sh
+```
+
+Before enabling autostart, run `./scripts/docker_up.sh` at least once so required `workcore-local-*` containers already exist.
+
+What gets installed:
+- `com.workcore.stack`: periodic ensure-up for existing `workcore-local-*` containers (every 5 minutes, plus RunAtLoad)
+- `com.workcore.cloudflared`: persistent tunnel process with auto-restart
+
+Runtime scripts are copied to `~/Library/Application Support/workcore/autostart` to avoid macOS background access issues for `~/Documents`.
+
+Optional overrides:
+- `WORKCORE_AUTOSTART_CONTAINERS` (space-separated docker container names)
+- `WORKCORE_HTTP_PORT` (health probe port, default `80`)
+- `WORKCORE_API_HOST_HEADER` (health probe host header, default `api.workcore.build`)
+
+Inspect:
+
+```bash
+launchctl print gui/$(id -u)/com.workcore.stack | sed -n '1,40p'
+launchctl print gui/$(id -u)/com.workcore.cloudflared | sed -n '1,40p'
+```
+
+Logs:
+- `~/Library/Logs/workcore/stack.out.log`
+- `~/Library/Logs/workcore/stack.err.log`
+- `~/Library/Logs/workcore/cloudflared.out.log`
+- `~/Library/Logs/workcore/cloudflared.err.log`
+
+Uninstall:
+
+```bash
+./scripts/workcore_autostart_uninstall.sh
+```
 
 ## Notes
 - Host ports are controlled by:

@@ -1,7 +1,7 @@
 # Deployment Scheme and E2E Release Plan
 
 ## Task classification
-- Type: `F` (docs/process only; no API/schema/runtime contract changes).
+- Type: `E` (external integration behavior: Cloudflare ingress and domain routing).
 - Goal: ship safely with existing stack, using Cloudflare Tunnel as a temporary public ingress.
 
 ## Current baseline in repository
@@ -60,7 +60,7 @@ graph LR
 - Current routing is host-based in `deploy/docker/Caddyfile.workcore`.
 - Builder/API/ChatKit are split by hostname.
 - One random `trycloudflare.com` URL is not enough for this topology without changing routing logic.
-- Use a named tunnel with three DNS hostnames mapped to the same local ingress (`http://127.0.0.1:8080`).
+- Use a named tunnel with three DNS hostnames mapped to the same local ingress (`http://127.0.0.1:<WORKCORE_HTTP_PORT>`).
 
 ## Cloudflare Tunnel rollout (temporary)
 1. Pick hostnames:
@@ -70,6 +70,7 @@ graph LR
 2. Update `.env.docker`:
    - `PUBLIC_BUILDER_HOST=<your-domain>`
    - `PUBLIC_API_HOST=api.<your-domain>`
+   - `PUBLIC_API_HOST_ALT=api.<your-domain>` (optional alias accepted by proxy)
    - `PUBLIC_CHATKIT_HOST=chatkit.<your-domain>`
    - `VITE_API_BASE_URL=//api.<your-domain>`
    - `VITE_CHATKIT_PAGE=//<your-domain>/chatkit.html`
@@ -89,11 +90,20 @@ graph LR
    credentials-file: /Users/<user>/.cloudflared/<tunnel-id>.json
    ingress:
      - hostname: <your-domain>
-       service: http://127.0.0.1:8080
+       service: http://127.0.0.1:<WORKCORE_HTTP_PORT>
      - hostname: api.<your-domain>
-       service: http://127.0.0.1:8080
+       service: http://127.0.0.1:<WORKCORE_HTTP_PORT>
      - hostname: chatkit.<your-domain>
-       service: http://127.0.0.1:8080
+       service: http://127.0.0.1:<WORKCORE_HTTP_PORT>
+     - service: http_status:404
+   ```
+   If the public API hostname differs from `PUBLIC_API_HOST` in `.env.docker`, set host-header override:
+   ```yaml
+   ingress:
+     - hostname: api.runwcr.com
+       service: http://127.0.0.1:80
+       originRequest:
+         httpHostHeader: api.workcore.build
      - service: http_status:404
    ```
 6. Run tunnel:
