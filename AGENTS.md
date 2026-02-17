@@ -29,6 +29,11 @@ If required information is missing:
 - Keep changes small and reviewable. Prefer incremental PRs.
 - Update or add tests for any behavior change.
 - Document all public APIs (OpenAPI) and any breaking changes.
+- For any public API contract update (`docs/api/openapi.yaml` or `docs/api/schemas/*.json`), update `CHANGELOG.md` in the same change.
+- Each API changelog entry must explicitly describe the delta vs previous API version:
+  - `Previous API version`
+  - `Current API version`
+  - concrete Added/Changed/Deprecated/Removed items
 - Preserve backward compatibility for persisted data and public endpoints unless explicitly approved.
 
 ## Task classification (mandatory before coding)
@@ -106,6 +111,7 @@ Skills are stored under `.codex/skills/<skill-name>/SKILL.md`. Codex can invoke 
 - $incident-runbook: operational SOPs and postmortem templates.
 - $commit-and-pr-hygiene: atomic commits and review-ready PRs.
 - $ai-change-explainer: auditable summary for large diffs.
+- $acceptance-package: build acceptance package artifacts (`ACCEPTANCE.md`, Playwright desktop/mobile screenshots, ZIP) for handoff/review.
 
 ## How to start on any task
 1) Identify and invoke relevant skills.
