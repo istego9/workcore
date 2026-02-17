@@ -26,6 +26,18 @@ Tail commands:
 - `tail -n 200 logs/orchestrator.log`
 - `tail -n 200 logs/chatkit.log`
 
+## LLM env checklist
+- OpenAI path:
+  - `OPENAI_API_KEY`
+  - `OPENAI_MODEL`
+- Azure OpenAI path:
+  - `AZURE_OPENAI_API_KEY`
+  - `AZURE_OPENAI_ENDPOINT`
+  - `AZURE_OPENAI_API_VERSION`
+  - `OPENAI_MODEL` must be Azure deployment name.
+- Optional Agents SDK mode override:
+  - `OPENAI_API=responses` or `OPENAI_API=chat_completions`
+
 ## Common root causes
 1. Missing or invalid env vars (`DATABASE_URL`, auth tokens, external integration config)
 2. Migrations not applied (`db/migrations/*.sql`)

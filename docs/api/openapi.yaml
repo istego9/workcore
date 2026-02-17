@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.4.3
+  version: 0.5.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -169,7 +169,6 @@ paths:
     get:
       tags: [workflows]
       summary: Detailed integration logs for external agents
-      security: []
       parameters:
         - in: query
           name: limit
@@ -201,12 +200,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentIntegrationLogReport'
+        '401': { $ref: '#/components/responses/ErrorResponse' }
   /chatkit:
+    parameters:
+      - $ref: '#/components/parameters/TenantIdRequired'
     post:
       tags: [chatkit]
       summary: ChatKit advanced integration endpoint
       description: >
         Handles ChatKit thread/message/action requests for external clients.
+        Strict multi-tenant mode requires `X-Tenant-Id` on every request.
         For interactive operations (`threads.create`, `threads.add_user_message`, `threads.custom_action`)
         the response is streamed as SSE where each `data:` line is a JSON ChatKit stream event.
       requestBody:
@@ -287,6 +290,7 @@ paths:
                 type: object
                 properties:
                   error: { type: string }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /orchestrator/messages:
     parameters:
       - $ref: '#/components/parameters/TenantId'
@@ -943,6 +947,12 @@ components:
       required: false
       schema: { type: string }
       description: Tenant scope for request processing. Defaults to `local` when omitted.
+    TenantIdRequired:
+      in: header
+      name: X-Tenant-Id
+      required: true
+      schema: { type: string }
+      description: Required tenant scope for strict multi-tenant endpoints.
     CorrelationId:
       in: header
       name: X-Correlation-Id
@@ -1394,7 +1404,9 @@ components:
     Project:
       type: object
       properties:
-        project_id: { type: string }
+        project_id:
+          type: string
+          description: Identifier unique within `tenant_id` scope.
         tenant_id: { type: string }
         default_orchestrator_id:
           type: string

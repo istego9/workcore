@@ -81,6 +81,7 @@ class ApiTests(unittest.TestCase):
                 project_id=project_id,
                 orchestrator_id=orchestrator_id,
                 name="Default orchestrator",
+                tenant_id="local",
                 routing_policy=routing_policy or {
                     "confidence_threshold": 0.6,
                     "switch_margin": 0.2,
@@ -95,6 +96,7 @@ class ApiTests(unittest.TestCase):
                 await store.upsert_workflow_definition(
                     project_id=project_id,
                     workflow_id=definition["workflow_id"],
+                    tenant_id="local",
                     name=definition["name"],
                     description=definition["description"],
                     tags=definition.get("tags") or [],
@@ -314,6 +316,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["chosen_workflow_id"], workflow_id)
         self.assertIn(payload["chosen_action"], {"START_WORKFLOW", "RESUME_CURRENT"})
         self.assertTrue(payload.get("run_id"))
+
+        run_response = self.client.get(f"/runs/{payload['run_id']}")
+        self.assertEqual(run_response.status_code, 200)
+        run_payload = run_response.json()
+        metadata = run_payload.get("metadata") or {}
+        self.assertEqual(metadata.get("agent_executor_mode"), "live")
+        self.assertEqual(metadata.get("agent_mock"), False)
+        self.assertEqual(metadata.get("llm_enabled"), True)
 
     def test_orchestrator_mode_disambiguates_on_low_confidence(self):
         wf_a, _ = self._create_workflow()
@@ -537,6 +547,60 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json().get("mode"), "test")
+
+    def test_start_run_live_mode_overrides_default_mock_executor(self):
+        class FakeLiveExecutor:
+            def __call__(self, run, node, emit):
+                from apps.orchestrator.executors.types import ExecutorResult
+
+                return ExecutorResult(output={"mock": False, "provider": "live"})
+
+        with mock.patch.dict(os.environ, {"AGENT_EXECUTOR_MODE": "mock"}, clear=False):
+            with mock.patch("apps.orchestrator.api.app.AGENTS_AVAILABLE", True):
+                with mock.patch("apps.orchestrator.api.app.AgentExecutor", return_value=FakeLiveExecutor()):
+                    client = TestClient(create_app(workflow_store=InMemoryWorkflowStore()))
+                    headers = {"X-Project-Id": "proj_live_override"}
+                    draft = {
+                        "nodes": [
+                            {"id": "start", "type": "start"},
+                            {
+                                "id": "agent",
+                                "type": "agent",
+                                "config": {"instructions": "Return JSON", "user_input": "estimate"},
+                            },
+                            {"id": "end", "type": "end"},
+                        ],
+                        "edges": [
+                            {"source": "start", "target": "agent"},
+                            {"source": "agent", "target": "end"},
+                        ],
+                        "variables_schema": {},
+                    }
+
+                    create_response = client.post(
+                        "/workflows",
+                        json={"name": "Agent workflow", "draft": draft},
+                        headers=headers,
+                    )
+                    self.assertEqual(create_response.status_code, 201)
+                    workflow_id = create_response.json()["workflow_id"]
+
+                    publish_response = client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+                    self.assertEqual(publish_response.status_code, 200)
+
+                    run_response = client.post(
+                        f"/workflows/{workflow_id}/runs",
+                        json={"inputs": {}, "mode": "live"},
+                        headers=headers,
+                    )
+                    self.assertEqual(run_response.status_code, 201)
+                    payload = run_response.json()
+                    self.assertEqual(payload.get("metadata", {}).get("agent_executor_mode"), "live")
+
+                    node_runs = payload.get("node_runs") or []
+                    agent_run = next((item for item in node_runs if item.get("node_id") == "agent"), None)
+                    self.assertIsNotNone(agent_run)
+                    self.assertEqual(agent_run.get("output", {}).get("mock"), False)
 
     def test_start_run_exposes_transparent_metadata(self):
         headers = {
@@ -858,6 +922,9 @@ class ApiTests(unittest.TestCase):
         self.assertIn("API changelog policy", markdown_response.text)
         self.assertIn("Previous API version", markdown_response.text)
         self.assertIn("Current API version", markdown_response.text)
+        self.assertIn("Special instructions and examples", markdown_response.text)
+        self.assertIn("Example: project bootstrap + registry binding", markdown_response.text)
+        self.assertIn("Example: orchestrator message", markdown_response.text)
 
         json_response = self.client.get("/agent-integration-kit.json")
         self.assertEqual(json_response.status_code, 200)
@@ -1060,7 +1127,8 @@ class ApiAuthTests(unittest.TestCase):
         self.assertEqual(integration_test_json_response.status_code, 200)
 
         logs_response = self.client.get("/agent-integration-logs")
-        self.assertEqual(logs_response.status_code, 200)
+        self.assertEqual(logs_response.status_code, 401)
+        self.assertEqual(logs_response.json()["error"]["code"], "UNAUTHORIZED")
 
         schema_response = self.client.get("/schemas/workflow-draft.schema.json")
         self.assertEqual(schema_response.status_code, 200)

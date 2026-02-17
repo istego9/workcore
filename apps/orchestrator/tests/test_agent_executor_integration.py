@@ -1,22 +1,29 @@
 import os
 import unittest
 
-from agents import set_default_openai_api
-
 from apps.orchestrator.executors import AgentExecutor, AgentNodeConfig
 from apps.orchestrator.runtime.env import load_env
 
 load_env()
 
 
+def _has_live_llm_env() -> bool:
+    has_model = bool(os.getenv("OPENAI_MODEL"))
+    has_openai = bool(os.getenv("OPENAI_API_KEY"))
+    has_azure = bool(
+        os.getenv("AZURE_OPENAI_ENDPOINT")
+        and os.getenv("AZURE_OPENAI_API_KEY")
+        and os.getenv("AZURE_OPENAI_API_VERSION")
+    )
+    return has_model and (has_openai or has_azure)
+
+
 class AgentExecutorIntegrationTests(unittest.TestCase):
     @unittest.skipUnless(
-        os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_MODEL"),
-        "Set OPENAI_API_KEY and OPENAI_MODEL to run live integration tests",
+        _has_live_llm_env(),
+        "Set OPENAI_MODEL and either OpenAI or Azure OpenAI credentials to run live integration tests",
     )
     def test_agent_executor_live(self):
-        set_default_openai_api(os.environ["OPENAI_API_KEY"])
-
         executor = AgentExecutor()
         config = AgentNodeConfig(
             model=os.environ["OPENAI_MODEL"],

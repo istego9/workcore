@@ -34,7 +34,13 @@ Status: Draft
 ## Agent
 - Executed via OpenAI Agents SDK.
 - Supports tools, structured outputs, and streaming partial results.
-- Output is persisted to node_runs.output and optionally merged into state.
+- Output is always persisted to `node_runs.output` and `node_outputs[node_id]`.
+- State propagation rules:
+  - If `state_target` is configured, full node output is written to that state path.
+  - If `state_target` is not set and node uses structured JSON output
+    (`output_format=json|json_schema` or `output_schema` without format), top-level
+    object fields are merged into state by default.
+  - Set `merge_output_to_state=false` to disable default merge behavior.
 - Emit message_generated events during streaming.
 
 ## MCP

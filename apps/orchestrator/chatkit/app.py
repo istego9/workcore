@@ -4,7 +4,7 @@ import json
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from chatkit.server import NonStreamingResult, StreamingResult
@@ -32,7 +32,9 @@ def create_app(
     event_bus = InMemoryEventBus()
     publisher = EventPublisher(event_store, event_bus)
 
-    async def loader(workflow_id: str, version_id: str | None):
+    async def loader(workflow_id: str, version_id: str | None, tenant_id: str):
+        if not tenant_id:
+            raise RuntimeError("X-Tenant-Id is required")
         if workflow_id != workflow.id:
             raise RuntimeError("Unknown workflow_id")
         return workflow
@@ -45,12 +47,15 @@ def create_app(
         workflow_loader=loader,
     )
 
-    base_ctx = ChatKitContext(
-        service=runtime,
-        run_store=run_store or InMemoryRunStore(),
-    )
+    base_run_store = run_store or InMemoryRunStore()
 
     async def chatkit(request: Request):
+        tenant_id = (request.headers.get("X-Tenant-Id") or "").strip()
+        if not tenant_id:
+            return JSONResponse(
+                {"error": {"code": "ERR_TENANT_REQUIRED", "message": "X-Tenant-Id header is required"}},
+                status_code=422,
+            )
         body = await request.body()
         metadata = {}
         try:
@@ -58,10 +63,13 @@ def create_app(
             metadata = parsed.get("metadata") or {}
         except Exception:
             metadata = {}
+        metadata = dict(metadata)
+        metadata["tenant_id"] = tenant_id
 
         ctx = ChatKitContext(
-            service=base_ctx.service,
-            run_store=base_ctx.run_store,
+            service=runtime,
+            run_store=base_run_store,
+            tenant_id=tenant_id,
             request_metadata=metadata,
         )
         result = await server.process(body, ctx)

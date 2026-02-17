@@ -50,6 +50,7 @@ export type WorkflowExport = {
 
 export type WorkflowRecord = {
   workflow_id: string;
+  project_id?: string | null;
   name: string;
   description?: string | null;
   draft: WorkflowDraft;
@@ -58,6 +59,7 @@ export type WorkflowRecord = {
 
 export type WorkflowSummary = {
   workflow_id: string;
+  project_id?: string | null;
   name: string;
   description?: string | null;
   active_version_id?: string | null;

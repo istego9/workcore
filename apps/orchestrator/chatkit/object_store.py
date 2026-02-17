@@ -38,8 +38,12 @@ class MinioAttachmentStore(AttachmentStore):
         )
 
     async def delete_attachment(self, attachment_id: str, context) -> None:
+        tenant_id = getattr(context, "tenant_id", None)
+        if not isinstance(tenant_id, str) or not tenant_id:
+            raise RuntimeError("tenant_id is required in ChatKit context")
         row = await self.pool.fetchrow(
-            "select attachment from chatkit_attachments where id = $1",
+            "select attachment from chatkit_attachments where tenant_id = $1 and id = $2",
+            tenant_id,
             attachment_id,
         )
         if not row:

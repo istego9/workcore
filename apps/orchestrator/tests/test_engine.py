@@ -104,6 +104,290 @@ class RuntimeEngineTests(unittest.TestCase):
         engine.execute_until_blocked(run)
         self.assertEqual(run.node_outputs.get("set"), "Alice")
 
+    def test_agent_prefers_live_executor_from_agent_mode_flag(self):
+        nodes = [
+            Node("start", "start"),
+            Node("agent", "agent"),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "agent"),
+            Edge("agent", "end"),
+        ]
+        calls = {"live": 0, "mock": 0}
+
+        def live_agent_executor(run, node, emit):
+            calls["live"] += 1
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"mock": False})
+
+        def mock_agent_executor(run, node, emit):
+            calls["mock"] += 1
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"mock": True})
+
+        engine = self._engine(
+            nodes,
+            edges,
+            executors={
+                "agent": mock_agent_executor,
+                "agent_live": live_agent_executor,
+                "agent_mock": mock_agent_executor,
+            },
+        )
+        run = engine.start_run({}, metadata={"agent_executor_mode": "live"})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(run.node_runs["agent"].output, {"mock": False})
+        self.assertEqual(calls["live"], 1)
+        self.assertEqual(calls["mock"], 0)
+
+    def test_agent_prefers_mock_executor_when_llm_disabled(self):
+        nodes = [
+            Node("start", "start"),
+            Node("agent", "agent"),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "agent"),
+            Edge("agent", "end"),
+        ]
+        calls = {"live": 0, "mock": 0}
+
+        def live_agent_executor(run, node, emit):
+            calls["live"] += 1
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"mock": False})
+
+        def mock_agent_executor(run, node, emit):
+            calls["mock"] += 1
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"mock": True})
+
+        engine = self._engine(
+            nodes,
+            edges,
+            executors={
+                "agent": live_agent_executor,
+                "agent_live": live_agent_executor,
+                "agent_mock": mock_agent_executor,
+            },
+        )
+        run = engine.start_run({}, metadata={"llm_enabled": False})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(run.node_runs["agent"].output, {"mock": True})
+        self.assertEqual(calls["live"], 0)
+        self.assertEqual(calls["mock"], 1)
+
+    def test_agent_live_mode_fails_when_live_executor_missing(self):
+        nodes = [
+            Node("start", "start"),
+            Node("agent", "agent"),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "agent"),
+            Edge("agent", "end"),
+        ]
+
+        def mock_agent_executor(run, node, emit):
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"mock": True})
+
+        engine = self._engine(
+            nodes,
+            edges,
+            executors={
+                "agent": mock_agent_executor,
+                "agent_mock": mock_agent_executor,
+            },
+        )
+        run = engine.start_run({}, metadata={"agent_executor_mode": "live"})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "FAILED")
+        self.assertIn("Live agent executor not configured", run.node_runs["agent"].last_error)
+
+    def test_agent_prefers_live_executor_when_run_mode_live_without_metadata_flags(self):
+        nodes = [
+            Node("start", "start"),
+            Node("agent", "agent"),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "agent"),
+            Edge("agent", "end"),
+        ]
+        calls = {"live": 0, "mock": 0}
+
+        def live_agent_executor(run, node, emit):
+            calls["live"] += 1
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"mock": False})
+
+        def mock_agent_executor(run, node, emit):
+            calls["mock"] += 1
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"mock": True})
+
+        engine = self._engine(
+            nodes,
+            edges,
+            executors={
+                "agent": mock_agent_executor,
+                "agent_live": live_agent_executor,
+                "agent_mock": mock_agent_executor,
+            },
+        )
+        run = engine.start_run({}, mode="live")
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(run.node_runs["agent"].output, {"mock": False})
+        self.assertEqual(calls["live"], 1)
+        self.assertEqual(calls["mock"], 0)
+
+    def test_agent_structured_output_auto_merges_into_state(self):
+        nodes = [
+            Node("start", "start", {"defaults": {"submission_id": "sub_1"}}),
+            Node(
+                "classify_docs",
+                "agent",
+                {
+                    "output_format": "json_schema",
+                    "output_schema": {
+                        "type": "object",
+                        "required": ["document_classification"],
+                        "properties": {
+                            "document_classification": {"type": "array"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            ),
+            Node("output", "output", {"expression": "state"}),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "classify_docs"),
+            Edge("classify_docs", "output"),
+            Edge("output", "end"),
+        ]
+
+        def live_agent_executor(run, node, emit):
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(
+                output={
+                    "document_classification": [
+                        {"doc_id": "doc_1", "doc_type": "other", "confidence": 0.9}
+                    ]
+                }
+            )
+
+        engine = self._engine(nodes, edges, executors={"agent": live_agent_executor})
+        run = engine.start_run({})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertIn("document_classification", run.state)
+        self.assertEqual(
+            run.outputs,
+            {
+                "result": {
+                    "submission_id": "sub_1",
+                    "document_classification": [
+                        {"doc_id": "doc_1", "doc_type": "other", "confidence": 0.9}
+                    ],
+                }
+            },
+        )
+
+    def test_agent_merge_output_to_state_can_be_disabled(self):
+        nodes = [
+            Node("start", "start", {"defaults": {"submission_id": "sub_1"}}),
+            Node(
+                "extract_fields",
+                "agent",
+                {
+                    "output_format": "json_schema",
+                    "merge_output_to_state": False,
+                    "output_schema": {
+                        "type": "object",
+                        "required": ["extracted_fields"],
+                        "properties": {
+                            "extracted_fields": {"type": "object"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            ),
+            Node("output", "output", {"expression": "state"}),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "extract_fields"),
+            Edge("extract_fields", "output"),
+            Edge("output", "end"),
+        ]
+
+        def live_agent_executor(run, node, emit):
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"extracted_fields": {"insured": {"name": "ACME"}}})
+
+        engine = self._engine(nodes, edges, executors={"agent": live_agent_executor})
+        run = engine.start_run({})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertNotIn("extracted_fields", run.state)
+        self.assertEqual(run.outputs, {"result": {"submission_id": "sub_1"}})
+
+    def test_agent_output_can_be_written_to_explicit_state_target(self):
+        nodes = [
+            Node("start", "start"),
+            Node(
+                "extract_fields",
+                "agent",
+                {
+                    "state_target": "contracts.extraction",
+                },
+            ),
+            Node("output", "output", {"expression": "state"}),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "extract_fields"),
+            Edge("extract_fields", "output"),
+            Edge("output", "end"),
+        ]
+
+        def live_agent_executor(run, node, emit):
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"extracted_fields": {"insured": {"name": "ACME"}}})
+
+        engine = self._engine(nodes, edges, executors={"agent": live_agent_executor})
+        run = engine.start_run({})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(
+            run.state,
+            {"contracts": {"extraction": {"extracted_fields": {"insured": {"name": "ACME"}}}}},
+        )
+
     def test_if_else_branching(self):
         nodes = [
             Node("start", "start", {"defaults": {"flag": True}}),

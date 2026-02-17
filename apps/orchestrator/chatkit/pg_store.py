@@ -33,13 +33,22 @@ class PostgresChatKitStore(Store):
 
         return json.dumps(payload, default=_default)
 
+    @staticmethod
+    def _tenant_id(context: Any) -> str:
+        tenant_id = getattr(context, "tenant_id", None)
+        if isinstance(tenant_id, str) and tenant_id:
+            return tenant_id
+        raise RuntimeError("tenant_id is required in ChatKit context")
+
     async def load_thread(self, thread_id: str, context) -> ThreadMetadata:
+        tenant_id = self._tenant_id(context)
         row = await self.pool.fetchrow(
             """
             select id, title, status, metadata, created_at
             from chatkit_threads
-            where id = $1
+            where tenant_id = $1 and id = $2
             """,
+            tenant_id,
             thread_id,
         )
         if not row:
@@ -57,17 +66,19 @@ class PostgresChatKitStore(Store):
         )
 
     async def save_thread(self, thread: ThreadMetadata, context) -> None:
+        tenant_id = self._tenant_id(context)
         payload = thread.model_dump()
         await self.pool.execute(
             """
-            insert into chatkit_threads (id, title, status, metadata, created_at, updated_at)
-            values ($1, $2, $3::jsonb, $4::jsonb, $5, now())
-            on conflict (id) do update
+            insert into chatkit_threads (tenant_id, id, title, status, metadata, created_at, updated_at)
+            values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, now())
+            on conflict (tenant_id, id) do update
               set title = excluded.title,
                   status = excluded.status,
                   metadata = excluded.metadata,
                   updated_at = now()
             """,
+            tenant_id,
             thread.id,
             payload.get("title"),
             self._dump_json(payload.get("status")),
@@ -83,17 +94,21 @@ class PostgresChatKitStore(Store):
         order: str,
         context,
     ) -> Page[ThreadItem]:
+        tenant_id = self._tenant_id(context)
         direction = "DESC" if order == "desc" else "ASC"
-        params: list[Any] = [thread_id]
+        params: list[Any] = [tenant_id, thread_id]
         clause = ""
         if after:
             after_seq = await self.pool.fetchval(
-                "select seq from chatkit_items where id = $1", after
+                "select seq from chatkit_items where tenant_id = $1 and id = $2 and thread_id = $3",
+                tenant_id,
+                after,
+                thread_id,
             )
             if after_seq is None:
                 return Page(data=[], has_more=False, after=None)
             op = "<" if direction == "DESC" else ">"
-            clause = f"and seq {op} $2"
+            clause = f"and seq {op} $3"
             params.append(after_seq)
 
         params.append(limit + 1)
@@ -101,7 +116,7 @@ class PostgresChatKitStore(Store):
             f"""
             select item
             from chatkit_items
-            where thread_id = $1 {clause}
+            where tenant_id = $1 and thread_id = $2 {clause}
             order by seq {direction}
             limit ${len(params)}
             """,
@@ -119,23 +134,27 @@ class PostgresChatKitStore(Store):
         return Page(data=items, has_more=has_more, after=after_id)
 
     async def save_attachment(self, attachment: Attachment, context) -> None:
+        tenant_id = self._tenant_id(context)
         payload = attachment.model_dump()
         await self.pool.execute(
             """
-            insert into chatkit_attachments (id, thread_id, attachment, created_at)
-            values ($1, $2, $3::jsonb, now())
-            on conflict (id) do update
+            insert into chatkit_attachments (tenant_id, id, thread_id, attachment, created_at)
+            values ($1, $2, $3, $4::jsonb, now())
+            on conflict (tenant_id, id) do update
               set thread_id = excluded.thread_id,
                   attachment = excluded.attachment
             """,
+            tenant_id,
             payload.get("id"),
             payload.get("thread_id"),
             self._dump_json(payload),
         )
 
     async def load_attachment(self, attachment_id: str, context) -> Attachment:
+        tenant_id = self._tenant_id(context)
         row = await self.pool.fetchrow(
-            "select attachment from chatkit_attachments where id = $1",
+            "select attachment from chatkit_attachments where tenant_id = $1 and id = $2",
+            tenant_id,
             attachment_id,
         )
         if not row:
@@ -146,8 +165,10 @@ class PostgresChatKitStore(Store):
         return Attachment.model_validate(attachment_data)
 
     async def delete_attachment(self, attachment_id: str, context) -> None:
+        tenant_id = self._tenant_id(context)
         await self.pool.execute(
-            "delete from chatkit_attachments where id = $1",
+            "delete from chatkit_attachments where tenant_id = $1 and id = $2",
+            tenant_id,
             attachment_id,
         )
 
@@ -158,25 +179,29 @@ class PostgresChatKitStore(Store):
         order: str,
         context,
     ) -> Page[ThreadMetadata]:
+        tenant_id = self._tenant_id(context)
         direction = "DESC" if order == "desc" else "ASC"
         params: list[Any] = []
         clause = ""
         if after:
             after_seq = await self.pool.fetchval(
-                "select seq from chatkit_threads where id = $1", after
+                "select seq from chatkit_threads where tenant_id = $1 and id = $2",
+                tenant_id,
+                after,
             )
             if after_seq is None:
                 return Page(data=[], has_more=False, after=None)
             op = "<" if direction == "DESC" else ">"
-            clause = f"where seq {op} $1"
+            clause = f"and seq {op} $2"
             params.append(after_seq)
 
+        params.insert(0, tenant_id)
         params.append(limit + 1)
         rows = await self.pool.fetch(
             f"""
             select id, title, status, metadata, created_at
             from chatkit_threads
-            {clause}
+            where tenant_id = $1 {clause}
             order by seq {direction}
             limit ${len(params)}
             """,
@@ -201,16 +226,18 @@ class PostgresChatKitStore(Store):
         return Page(data=threads, has_more=has_more, after=after_id)
 
     async def add_thread_item(self, thread_id: str, item: ThreadItem, context) -> None:
+        tenant_id = self._tenant_id(context)
         payload = item.model_dump()
         await self.pool.execute(
             """
-            insert into chatkit_items (id, thread_id, type, item, created_at)
-            values ($1, $2, $3, $4::jsonb, $5)
-            on conflict (id) do update
+            insert into chatkit_items (tenant_id, id, thread_id, type, item, created_at)
+            values ($1, $2, $3, $4, $5::jsonb, $6)
+            on conflict (tenant_id, id) do update
               set thread_id = excluded.thread_id,
                   type = excluded.type,
                   item = excluded.item
             """,
+            tenant_id,
             payload.get("id"),
             thread_id,
             payload.get("type"),
@@ -222,8 +249,10 @@ class PostgresChatKitStore(Store):
         await self.add_thread_item(thread_id, item, context)
 
     async def load_item(self, thread_id: str, item_id: str, context) -> ThreadItem:
+        tenant_id = self._tenant_id(context)
         row = await self.pool.fetchrow(
-            "select item from chatkit_items where id = $1 and thread_id = $2",
+            "select item from chatkit_items where tenant_id = $1 and id = $2 and thread_id = $3",
+            tenant_id,
             item_id,
             thread_id,
         )
@@ -235,14 +264,18 @@ class PostgresChatKitStore(Store):
         return THREAD_ITEM_ADAPTER.validate_python(item_data)
 
     async def delete_thread(self, thread_id: str, context) -> None:
+        tenant_id = self._tenant_id(context)
         await self.pool.execute(
-            "delete from chatkit_threads where id = $1",
+            "delete from chatkit_threads where tenant_id = $1 and id = $2",
+            tenant_id,
             thread_id,
         )
 
     async def delete_thread_item(self, thread_id: str, item_id: str, context) -> None:
+        tenant_id = self._tenant_id(context)
         await self.pool.execute(
-            "delete from chatkit_items where id = $1 and thread_id = $2",
+            "delete from chatkit_items where tenant_id = $1 and id = $2 and thread_id = $3",
+            tenant_id,
             item_id,
             thread_id,
         )

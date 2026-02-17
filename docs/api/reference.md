@@ -21,7 +21,6 @@ Primary contract source: `/openapi.yaml` (OpenAPI 3.0.3).
   - `GET /agent-integration-kit.json`
   - `GET /agent-integration-test`
   - `GET /agent-integration-test.json`
-  - `GET /agent-integration-logs`
   - `POST /agent-integration-test/validate-draft`
   - `POST /webhooks/inbound/{integration_key}` (signature-based)
 
@@ -34,6 +33,7 @@ ChatKit service auth is configured independently:
 
 ## Required integration headers
 - `X-Tenant-Id`: tenant scope for all workflow/run operations.
+- `X-Tenant-Id` is required for `POST /chatkit` in strict multi-tenant mode.
 - `X-Correlation-Id`: request correlation key; echoed in responses/errors.
 - `X-Trace-Id`: distributed trace key; propagated to run metadata/events.
 - `X-Project-Id`: required for all `/workflows*` authoring/read operations.
@@ -69,7 +69,7 @@ All API errors use:
   - `default_orchestrator_id` (optional)
   - `settings` (optional object, default `{}`)
 - Response: `201` with `project_id`, `tenant_id`, `default_orchestrator_id`, `settings`, timestamps.
-- Conflict behavior: if `project_id` already exists, API returns `409` with `error.code = CONFLICT`.
+- Conflict behavior: if `project_id` already exists in the same tenant, API returns `409` with `error.code = CONFLICT`.
 
 ## Project registry bootstrap endpoints
 Public project-registry bootstrap no longer requires DB-side seeding.
@@ -134,6 +134,7 @@ Session stack diagnostics:
 
 ## Detailed integration logging for agent onboarding
 Use `GET /agent-integration-logs` to quickly diagnose integration issues when an external agent calls integration-kit/test endpoints.
+This endpoint is intended for external integrators, but requires bearer auth.
 
 Supported query params:
 - `limit` (default `100`, max `500`)

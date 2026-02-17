@@ -14,9 +14,10 @@ import asyncpg
 class IdempotencyStore:
     pool: asyncpg.Pool
     ttl_seconds: int = 300
-    tenant_id: str = "local"
 
-    async def start(self, key: str, scope: str) -> bool:
+    async def start(self, key: str, scope: str, tenant_id: str) -> bool:
+        if not tenant_id:
+            raise ValueError("tenant_id is required")
         now = time.time()
         expires_at = now + self.ttl_seconds
         request_hash = hashlib.sha256(f"{scope}:{key}".encode()).hexdigest()
@@ -30,7 +31,7 @@ class IdempotencyStore:
                 values ($1, $2, $3, $4, $5, $6, to_timestamp($7), now())
                 """,
                 f"idem_{uuid.uuid4().hex[:10]}",
-                self.tenant_id,
+                tenant_id,
                 key,
                 scope,
                 request_hash,
@@ -41,7 +42,15 @@ class IdempotencyStore:
         except asyncpg.UniqueViolationError:
             return False
 
-    async def complete(self, key: str, scope: str, response_body: Optional[dict] = None) -> None:
+    async def complete(
+        self,
+        key: str,
+        scope: str,
+        response_body: Optional[dict] = None,
+        tenant_id: str = "",
+    ) -> None:
+        if not tenant_id:
+            raise ValueError("tenant_id is required")
         payload = json.dumps(response_body) if response_body is not None else None
         await self.pool.execute(
             """
@@ -54,12 +63,20 @@ class IdempotencyStore:
             "COMPLETED",
             payload,
             time.time() + self.ttl_seconds,
-            self.tenant_id,
+            tenant_id,
             key,
             scope,
         )
 
-    async def fail(self, key: str, scope: str, response_body: Optional[dict] = None) -> None:
+    async def fail(
+        self,
+        key: str,
+        scope: str,
+        response_body: Optional[dict] = None,
+        tenant_id: str = "",
+    ) -> None:
+        if not tenant_id:
+            raise ValueError("tenant_id is required")
         payload = json.dumps(response_body) if response_body is not None else None
         await self.pool.execute(
             """
@@ -72,7 +89,7 @@ class IdempotencyStore:
             "FAILED",
             payload,
             time.time() + self.ttl_seconds,
-            self.tenant_id,
+            tenant_id,
             key,
             scope,
         )

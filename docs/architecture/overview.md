@@ -13,7 +13,7 @@ Status: Draft (Phase 0)
 ## System boundaries (logical)
 - Builder UI: graph editor, validation, draft/publish UI, run view.
 - Workflow Service: workflows, drafts, publish/rollback, versions.
-- Orchestrator Service: runs, node_runs, interrupts, execution semantics.
+- Orchestrator Service: project routing, intent orchestration, runs, node_runs, interrupts, execution semantics.
 - Streaming Service: SSE over run events (snapshot + replay).
 - Webhooks Service: inbound triggers and outbound callbacks.
 - ChatKit Server: advanced integration, sessions/threads, widgets/actions.
@@ -22,7 +22,9 @@ Status: Draft (Phase 0)
 ## Core entities and IDs
 - workflow_id, version_id, node_id
 - run_id, node_run_id, interrupt_id
+- project_id, orchestrator_id, session_id, decision_id
 - event_id, correlation_id, tenant_id, user_id
+- project_id uniqueness is tenant-scoped (`tenant_id + project_id`).
 
 ## Event taxonomy baseline
 Required fields for all events:
@@ -52,6 +54,7 @@ Ordering guarantees:
 ## API boundary map (logical ownership)
 - Workflow Service: /workflows, /workflows/{id}/draft, /workflows/{id}/publish, /workflows/{id}/rollback, /workflows/{id}/versions
 - Orchestrator Service: /workflows/{id}/runs, /runs/{run_id}, /runs/{run_id}/cancel, /runs/{run_id}/rerun-node, /runs/{run_id}/interrupts/*
+- Project Router / Orchestrator entry: /orchestrator/messages, /orchestrator/sessions/{session_id}/stack
 - Streaming Service: /runs/{run_id}/stream (SSE)
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*
 - ChatKit Server: chat sessions/threads, widget/actions endpoints
@@ -60,6 +63,7 @@ Ordering guarantees:
 - Postgres is the source of truth for workflow metadata, versions, runs, node_runs, interrupts, and delivery logs.
 - Object storage holds user uploads and large node outputs; only references are stored in Postgres.
 - Kafka is the event bus for run progress and streaming.
+- ChatKit and orchestration persistence are tenant-scoped for strict multi-tenant isolation.
 
 ## Correlation and tracing
 - correlation_id propagates from inbound requests to runs, node_runs, tool calls, and outbound webhooks.

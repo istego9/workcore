@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workcore.build/schemas/routing-decision.schema.json",
+  "title": "WorkCore Routing Decision",
+  "description": "Strict routing decision for project orchestrator.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "route_type": {
+      "type": "string",
+      "enum": [
+        "RESUME_CURRENT",
+        "START_WORKFLOW",
+        "SWITCH_WORKFLOW",
+        "DISAMBIGUATE",
+        "FALLBACK",
+        "CANCEL",
+        "OPERATOR"
+      ]
+    },
+    "workflow_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Target workflow_id when route_type implies starting or switching."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Inferred intent tags."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "switch_margin": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "STOP_INTENT",
+          "OPERATOR_REQUEST",
+          "HIGH_CONFIDENCE_MATCH",
+          "LOW_CONFIDENCE",
+          "AMBIGUOUS",
+          "NO_CANDIDATES",
+          "SWITCH_MARGIN_MET",
+          "STAY_IN_FLOW"
+        ]
+      }
+    },
+    "clarifying_question": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "One clarifying question when route_type is DISAMBIGUATE."
+    },
+    "clarifying_options": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "route_type",
+    "workflow_id",
+    "tags",
+    "confidence",
+    "switch_margin",
+    "reason_codes",
+    "clarifying_question",
+    "clarifying_options"
+  ]
+}

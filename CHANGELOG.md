@@ -7,6 +7,29 @@ The format follows a simple date-based log.
 ## 2026-02-16
 
 ### API diff vs previous version
+- Previous API version: `0.4.3`
+- Current API version: `0.5.0`
+- Compatibility: breaking (tenant scoping tightened for ChatKit and integration diagnostics endpoint now requires auth)
+
+### Added
+- Required tenant header parameter for strict multi-tenant ChatKit endpoint:
+  - `POST /chatkit` now requires `X-Tenant-Id`.
+- New reusable OpenAPI parameter:
+  - `TenantIdRequired`.
+
+### Changed
+- `GET /agent-integration-logs` now follows API bearer auth policy for external integrator access.
+- Project identifiers are now documented as tenant-scoped (`tenant_id + project_id`) in API and architecture docs.
+
+### Deprecated
+- None.
+
+### Removed
+- Anonymous access expectation for `GET /agent-integration-logs`.
+
+## 2026-02-16
+
+### API diff vs previous version
 - Previous API version: `0.4.2`
 - Current API version: `0.4.3`
 - Compatibility: additive (project-registry bootstrap API extended without breaking existing endpoints)

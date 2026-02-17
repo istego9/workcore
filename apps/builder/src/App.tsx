@@ -1,4 +1,5 @@
 import {
+  Autocomplete,
   Anchor,
   AppShell,
   ActionIcon,
@@ -64,6 +65,12 @@ import type {
   WorkflowExport,
   WorkflowSummary
 } from './builder/types';
+import {
+  RECENT_PROJECT_IDS_STORAGE_KEY,
+  mergeRecentProjectIds,
+  normalizeProjectId,
+  parseRecentProjectIds
+} from './project-switcher';
 import { shouldAutoCreateWorkflow } from './workflow-auto-create';
 import './styles.css';
 
@@ -707,6 +714,35 @@ export default function App() {
   const [runHistoryOpen, { open: openRunHistory, close: closeRunHistory }] = useDisclosure(false);
   const [workflowId, setWorkflowId] = useState('');
   const [workflowInput, setWorkflowInput] = useState('');
+  const [projectId, setProjectId] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    const fromQuery = normalizeProjectId(
+      new URLSearchParams(window.location.search).get('project_id')
+    );
+    if (fromQuery) return fromQuery;
+    try {
+      const stored = parseRecentProjectIds(
+        window.localStorage.getItem(RECENT_PROJECT_IDS_STORAGE_KEY)
+      );
+      return stored[0] || '';
+    } catch {
+      return '';
+    }
+  });
+  const [recentProjectIds, setRecentProjectIds] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const stored = parseRecentProjectIds(
+        window.localStorage.getItem(RECENT_PROJECT_IDS_STORAGE_KEY)
+      );
+      const fromQuery = normalizeProjectId(
+        new URLSearchParams(window.location.search).get('project_id')
+      );
+      return mergeRecentProjectIds(stored, [fromQuery || stored[0]]);
+    } catch {
+      return [];
+    }
+  });
   const [workflowName, setWorkflowName] = useState('');
   const [workflowDescription, setWorkflowDescription] = useState('');
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
@@ -773,10 +809,15 @@ export default function App() {
       const name = item.name?.toLowerCase() || '';
       const description = item.description?.toLowerCase() || '';
       const id = item.workflow_id?.toLowerCase() || '';
-    return name.includes(query) || description.includes(query) || id.includes(query);
-  });
-
+      return name.includes(query) || description.includes(query) || id.includes(query);
+    });
   }, [workflowList, workflowQuery]);
+  const normalizedProjectId = normalizeProjectId(projectId);
+  const projectSwitcherOptions = useMemo(
+    () => recentProjectIds.map((id) => ({ value: id, label: id })),
+    [recentProjectIds]
+  );
+  const activeProjectId = normalizedProjectId || undefined;
 
   const historySummary = useMemo(
     () => summarizeHistory(runHistory, historyInputRateUsdPer1M, historyOutputRateUsdPer1M),
@@ -885,34 +926,48 @@ export default function App() {
   }, [workflowId, metaDirty, workflowName, workflowDescription]);
 
   useEffect(() => {
+    if (!activeProjectId) return;
     if (!shouldAutoCreateWorkflow(workflowId, autoCreatedRef.current, skipAutoCreate)) return;
     autoCreatedRef.current = true;
     void createNewWorkflow(undefined, { auto: true });
-  }, [workflowId, skipAutoCreate]);
+  }, [workflowId, skipAutoCreate, activeProjectId]);
 
   useEffect(() => {
     if (!isTestEnv || !autoCreatedWorkflowId) return;
+    if (!activeProjectId) return;
     if (!workflowId || workflowId === autoCreatedWorkflowId) return;
-    void deleteWorkflow(autoCreatedWorkflowId);
+    void deleteWorkflow(autoCreatedWorkflowId, activeProjectId);
     setAutoCreatedWorkflowId(null);
-  }, [workflowId, autoCreatedWorkflowId, isTestEnv]);
+  }, [workflowId, autoCreatedWorkflowId, isTestEnv, activeProjectId]);
 
   useEffect(() => {
     return () => {
-      if (isTestEnv && autoCreatedWorkflowId) {
-        void deleteWorkflow(autoCreatedWorkflowId);
+      if (isTestEnv && autoCreatedWorkflowId && activeProjectId) {
+        void deleteWorkflow(autoCreatedWorkflowId, activeProjectId);
       }
     };
-  }, [autoCreatedWorkflowId, isTestEnv]);
+  }, [autoCreatedWorkflowId, isTestEnv, activeProjectId]);
 
   useEffect(() => {
     if (!listOpen) return;
     void fetchWorkflows();
-  }, [listOpen]);
+  }, [listOpen, activeProjectId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        RECENT_PROJECT_IDS_STORAGE_KEY,
+        JSON.stringify(recentProjectIds)
+      );
+    } catch {
+      // Ignore storage failures (private mode/quota).
+    }
+  }, [recentProjectIds]);
 
   useEffect(() => {
     void fetchWorkflows();
-  }, []);
+  }, [activeProjectId]);
 
   const markDirty = () => {
     setDirty(true);
@@ -1055,6 +1110,8 @@ export default function App() {
   };
 
   const handleImportWorkflow = async (file: File) => {
+    const projectScope = requireProjectId('Import workflow');
+    if (!projectScope) return;
     setCreatingWorkflow(true);
     setStatus({ tone: 'working', label: 'Importing workflow...' });
     try {
@@ -1078,11 +1135,14 @@ export default function App() {
         data.workflow?.description !== undefined && data.workflow?.description !== null
           ? String(data.workflow.description)
           : '';
-      const result = await createWorkflow({
-        name,
-        description,
-        draft
-      });
+      const result = await createWorkflow(
+        {
+          name,
+          description,
+          draft
+        },
+        projectScope
+      );
       if (result.error) {
         setStatus({ tone: 'error', label: 'Import failed', detail: result.error.message });
         setCreatingWorkflow(false);
@@ -1114,15 +1174,23 @@ export default function App() {
 
   const createNewWorkflow = async (nameOverride?: string, options?: { auto?: boolean }) => {
     if (creatingWorkflow) return;
+    const projectScope = requireProjectId('Create workflow');
+    if (!projectScope) {
+      autoCreatedRef.current = false;
+      return;
+    }
     setCreatingWorkflow(true);
     setStatus({ tone: 'working', label: 'Creating workflow...' });
     const name = (nameOverride || 'Untitled workflow').trim() || 'Untitled workflow';
     const draft = DEFAULT_DRAFT;
-    const result = await createWorkflow({
-      name,
-      description: '',
-      draft
-    });
+    const result = await createWorkflow(
+      {
+        name,
+        description: '',
+        draft
+      },
+      projectScope
+    );
     if (result.error) {
       setStatus({ tone: 'error', label: 'Create failed', detail: result.error.message });
       setCreatingWorkflow(false);
@@ -1148,15 +1216,21 @@ export default function App() {
 
   const handleUpdateWorkflowMeta = async () => {
     if (!workflowId) return;
+    const projectScope = requireProjectId('Save workflow metadata');
+    if (!projectScope) return;
     const name = workflowName.trim();
     if (!name) {
       setStatus({ tone: 'warn', label: 'Name is required' });
       return;
     }
-    const result = await updateWorkflowMeta(workflowId, {
-      name,
-      description: workflowDescription || null
-    });
+    const result = await updateWorkflowMeta(
+      workflowId,
+      {
+        name,
+        description: workflowDescription || null
+      },
+      projectScope
+    );
     if (result.error) {
       setStatus({ tone: 'error', label: 'Update failed', detail: result.error.message });
       return;
@@ -1174,8 +1248,10 @@ export default function App() {
       setStatus({ tone: 'warn', label: 'Enter workflow ID' });
       return;
     }
+    const projectScope = requireProjectId('Load workflow');
+    if (!projectScope) return;
     setStatus({ tone: 'working', label: 'Loading workflow...' });
-    const result = await getWorkflow(workflowIdToLoad.trim());
+    const result = await getWorkflow(workflowIdToLoad.trim(), projectScope);
     if (result.error) {
       setStatus({ tone: 'error', label: 'Load failed', detail: result.error.message });
       return;
@@ -1205,9 +1281,53 @@ export default function App() {
     await loadWorkflowById(workflowInput.trim());
   };
 
+  const rememberProjectIds = (...projectIds: Array<unknown>) => {
+    setRecentProjectIds((prev) => mergeRecentProjectIds(prev, projectIds));
+  };
+
+  const requireProjectId = (actionLabel: string): string | null => {
+    if (activeProjectId) return activeProjectId;
+    setStatus({ tone: 'warn', label: 'Select project first', detail: actionLabel });
+    return null;
+  };
+
+  const applyProjectId = (value: unknown) => {
+    const normalized = normalizeProjectId(value);
+    const previous = normalizedProjectId;
+    setProjectId(normalized);
+    rememberProjectIds(normalized);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      if (normalized) {
+        url.searchParams.set('project_id', normalized);
+      } else {
+        url.searchParams.delete('project_id');
+      }
+      const search = url.searchParams.toString();
+      const nextUrl = `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
+      window.history.replaceState({}, '', nextUrl);
+    }
+    if (normalized !== previous) {
+      setWorkflowId('');
+      setWorkflowInput('');
+      setWorkflowName('');
+      setWorkflowDescription('');
+      setActiveVersionId(null);
+      setRunHistory([]);
+      resetDraftToDefault();
+      setMetaDirty(false);
+      setStatus({ tone: normalized ? 'ok' : 'warn', label: normalized ? `Project ${normalized}` : 'Select project' });
+    }
+  };
+
   const fetchWorkflows = async () => {
+    if (!activeProjectId) {
+      setWorkflowList([]);
+      setWorkflowListLoading(false);
+      return;
+    }
     setWorkflowListLoading(true);
-    const result = await listWorkflows(100);
+    const result = await listWorkflows(100, activeProjectId);
     if (result.error) {
       setStatus({ tone: 'error', label: 'List failed', detail: result.error.message });
       setWorkflowListLoading(false);
@@ -1230,15 +1350,19 @@ export default function App() {
       setRunHistoryLoading(false);
       return;
     }
-    setRunHistory(result.data?.items || []);
+    const historyItems = result.data?.items || [];
+    setRunHistory(historyItems);
+    rememberProjectIds(...historyItems.map((item) => item.project_id));
     setRunHistoryLoading(false);
   };
 
   const handleSaveDraft = async () => {
     if (!workflowId) return;
+    const projectScope = requireProjectId('Save draft');
+    if (!projectScope) return;
     setStatus({ tone: 'working', label: 'Saving draft...' });
     const draft = buildDraft(nodes, edges, variablesSchema);
-    const result = await updateDraft(workflowId, draft);
+    const result = await updateDraft(workflowId, draft, projectScope);
     if (result.error) {
       setStatus({ tone: 'error', label: 'Save failed', detail: result.error.message });
       return;
@@ -1252,6 +1376,8 @@ export default function App() {
       setStatus({ tone: 'warn', label: 'Create or load a workflow first' });
       return null;
     }
+    const projectScope = requireProjectId('Publish workflow');
+    if (!projectScope) return null;
     const errors = issues.filter((issue) => issue.level === 'error');
     if (errors.length) {
       setStatus({ tone: 'error', label: 'Fix validation errors before publishing' });
@@ -1261,7 +1387,7 @@ export default function App() {
       await handleSaveDraft();
     }
     setStatus({ tone: 'working', label: 'Publishing...' });
-    const result = await publishWorkflow(workflowId);
+    const result = await publishWorkflow(workflowId, projectScope);
     if (result.error) {
       setStatus({ tone: 'error', label: 'Publish failed', detail: result.error.message });
       return null;
@@ -1281,8 +1407,10 @@ export default function App() {
       setStatus({ tone: 'warn', label: 'No workflow to rollback' });
       return;
     }
+    const projectScope = requireProjectId('Rollback workflow');
+    if (!projectScope) return;
     setStatus({ tone: 'working', label: 'Rolling back...' });
-    const result = await rollbackWorkflow(workflowId);
+    const result = await rollbackWorkflow(workflowId, projectScope);
     if (result.error) {
       setStatus({ tone: 'error', label: 'Rollback failed', detail: result.error.message });
       return;
@@ -1302,12 +1430,18 @@ export default function App() {
       setStatus({ tone: 'warn', label: 'Publish a workflow first' });
       return;
     }
+    const projectScope = requireProjectId('Start run');
+    if (!projectScope) return;
     setStatus({ tone: 'working', label: 'Starting run...' });
-    const result = await startRun(workflowId, {
-      inputs: {},
-      version_id: activeVersionId || undefined,
-      mode: runMode
-    });
+    const result = await startRun(
+      workflowId,
+      {
+        inputs: {},
+        version_id: activeVersionId || undefined,
+        mode: runMode
+      },
+      projectScope
+    );
     if (result.error) {
       setStatus({ tone: 'error', label: 'Run failed', detail: result.error.message });
       return;
@@ -1349,10 +1483,13 @@ export default function App() {
     if (activeVersionId) {
       url.searchParams.set('workflow_version_id', activeVersionId);
     }
+    if (projectId.trim()) {
+      url.searchParams.set('project_id', projectId.trim());
+    }
     url.searchParams.set('auto', '1');
     url.searchParams.set('auto_start', '1');
     return url.toString();
-  }, [workflowId, activeVersionId]);
+  }, [workflowId, activeVersionId, projectId]);
 
   const chatkitEmbedUrl = useMemo(() => {
     if (!chatkitUrl) return '';
@@ -1459,6 +1596,9 @@ export default function App() {
     if (connectingFrom) {
       setConnectingFrom(null);
     }
+    if (selectedNodeId) {
+      setSelectedNodeId(null);
+    }
     setPanning(true);
     setPanStart({ x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y });
   };
@@ -1466,9 +1606,49 @@ export default function App() {
   const renderInspector = () => {
     if (!selectedNode) {
       return (
-        <Text size="sm" c="dimmed">
-          Select a node to edit its configuration.
-        </Text>
+        <Stack gap="sm">
+          <TextInput
+            label="Workflow name"
+            value={workflowName}
+            placeholder="Untitled workflow"
+            onChange={(event) => {
+              setWorkflowName(event.currentTarget.value);
+              setMetaDirty(true);
+            }}
+          />
+          <Textarea
+            label="Description"
+            minRows={2}
+            value={workflowDescription}
+            placeholder="Define the run logic and publish."
+            onChange={(event) => {
+              setWorkflowDescription(event.currentTarget.value);
+              setMetaDirty(true);
+            }}
+          />
+          {chatkitUrl && (
+            <Group align="end" gap="xs" wrap="nowrap">
+              <TextInput
+                label="Chat link"
+                value={chatkitUrl}
+                readOnly
+                style={{ flex: 1 }}
+                data-testid="chat-link"
+                aria-label="Chat link"
+              />
+              <CopyButton value={chatkitUrl}>
+                {({ copied, copy }) => (
+                  <Button variant="light" size="sm" onClick={copy}>
+                    {copied ? 'Copied' : 'Copy link'}
+                  </Button>
+                )}
+              </CopyButton>
+            </Group>
+          )}
+          <Text size="xs" c="dimmed">
+            Select a node to edit its configuration.
+          </Text>
+        </Stack>
       );
     }
 
@@ -1916,6 +2096,16 @@ export default function App() {
             </Stack>
           </Group>
           <Group gap="xs">
+            <Autocomplete
+              placeholder={projectSwitcherOptions.length ? 'Project' : 'Project ID'}
+              w={180}
+              data={projectSwitcherOptions}
+              value={projectId}
+              data-testid="project-selector"
+              onChange={(value) => setProjectId(value)}
+              onOptionSubmit={(value) => applyProjectId(value)}
+              onBlur={(event) => applyProjectId(event.currentTarget.value)}
+            />
             <Select
               placeholder="Select workflow"
               searchable
@@ -2149,13 +2339,16 @@ export default function App() {
             onClose={() => setChatOpen(false)}
             position="right"
             size={520}
-            title="Test Chat"
+            title="Chat"
             overlayProps={{ opacity: 0.2, blur: 2 }}
           >
             <Stack gap="xs" style={{ height: 'calc(100vh - 160px)' }}>
               <Group justify="space-between" align="center">
                 <Text size="xs" c="dimmed">
                   Workflow {workflowId || '—'}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  Project {projectId.trim() || '—'}
                 </Text>
                 <Button
                   size="xs"
@@ -2196,67 +2389,25 @@ export default function App() {
               </Box>
             </Stack>
           </Drawer>
-          <Group justify="space-between" align="flex-start">
-            <Stack gap={6} style={{ maxWidth: 520 }}>
-              <TextInput
-                label="Workflow name"
-                value={workflowName}
-                placeholder="Untitled workflow"
-                onChange={(event) => {
-                  setWorkflowName(event.currentTarget.value);
-                  setMetaDirty(true);
-                }}
-              />
-              <Textarea
-                label="Description"
-                minRows={2}
-                value={workflowDescription}
-                placeholder="Define the run logic and publish."
-                onChange={(event) => {
-                  setWorkflowDescription(event.currentTarget.value);
-                  setMetaDirty(true);
-                }}
-              />
-            </Stack>
-            <Group gap="xs">
-              <Badge color={statusTone[status.tone]} variant="light">
-                {status.label}
+          <Group justify="flex-end" align="center" gap="xs">
+            <Badge color={statusTone[status.tone]} variant="light">
+              {status.label}
+            </Badge>
+            {status.detail && (
+              <Badge color="gray" variant="outline">
+                {status.detail}
               </Badge>
-              {status.detail && (
-                <Badge color="gray" variant="outline">
-                  {status.detail}
-                </Badge>
-              )}
-              {dirty && <Badge color="orange" variant="light">Unsaved</Badge>}
-              {activeVersionId && (
-                <Badge color="teal" variant="light">
-                  Published
-                </Badge>
-              )}
-              <Badge color="gray" variant="light">
-                Scale {Math.round(scale * 100)}%
+            )}
+            {dirty && <Badge color="orange" variant="light">Unsaved</Badge>}
+            {activeVersionId && (
+              <Badge color="teal" variant="light">
+                Published
               </Badge>
-            </Group>
+            )}
+            <Badge color="gray" variant="light">
+              Scale {Math.round(scale * 100)}%
+            </Badge>
           </Group>
-          {chatkitUrl && (
-            <Group align="end" gap="xs">
-              <TextInput
-                label="Chat link"
-                value={chatkitUrl}
-                readOnly
-                w={520}
-                data-testid="chat-link"
-                aria-label="Chat link"
-              />
-              <CopyButton value={chatkitUrl}>
-                {({ copied, copy }) => (
-                  <Button variant="light" size="sm" onClick={copy}>
-                    {copied ? 'Copied' : 'Copy link'}
-                  </Button>
-                )}
-              </CopyButton>
-            </Group>
-          )}
           <Box
             className="canvas"
             ref={canvasRef}

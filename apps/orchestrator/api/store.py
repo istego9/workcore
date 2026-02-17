@@ -134,6 +134,22 @@ class PostgresRunStore:
         run.metadata["tenant_id"] = tenant
         _apply_run_timestamps(run)
         mode = run.mode if isinstance(run.mode, str) and run.mode else "live"
+        project_id = run.metadata.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            project_id = None
+        session_id = run.metadata.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            session_id = None
+        resolved_version = run.metadata.get("resolved_version")
+        if not isinstance(resolved_version, str) or not resolved_version:
+            resolved_version = run.version_id
+        cancellable_raw = run.metadata.get("cancellable")
+        if isinstance(cancellable_raw, bool):
+            cancellable = cancellable_raw
+        else:
+            cancellable = run.status in {"RUNNING", "WAITING_FOR_INPUT"}
+        commit_point_raw = run.metadata.get("commit_point_reached")
+        commit_point_reached = commit_point_raw if isinstance(commit_point_raw, bool) else None
         outputs_json = _jsonb(run.outputs) if run.outputs is not None else None
         node_outputs_json = _jsonb(run.node_outputs or {})
         branch_selection_json = _jsonb(run.branch_selection or {})
@@ -146,12 +162,14 @@ class PostgresRunStore:
                     """
                     insert into runs (
                         id, workflow_id, version_id, tenant_id, status, inputs, state, outputs, mode,
+                        project_id, session_id, resolved_version, cancellable, commit_point_reached,
                         metadata, node_outputs, branch_selection, loop_state, skipped_nodes,
                         started_at, completed_at, updated_at
                     )
                     values (
                         $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9,
-                        $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb,
+                        $10, $11, $12, $13, $14,
+                        $15::jsonb, $16::jsonb, $17::jsonb, $18::jsonb, $19::jsonb,
                         now(),
                         case when $5 in ('COMPLETED', 'FAILED', 'CANCELLED') then now() else null end,
                         now()
@@ -164,6 +182,11 @@ class PostgresRunStore:
                           state = excluded.state,
                           outputs = excluded.outputs,
                           mode = excluded.mode,
+                          project_id = excluded.project_id,
+                          session_id = excluded.session_id,
+                          resolved_version = excluded.resolved_version,
+                          cancellable = excluded.cancellable,
+                          commit_point_reached = excluded.commit_point_reached,
                           metadata = excluded.metadata,
                           node_outputs = excluded.node_outputs,
                           branch_selection = excluded.branch_selection,
@@ -186,6 +209,11 @@ class PostgresRunStore:
                     _jsonb(run.state or {}),
                     outputs_json,
                     mode,
+                    project_id,
+                    session_id,
+                    resolved_version,
+                    cancellable,
+                    commit_point_reached,
                     _jsonb(run.metadata or {}),
                     node_outputs_json,
                     branch_selection_json,
@@ -305,7 +333,9 @@ class PostgresRunStore:
         row = await self.pool.fetchrow(
             """
             select
-                id, workflow_id, version_id, status, inputs, state, outputs, mode, metadata,
+                id, workflow_id, version_id, status, inputs, state, outputs, mode,
+                project_id, session_id, resolved_version, cancellable, commit_point_reached,
+                metadata,
                 node_outputs, branch_selection, loop_state, skipped_nodes,
                 created_at, updated_at, started_at, completed_at
             from runs
@@ -387,6 +417,16 @@ class PostgresRunStore:
         skipped_nodes = {str(item) for item in _parse_list(row["skipped_nodes"])}
         mode = row["mode"] if isinstance(row["mode"], str) and row["mode"] else "live"
         metadata = _parse_dict(row["metadata"])
+        if row["project_id"] and not metadata.get("project_id"):
+            metadata["project_id"] = row["project_id"]
+        if row["session_id"] and not metadata.get("session_id"):
+            metadata["session_id"] = row["session_id"]
+        if row["resolved_version"] and not metadata.get("resolved_version"):
+            metadata["resolved_version"] = row["resolved_version"]
+        if isinstance(row["cancellable"], bool):
+            metadata["cancellable"] = row["cancellable"]
+        if isinstance(row["commit_point_reached"], bool):
+            metadata["commit_point_reached"] = row["commit_point_reached"]
         if row["created_at"]:
             metadata["created_at"] = row["created_at"].isoformat()
         if row["updated_at"]:

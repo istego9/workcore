@@ -10,6 +10,7 @@ Status: Draft
 
 ## Endpoints
 - `POST /chatkit` — ChatKit Server endpoint (streaming + non-streaming requests).
+- `X-Tenant-Id` is required on every ChatKit request.
 
 ## External client contract (supported request types)
 - `threads.create`:
@@ -71,6 +72,7 @@ Action payload fields consumed by runtime:
 - ChatKit data persists in Postgres tables: `chatkit_threads`, `chatkit_items`, `chatkit_attachments`.
 - Attachments are stored in object storage (MinIO/S3-compatible); metadata tracks `object_key`.
 - In-memory stores remain available for tests/dev.
+- All ChatKit reads/writes are tenant-scoped.
 
 ## Service deployment
 - Run ChatKit as a separate service using `apps/orchestrator/chatkit/service.py` (ASGI app).
@@ -79,8 +81,9 @@ Action payload fields consumed by runtime:
 - Example: `uvicorn apps.orchestrator.chatkit.service:app --port 8001`
 - Apply migrations with `python scripts/migrate.py` (uses `CHATKIT_DATABASE_URL` or `DATABASE_URL`).
 
-## Auth (minimal guard)
+## Auth
 - If `CHATKIT_AUTH_TOKEN` is set, `/chatkit` requires `Authorization: Bearer <token>`.
+- ChatKit runtime enforces tenant scope from `X-Tenant-Id` and must reject requests without tenant header.
 
 ## Idempotency (actions)
 - Actions are deduped via `idempotency_keys` (scope `chatkit_action`).
@@ -95,7 +98,7 @@ Action payload fields consumed by runtime:
 
 ## Next steps
 - Add action idempotency and richer widget schemas.
-- Wire multi-tenant auth and RBAC controls.
+- Wire RBAC controls for tenant-aware ChatKit operations.
 
 ## Local E2E
 - Use `scripts/chatkit_e2e.py` against a running ChatKit service.

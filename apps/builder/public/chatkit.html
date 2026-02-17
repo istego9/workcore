@@ -45,7 +45,7 @@
       }
       .bar {
         display: grid;
-        grid-template-columns: repeat(7, minmax(120px, 1fr)) auto;
+        grid-template-columns: repeat(8, minmax(120px, 1fr)) auto;
         gap: 10px;
         align-items: end;
       }
@@ -113,6 +113,10 @@
           <input id="workflowVersionId" placeholder="optional" />
         </div>
         <div>
+          <label for="projectId">Project ID</label>
+          <input id="projectId" placeholder="optional" />
+        </div>
+        <div>
           <label for="authToken">Auth token</label>
           <input id="authToken" type="password" placeholder="optional" />
         </div>
@@ -147,6 +151,7 @@
       const domainKeyInput = document.getElementById('domainKey');
       const workflowIdInput = document.getElementById('workflowId');
       const workflowVersionIdInput = document.getElementById('workflowVersionId');
+      const projectIdInput = document.getElementById('projectId');
       const authTokenInput = document.getElementById('authToken');
       const themeSelect = document.getElementById('theme');
       const autoConnectSelect = document.getElementById('autoConnect');
@@ -183,6 +188,7 @@
       domainKeyInput.value = params.get('domain_key') || '';
       workflowIdInput.value = params.get('workflow_id') || '';
       workflowVersionIdInput.value = params.get('workflow_version_id') || '';
+      projectIdInput.value = params.get('project_id') || '';
       authTokenInput.value = params.get('auth_token') || '';
       themeSelect.value = params.get('theme') || 'light';
       autoConnectSelect.value = params.get('auto') || '0';
@@ -195,7 +201,7 @@
         statusEl.style.color = tone === 'error' ? '#dc2626' : '#64748b';
       }
 
-      function buildFetch(apiURL, authToken, workflowId, workflowVersionId) {
+      function buildFetch(apiURL, authToken, workflowId, workflowVersionId, projectId) {
         return async (input, init = {}) => {
           const headers = new Headers(init.headers || {});
           if (!headers.has('Content-Type')) {
@@ -213,6 +219,7 @@
                 parsed.metadata = parsed.metadata || {};
                 if (workflowId) parsed.metadata.workflow_id = workflowId;
                 if (workflowVersionId) parsed.metadata.workflow_version_id = workflowVersionId;
+                if (projectId) parsed.metadata.project_id = projectId;
                 body = JSON.stringify(parsed);
               }
             } catch (err) {
@@ -230,6 +237,7 @@
         const domainKey = domainKeyInput.value.trim();
         const workflowId = workflowIdInput.value.trim();
         const workflowVersionId = workflowVersionIdInput.value.trim();
+        const projectId = projectIdInput.value.trim();
         const authToken = authTokenInput.value.trim();
         const theme = themeSelect.value;
 
@@ -251,7 +259,7 @@
             api: {
               url: apiURL,
               domainKey,
-              fetch: buildFetch(apiURL, authToken, workflowId, workflowVersionId)
+              fetch: buildFetch(apiURL, authToken, workflowId, workflowVersionId, projectId)
             },
             theme,
           });

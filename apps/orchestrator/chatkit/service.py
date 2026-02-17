@@ -32,34 +32,41 @@ async def load_workflow_from_db(
     pool: asyncpg.Pool,
     workflow_id: str,
     version_id: str | None = None,
+    tenant_id: str = "",
 ) -> Workflow:
+    if not tenant_id:
+        raise RuntimeError("X-Tenant-Id is required")
     if version_id:
         row = await pool.fetchrow(
-            "select id, content from workflow_versions where id = $1 and workflow_id = $2",
+            "select id, content from workflow_versions where id = $1 and workflow_id = $2 and tenant_id = $3",
             version_id,
             workflow_id,
+            tenant_id,
         )
     else:
         workflow_row = await pool.fetchrow(
-            "select active_version_id from workflows where id = $1",
+            "select active_version_id from workflows where id = $1 and tenant_id = $2",
             workflow_id,
+            tenant_id,
         )
         active_version_id = workflow_row["active_version_id"] if workflow_row else None
         if active_version_id:
             row = await pool.fetchrow(
-                "select id, content from workflow_versions where id = $1",
+                "select id, content from workflow_versions where id = $1 and tenant_id = $2",
                 active_version_id,
+                tenant_id,
             )
         else:
             row = await pool.fetchrow(
                 """
                 select id, content
                 from workflow_versions
-                where workflow_id = $1
+                where workflow_id = $1 and tenant_id = $2
                 order by version_number desc
                 limit 1
                 """,
                 workflow_id,
+                tenant_id,
             )
 
     if not row:
@@ -130,15 +137,21 @@ def create_service_app() -> Starlette:
         except Exception:
             evaluator = SimpleEvaluator()
 
-        async def loader(workflow_id: str, version_id: str | None) -> Workflow:
-            return await load_workflow_from_db(pool, workflow_id, version_id)
+        async def loader(workflow_id: str, version_id: str | None, tenant_id: str) -> Workflow:
+            return await load_workflow_from_db(pool, workflow_id, version_id, tenant_id=tenant_id)
 
-        executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").lower()
-        executors: dict[str, Any] = {}
+        executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").strip().lower()
+        executors: dict[str, Any] = {"agent_mock": MockAgentExecutor()}
+        if AGENTS_AVAILABLE:
+            executors["agent_live"] = AgentExecutor()
+
         if executor_mode == "mock":
-            executors["agent"] = MockAgentExecutor()
-        elif AGENTS_AVAILABLE:
-            executors["agent"] = AgentExecutor()
+            executors["agent"] = executors["agent_mock"]
+        elif executor_mode == "live":
+            if executors.get("agent_live"):
+                executors["agent"] = executors["agent_live"]
+        elif executors.get("agent_live"):
+            executors["agent"] = executors["agent_live"]
 
         service = ChatKitRuntimeService(
             publisher=publisher,
@@ -153,6 +166,7 @@ def create_service_app() -> Starlette:
         app.state.context = ChatKitContext(
             service=service,
             run_store=PostgresRunStore(pool),
+            tenant_id="local",
             idempotency=idempotency,
         )
         app.state.pool = pool
@@ -171,6 +185,13 @@ def create_service_app() -> Starlette:
             if auth_header != f"Bearer {token}":
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
 
+        tenant_id = (request.headers.get("X-Tenant-Id") or "").strip()
+        if not tenant_id:
+            return JSONResponse(
+                {"error": {"code": "ERR_TENANT_REQUIRED", "message": "X-Tenant-Id header is required"}},
+                status_code=422,
+            )
+
         body = await request.body()
         metadata = {}
         try:
@@ -178,12 +199,15 @@ def create_service_app() -> Starlette:
             metadata = parsed.get("metadata") or {}
         except Exception:
             metadata = {}
+        metadata = dict(metadata)
+        metadata["tenant_id"] = tenant_id
 
         base_ctx = request.app.state.context
         ctx = ChatKitContext(
             service=base_ctx.service,
             run_store=base_ctx.run_store,
             idempotency=base_ctx.idempotency,
+            tenant_id=tenant_id,
             request_metadata=metadata,
         )
         result = await request.app.state.server.process(body, ctx)

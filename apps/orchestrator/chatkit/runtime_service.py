@@ -15,7 +15,7 @@ from apps.orchestrator.streaming import (
 )
 
 
-WorkflowLoader = Callable[[str, Optional[str]], Awaitable[Workflow]]
+WorkflowLoader = Callable[[str, Optional[str], str], Awaitable[Workflow]]
 
 
 @dataclass
@@ -32,12 +32,25 @@ class ChatKitRuntimeService:
         workflow_id: str,
         version_id: Optional[str],
         inputs: Dict[str, Any],
+        tenant_id: str,
         mode: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Run:
-        workflow = await self.workflow_loader(workflow_id, version_id)
+        if not tenant_id:
+            raise RuntimeError("tenant_id is required")
+        workflow = await self.workflow_loader(workflow_id, version_id, tenant_id)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
-        run = engine.start_run(inputs, mode=mode, metadata=metadata)
+        metadata_payload = dict(metadata or {})
+        if mode == "live":
+            metadata_payload.setdefault("agent_executor_mode", "live")
+            metadata_payload.setdefault("agent_mock", False)
+            metadata_payload.setdefault("llm_enabled", True)
+        elif mode == "test":
+            metadata_payload.setdefault("agent_executor_mode", "mock")
+            metadata_payload.setdefault("agent_mock", True)
+            metadata_payload.setdefault("llm_enabled", False)
+        metadata_payload["tenant_id"] = tenant_id
+        run = engine.start_run(inputs, mode=mode, metadata=metadata_payload)
         events = engine.execute_until_blocked(run)
         await self._publish_with_snapshot(run, events)
         return run
@@ -48,8 +61,12 @@ class ChatKitRuntimeService:
         interrupt_id: str,
         input_data: Optional[Dict[str, Any]] = None,
         files: Optional[list] = None,
+        tenant_id: Optional[str] = None,
     ) -> Run:
-        workflow = await self.workflow_loader(run.workflow_id, run.version_id)
+        resolved_tenant = tenant_id or str((run.metadata or {}).get("tenant_id") or "")
+        if not resolved_tenant:
+            raise RuntimeError("tenant_id is required")
+        workflow = await self.workflow_loader(run.workflow_id, run.version_id, resolved_tenant)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
         events = engine.resume_interrupt(run, interrupt_id, input_data, files)
         await self._publish_with_snapshot(run, events)

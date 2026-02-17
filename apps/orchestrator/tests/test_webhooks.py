@@ -12,6 +12,7 @@ from apps.orchestrator.webhooks.signing import sign_payload
 class WebhooksTests(unittest.TestCase):
     def setUp(self):
         self.workflow_store = InMemoryWorkflowStore()
+        self.project_headers = {"X-Project-Id": "proj_webhooks"}
         self.client = TestClient(
             create_app(
                 workflow_store=self.workflow_store,
@@ -24,9 +25,13 @@ class WebhooksTests(unittest.TestCase):
             "edges": [{"source": "start", "target": "end"}],
             "variables_schema": {},
         }
-        response = self.client.post("/workflows", json={"name": "Webhook workflow", "draft": draft})
+        response = self.client.post(
+            "/workflows",
+            json={"name": "Webhook workflow", "draft": draft},
+            headers=self.project_headers,
+        )
         workflow_id = response.json()["workflow_id"]
-        publish_response = self.client.post(f"/workflows/{workflow_id}/publish")
+        publish_response = self.client.post(f"/workflows/{workflow_id}/publish", headers=self.project_headers)
         self.workflow_id = publish_response.json()["workflow_id"]
 
     def test_inbound_webhook_start_run(self):

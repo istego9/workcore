@@ -21,6 +21,7 @@ This document defines the MVP persistence model for a self-hosted deployment.
 Holds workflow metadata and the editable draft.
 - id (text, pk)
 - tenant_id (text, indexed)
+- project_id (text, indexed with tenant_id)
 - name (text)
 - description (text, nullable)
 - draft (jsonb)  // nodes, edges, variables_schema
@@ -44,8 +45,13 @@ Execution instances pinned to a specific published version.
 - id (text, pk)
 - workflow_id (text, fk)
 - version_id (text, fk -> workflow_versions.id)
+- resolved_version (text, nullable) // pinned version for reproducible resume, usually equals version_id
 - tenant_id (text, indexed)
+- project_id (text, nullable, indexed with session_id)
+- session_id (text, nullable)
 - status (text)
+- cancellable (bool, default true)
+- commit_point_reached (bool, nullable)
 - mode (text, default live)
 - inputs (jsonb)
 - state (jsonb)
@@ -159,10 +165,136 @@ Idempotency store for non-safe operations (runs, interrupts, inbound webhooks, c
 
 Unique: (tenant_id, idempotency_key, scope)
 
+## ChatKit persistence tables (MVP)
+
+### chatkit_threads
+- tenant_id (text)
+- id (text)
+- seq (bigserial)
+- title (text, nullable)
+- status (jsonb)
+- metadata (jsonb)
+- created_at, updated_at (timestamptz)
+
+PK: (tenant_id, id)
+
+### chatkit_items
+- tenant_id (text)
+- id (text)
+- thread_id (text, fk -> chatkit_threads.(tenant_id, id))
+- seq (bigserial)
+- type (text)
+- item (jsonb)
+- created_at (timestamptz)
+
+PK: (tenant_id, id)
+
+### chatkit_attachments
+- tenant_id (text)
+- id (text)
+- thread_id (text, nullable, fk -> chatkit_threads.(tenant_id, id))
+- attachment (jsonb)
+- created_at (timestamptz)
+
+PK: (tenant_id, id)
+
+## Project orchestration tables (MVP)
+
+`project_id` is unique only within tenant scope (`tenant_id + project_id`).
+
+### projects
+Project-level routing scope for orchestrated chat entry.
+- tenant_id (text)
+- project_id (text)
+- default_orchestrator_id (text, nullable)
+- settings (jsonb) // per-project thresholds, limits, feature flags
+- created_at, updated_at (timestamptz)
+
+PK: (tenant_id, project_id)
+
+### orchestrator_configs
+Per-project orchestrator configurations.
+- tenant_id (text)
+- project_id (text, fk -> projects.(tenant_id, project_id))
+- orchestrator_id (text)
+- name (text)
+- routing_policy (jsonb) // confidence_threshold, switch_margin, max_disambiguation_turns, top_k_candidates
+- fallback_workflow_id (text, nullable)
+- prompt_profile (text, nullable)
+- created_at, updated_at (timestamptz)
+
+PK: (tenant_id, project_id, orchestrator_id)
+
+### workflow_definitions
+Routing index metadata per project workflow.
+- tenant_id (text)
+- project_id (text, fk -> projects.(tenant_id, project_id))
+- workflow_id (text, fk -> workflows.id)
+- name (text)
+- description (text)
+- tags (text[])
+- examples (text[])
+- active (bool)
+- is_fallback (bool)
+- created_at, updated_at (timestamptz)
+
+PK: (tenant_id, project_id, workflow_id)
+
+### orchestrator_session_state
+Current orchestration state per project/session.
+- tenant_id (text)
+- project_id (text, fk -> projects.(tenant_id, project_id))
+- session_id (text)
+- orchestrator_id (text, nullable)
+- active_run_id (text, nullable)
+- pending_disambiguation (bool)
+- pending_question (text, nullable)
+- pending_options (jsonb array)
+- disambiguation_turns (int)
+- last_user_message_id (text, nullable)
+- created_at, updated_at (timestamptz)
+
+PK: (tenant_id, project_id, session_id)
+
+### workflow_stack_entries
+Session run stack history for diagnostics and switching trace.
+- id (text, pk)
+- tenant_id (text)
+- project_id (text, fk -> projects.(tenant_id, project_id))
+- session_id (text)
+- run_id (text)
+- stack_index (int)
+- transition_reason (text)
+- from_run_id (text, nullable)
+- created_at (timestamptz)
+
+Unique: (tenant_id, project_id, session_id, stack_index)
+
+### orchestration_decisions
+Structured orchestration decision log for every inbound message.
+- decision_id (text, pk)
+- tenant_id (text)
+- project_id (text, fk -> projects.(tenant_id, project_id))
+- orchestrator_id (text, nullable)
+- session_id (text)
+- message_id (text)
+- mode (text) // direct | orchestrated
+- active_run_id (text, nullable)
+- context_ref (jsonb) // summary/version refs used for routing
+- candidates (jsonb array) // workflow_id, score, reason_codes
+- chosen_action (text)
+- chosen_workflow_id (text, nullable)
+- confidence (double precision)
+- latency_ms (int)
+- model_id (text, nullable)
+- error_code (text, nullable)
+- created_at (timestamptz)
+
 ## Indexing notes
-- runs: index by (workflow_id, status, created_at).
+- workflows: index by (tenant_id, project_id, updated_at).
+- runs: index by (tenant_id, workflow_id, status, created_at).
 - node_runs: index by (run_id, status).
-- events: index by (run_id, created_at).
+- events: index by (tenant_id, run_id, created_at).
 - webhook_deliveries: index by (status, next_retry_at).
 - idempotency_keys: index by (tenant_id, idempotency_key, scope), (expires_at).
 

@@ -295,9 +295,7 @@ class OrchestratorEngine:
         self._handle_interaction(run, node, emit)
 
     def _handle_agent(self, run: Run, node: Node, emit) -> None:
-        executor = self.executors.get("agent")
-        if not executor:
-            raise RuntimeError("Agent executor not configured")
+        executor = self._resolve_agent_executor(run)
         context = self._context(run)
         resolved_config = dict(node.config or {})
         instructions = resolved_config.get("instructions")
@@ -309,11 +307,86 @@ class OrchestratorEngine:
         resolved_node = Node(node.id, node.type, resolved_config)
         result = executor(run, resolved_node, emit)
         run.node_outputs[node.id] = result.output
+        self._merge_agent_output_into_state(run, resolved_node, result.output)
         node_run = run.node_runs.get(node.id)
         if node_run:
             node_run.output = result.output
             node_run.trace_id = result.trace_id
             node_run.usage = result.usage
+
+    def _resolve_agent_executor(self, run: Run):
+        preferred_mode = self._preferred_agent_mode(run)
+        default_executor = self.executors.get("agent")
+        live_executor = self.executors.get("agent_live")
+        mock_executor = self.executors.get("agent_mock")
+        explicit_mode = self._explicit_agent_mode_from_metadata(run)
+
+        if preferred_mode == "live":
+            if live_executor:
+                return live_executor
+            if explicit_mode != "live" and default_executor:
+                return default_executor
+            raise RuntimeError("Live agent executor not configured")
+        if preferred_mode == "mock":
+            if mock_executor:
+                return mock_executor
+            if default_executor:
+                return default_executor
+            raise RuntimeError("Mock agent executor not configured")
+
+        if default_executor:
+            return default_executor
+        if live_executor:
+            return live_executor
+        raise RuntimeError("Agent executor not configured")
+
+    def _preferred_agent_mode(self, run: Run) -> Optional[str]:
+        explicit_mode = self._explicit_agent_mode_from_metadata(run)
+        if explicit_mode is not None:
+            return explicit_mode
+
+        run_mode = (run.mode or "").strip().lower()
+        if run_mode == "live":
+            return "live"
+        if run_mode == "test":
+            return "mock"
+
+        return None
+
+    def _explicit_agent_mode_from_metadata(self, run: Run) -> Optional[str]:
+        metadata = run.metadata or {}
+        explicit_mode = metadata.get("agent_executor_mode")
+        if isinstance(explicit_mode, str):
+            normalized_mode = explicit_mode.strip().lower()
+            if normalized_mode in {"live", "mock"}:
+                return normalized_mode
+
+        agent_mock = self._coerce_bool(metadata.get("agent_mock"))
+        if agent_mock is not None:
+            return "mock" if agent_mock else "live"
+
+        llm_enabled = self._coerce_bool(metadata.get("llm_enabled"))
+        if llm_enabled is not None:
+            return "live" if llm_enabled else "mock"
+
+        return None
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return None
 
     def _handle_mcp(self, run: Run, node: Node, emit) -> None:
         executor = self.executors.get("mcp")
@@ -324,6 +397,43 @@ class OrchestratorEngine:
         node_run = run.node_runs.get(node.id)
         if node_run:
             node_run.output = result.output
+
+    def _merge_agent_output_into_state(self, run: Run, node: Node, output: Any) -> None:
+        state_target = node.config.get("state_target")
+        if isinstance(state_target, str) and state_target.strip():
+            self._set_path(run.state, state_target.strip(), deepcopy(output))
+            return
+
+        if not self._should_auto_merge_agent_output(node):
+            return
+        if not isinstance(output, dict):
+            return
+
+        for key, value in output.items():
+            if not isinstance(key, str) or not key:
+                continue
+            run.state[key] = deepcopy(value)
+
+    @staticmethod
+    def _should_auto_merge_agent_output(node: Node) -> bool:
+        merge_output_raw = node.config.get("merge_output_to_state")
+        if isinstance(merge_output_raw, bool):
+            return merge_output_raw
+        if isinstance(merge_output_raw, str):
+            normalized = merge_output_raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+
+        raw_format = node.config.get("output_format")
+        if isinstance(raw_format, str):
+            normalized = raw_format.strip().lower().replace("-", "_")
+            if normalized in {"json", "json_schema", "jsonschema"}:
+                return True
+        if node.config.get("output_schema") is not None and not raw_format:
+            return True
+        return False
 
     def _handle_output(self, run: Run, node: Node, emit) -> None:
         expression = node.config.get("expression")

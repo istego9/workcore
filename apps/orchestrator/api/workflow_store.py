@@ -50,6 +50,7 @@ class WorkflowConflictError(RuntimeError):
 class WorkflowRecord:
     workflow_id: str
     tenant_id: str
+    project_id: Optional[str]
     name: str
     description: Optional[str]
     draft: Dict[str, Any]
@@ -62,6 +63,7 @@ class WorkflowRecord:
 class WorkflowSummary:
     workflow_id: str
     tenant_id: str
+    project_id: Optional[str]
     name: str
     description: Optional[str]
     active_version_id: Optional[str]
@@ -93,13 +95,16 @@ class InMemoryWorkflowStore:
         description: Optional[str],
         draft: Dict[str, Any],
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> WorkflowRecord:
         workflow_id = _new_id("wf")
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         now = _now()
         record = WorkflowRecord(
             workflow_id=workflow_id,
             tenant_id=tenant,
+            project_id=project,
             name=name,
             description=description,
             draft=draft,
@@ -111,10 +116,18 @@ class InMemoryWorkflowStore:
         self.workflow_versions[workflow_id] = []
         return record
 
-    async def get_workflow(self, workflow_id: str, tenant_id: Optional[str] = None) -> WorkflowRecord:
+    async def get_workflow(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> WorkflowRecord:
         record = self.workflows.get(workflow_id)
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         if not record or record.tenant_id != tenant:
+            raise WorkflowNotFoundError("workflow not found")
+        if project is not None and record.project_id != project:
             raise WorkflowNotFoundError("workflow not found")
         return record
 
@@ -126,8 +139,9 @@ class InMemoryWorkflowStore:
         update_name: bool = False,
         update_description: bool = False,
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> WorkflowRecord:
-        record = await self.get_workflow(workflow_id, tenant_id=tenant_id)
+        record = await self.get_workflow(workflow_id, tenant_id=tenant_id, project_id=project_id)
         if update_name:
             record.name = name or record.name
         if update_description:
@@ -135,10 +149,20 @@ class InMemoryWorkflowStore:
         record.updated_at = _now()
         return record
 
-    async def list_workflows(self, limit: int = 50, tenant_id: Optional[str] = None) -> List[WorkflowSummary]:
+    async def list_workflows(
+        self,
+        limit: int = 50,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> List[WorkflowSummary]:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         records = sorted(
-            [item for item in self.workflows.values() if item.tenant_id == tenant],
+            [
+                item
+                for item in self.workflows.values()
+                if item.tenant_id == tenant and (project is None or item.project_id == project)
+            ],
             key=lambda item: item.updated_at,
             reverse=True,
         )
@@ -146,6 +170,7 @@ class InMemoryWorkflowStore:
             WorkflowSummary(
                 workflow_id=record.workflow_id,
                 tenant_id=record.tenant_id,
+                project_id=record.project_id,
                 name=record.name,
                 description=record.description,
                 active_version_id=record.active_version_id,
@@ -160,14 +185,20 @@ class InMemoryWorkflowStore:
         workflow_id: str,
         draft: Dict[str, Any],
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> WorkflowRecord:
-        record = await self.get_workflow(workflow_id, tenant_id=tenant_id)
+        record = await self.get_workflow(workflow_id, tenant_id=tenant_id, project_id=project_id)
         record.draft = draft
         record.updated_at = _now()
         return record
 
-    async def publish(self, workflow_id: str, tenant_id: Optional[str] = None) -> WorkflowVersionRecord:
-        record = await self.get_workflow(workflow_id, tenant_id=tenant_id)
+    async def publish(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> WorkflowVersionRecord:
+        record = await self.get_workflow(workflow_id, tenant_id=tenant_id, project_id=project_id)
         version_number = len(self.workflow_versions.get(workflow_id, [])) + 1
         version_id = _new_id("wfv")
         version = WorkflowVersionRecord(
@@ -185,8 +216,13 @@ class InMemoryWorkflowStore:
         record.updated_at = _now()
         return version
 
-    async def rollback(self, workflow_id: str, tenant_id: Optional[str] = None) -> WorkflowRecord:
-        record = await self.get_workflow(workflow_id, tenant_id=tenant_id)
+    async def rollback(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> WorkflowRecord:
+        record = await self.get_workflow(workflow_id, tenant_id=tenant_id, project_id=project_id)
         if not record.active_version_id:
             raise WorkflowConflictError("workflow has no active version")
         version = self.versions.get(record.active_version_id)
@@ -201,10 +237,14 @@ class InMemoryWorkflowStore:
         workflow_id: str,
         limit: int = 50,
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> List[WorkflowVersionRecord]:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         record = self.workflows.get(workflow_id)
         if not record or record.tenant_id != tenant:
+            raise WorkflowNotFoundError("workflow not found")
+        if project is not None and record.project_id != project:
             raise WorkflowNotFoundError("workflow not found")
         version_ids = list(self.workflow_versions.get(workflow_id, []))
         versions = [self.versions[vid] for vid in reversed(version_ids)]
@@ -218,10 +258,18 @@ class InMemoryWorkflowStore:
             raise WorkflowNotFoundError("workflow version not found")
         return version
 
-    async def delete_workflow(self, workflow_id: str, tenant_id: Optional[str] = None) -> None:
+    async def delete_workflow(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> None:
         tenant = tenant_id or self.tenant_id
         record = self.workflows.get(workflow_id)
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         if not record or record.tenant_id != tenant:
+            raise WorkflowNotFoundError("workflow not found")
+        if project is not None and record.project_id != project:
             raise WorkflowNotFoundError("workflow not found")
         version_ids = self.workflow_versions.pop(workflow_id, [])
         for version_id in version_ids:
@@ -243,39 +291,51 @@ class PostgresWorkflowStore:
         description: Optional[str],
         draft: Dict[str, Any],
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> WorkflowRecord:
         workflow_id = _new_id("wf")
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         await self.pool.execute(
             """
-            insert into workflows (id, tenant_id, name, description, draft, active_version_id)
-            values ($1, $2, $3, $4, $5::jsonb, $6)
+            insert into workflows (id, tenant_id, project_id, name, description, draft, active_version_id)
+            values ($1, $2, $3, $4, $5, $6::jsonb, $7)
             """,
             workflow_id,
             tenant,
+            project,
             name,
             description,
             _jsonb(draft),
             None,
         )
-        return await self.get_workflow(workflow_id, tenant_id=tenant)
+        return await self.get_workflow(workflow_id, tenant_id=tenant, project_id=project)
 
-    async def get_workflow(self, workflow_id: str, tenant_id: Optional[str] = None) -> WorkflowRecord:
+    async def get_workflow(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> WorkflowRecord:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         row = await self.pool.fetchrow(
             """
-            select id, tenant_id, name, description, draft, active_version_id, created_at, updated_at
+            select id, tenant_id, project_id, name, description, draft, active_version_id, created_at, updated_at
             from workflows
             where id = $1 and tenant_id = $2
+              and ($3::text is null or project_id = $3)
             """,
             workflow_id,
             tenant,
+            project,
         )
         if not row:
             raise WorkflowNotFoundError("workflow not found")
         return WorkflowRecord(
             workflow_id=row["id"],
             tenant_id=row["tenant_id"],
+            project_id=row["project_id"],
             name=row["name"],
             description=row["description"],
             draft=_parse_json(row["draft"]) or {},
@@ -292,8 +352,10 @@ class PostgresWorkflowStore:
         update_name: bool = False,
         update_description: bool = False,
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> WorkflowRecord:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         result = await self.pool.execute(
             """
             update workflows
@@ -302,6 +364,7 @@ class PostgresWorkflowStore:
                 description = case when $4 then $2 else description end,
                 updated_at = now()
             where id = $5 and tenant_id = $6
+              and ($7::text is null or project_id = $7)
             """,
             name,
             description,
@@ -309,28 +372,38 @@ class PostgresWorkflowStore:
             update_description,
             workflow_id,
             tenant,
+            project,
         )
         if result == "UPDATE 0":
             raise WorkflowNotFoundError("workflow not found")
-        return await self.get_workflow(workflow_id, tenant_id=tenant)
+        return await self.get_workflow(workflow_id, tenant_id=tenant, project_id=project)
 
-    async def list_workflows(self, limit: int = 50, tenant_id: Optional[str] = None) -> List[WorkflowSummary]:
+    async def list_workflows(
+        self,
+        limit: int = 50,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> List[WorkflowSummary]:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         rows = await self.pool.fetch(
             """
-            select id, tenant_id, name, description, active_version_id, created_at, updated_at
+            select id, tenant_id, project_id, name, description, active_version_id, created_at, updated_at
             from workflows
             where tenant_id = $1
+              and ($2::text is null or project_id = $2)
             order by updated_at desc
-            limit $2
+            limit $3
             """,
             tenant,
+            project,
             limit,
         )
         return [
             WorkflowSummary(
                 workflow_id=row["id"],
                 tenant_id=row["tenant_id"],
+                project_id=row["project_id"],
                 name=row["name"],
                 description=row["description"],
                 active_version_id=row["active_version_id"],
@@ -345,25 +418,34 @@ class PostgresWorkflowStore:
         workflow_id: str,
         draft: Dict[str, Any],
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> WorkflowRecord:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         result = await self.pool.execute(
             """
             update workflows
             set draft = $1::jsonb, updated_at = now()
             where id = $2 and tenant_id = $3
+              and ($4::text is null or project_id = $4)
             """,
             _jsonb(draft),
             workflow_id,
             tenant,
+            project,
         )
         if result == "UPDATE 0":
             raise WorkflowNotFoundError("workflow not found")
-        return await self.get_workflow(workflow_id, tenant_id=tenant)
+        return await self.get_workflow(workflow_id, tenant_id=tenant, project_id=project)
 
-    async def publish(self, workflow_id: str, tenant_id: Optional[str] = None) -> WorkflowVersionRecord:
+    async def publish(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> WorkflowVersionRecord:
         tenant = tenant_id or self.tenant_id
-        record = await self.get_workflow(workflow_id, tenant_id=tenant)
+        record = await self.get_workflow(workflow_id, tenant_id=tenant, project_id=project_id)
         version_number = await self.pool.fetchval(
             """
             select coalesce(max(version_number), 0) + 1
@@ -399,9 +481,14 @@ class PostgresWorkflowStore:
         )
         return await self.get_version(version_id, tenant_id=tenant)
 
-    async def rollback(self, workflow_id: str, tenant_id: Optional[str] = None) -> WorkflowRecord:
+    async def rollback(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> WorkflowRecord:
         tenant = tenant_id or self.tenant_id
-        record = await self.get_workflow(workflow_id, tenant_id=tenant)
+        record = await self.get_workflow(workflow_id, tenant_id=tenant, project_id=project_id)
         if not record.active_version_id:
             raise WorkflowConflictError("workflow has no active version")
         version = await self.get_version(record.active_version_id, tenant_id=tenant)
@@ -415,32 +502,50 @@ class PostgresWorkflowStore:
             workflow_id,
             tenant,
         )
-        return await self.get_workflow(workflow_id, tenant_id=tenant)
+        return await self.get_workflow(workflow_id, tenant_id=tenant, project_id=project_id)
 
     async def list_versions(
         self,
         workflow_id: str,
         limit: int = 50,
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> List[WorkflowVersionRecord]:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         rows = await self.pool.fetch(
             """
-            select id, workflow_id, tenant_id, version_number, hash, content, created_at
-            from workflow_versions
-            where workflow_id = $1 and tenant_id = $2
+            select
+              v.id,
+              v.workflow_id,
+              v.tenant_id,
+              v.version_number,
+              v.hash,
+              v.content,
+              v.created_at
+            from workflow_versions v
+            join workflows w on w.id = v.workflow_id and w.tenant_id = v.tenant_id
+            where v.workflow_id = $1 and v.tenant_id = $2
+              and ($3::text is null or w.project_id = $3)
             order by version_number desc
-            limit $3
+            limit $4
             """,
             workflow_id,
             tenant,
+            project,
             limit,
         )
         if not rows:
             workflow_exists = await self.pool.fetchval(
-                "select 1 from workflows where id = $1 and tenant_id = $2",
+                """
+                select 1
+                from workflows
+                where id = $1 and tenant_id = $2
+                  and ($3::text is null or project_id = $3)
+                """,
                 workflow_id,
                 tenant,
+                project,
             )
             if not workflow_exists:
                 raise WorkflowNotFoundError("workflow not found")
@@ -480,12 +585,23 @@ class PostgresWorkflowStore:
             created_at=row["created_at"],
         )
 
-    async def delete_workflow(self, workflow_id: str, tenant_id: Optional[str] = None) -> None:
+    async def delete_workflow(
+        self,
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> None:
         tenant = tenant_id or self.tenant_id
+        project = project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
         result = await self.pool.execute(
-            "delete from workflows where id = $1 and tenant_id = $2",
+            """
+            delete from workflows
+            where id = $1 and tenant_id = $2
+              and ($3::text is null or project_id = $3)
+            """,
             workflow_id,
             tenant,
+            project,
         )
         if result == "DELETE 0":
             raise WorkflowNotFoundError("workflow not found")

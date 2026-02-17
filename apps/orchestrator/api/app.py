@@ -151,12 +151,18 @@ class ApiContext:
                     tenant_id=tenant_id,
                 )
 
-            executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").lower()
-            executors: Dict[str, Any] = {}
+            executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").strip().lower()
+            executors: Dict[str, Any] = {"agent_mock": MockAgentExecutor()}
+            if AGENTS_AVAILABLE:
+                executors["agent_live"] = AgentExecutor()
+
             if executor_mode == "mock":
-                executors["agent"] = MockAgentExecutor()
-            elif AGENTS_AVAILABLE:
-                executors["agent"] = AgentExecutor()
+                executors["agent"] = executors["agent_mock"]
+            elif executor_mode == "live":
+                if executors.get("agent_live"):
+                    executors["agent"] = executors["agent_live"]
+            elif executors.get("agent_live"):
+                executors["agent"] = executors["agent_live"]
 
             self.runtime = MultiWorkflowRuntimeService.create(loader, executors=executors)
             self.runtime.event_hook = self.webhooks.handle_events
@@ -739,6 +745,7 @@ def create_app(
             project_id=project.project_id,
             orchestrator_id=orchestrator_id_raw.strip(),
             name=name_raw.strip(),
+            tenant_id=tenant,
             routing_policy=routing_policy,
             fallback_workflow_id=fallback_workflow_id,
             prompt_profile=prompt_profile,
@@ -799,6 +806,7 @@ def create_app(
         definition = await ctx.orchestration_store.upsert_workflow_definition(
             project_id=project.project_id,
             workflow_id=workflow_id,
+            tenant_id=tenant,
             name=name_raw.strip(),
             description=description_raw.strip(),
             tags=tags,
@@ -1039,6 +1047,14 @@ def create_app(
                 )
             try:
                 run_metadata = _run_metadata(request, metadata)
+                if mode == "live":
+                    run_metadata.setdefault("agent_executor_mode", "live")
+                    run_metadata.setdefault("agent_mock", False)
+                    run_metadata.setdefault("llm_enabled", True)
+                elif mode == "test":
+                    run_metadata.setdefault("agent_executor_mode", "mock")
+                    run_metadata.setdefault("agent_mock", True)
+                    run_metadata.setdefault("llm_enabled", False)
                 project_id = str(run_metadata.get("project_id") or "").strip()
                 if not project_id:
                     return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
@@ -1789,6 +1805,48 @@ def create_app(
             "10. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
             "11. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...`.",
             "12. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
+            "",
+            "## Special instructions and examples",
+            "- Keep tenant scope consistent: use the same `X-Tenant-Id` for `/projects`, project-registry bootstrap, and `/orchestrator/messages`.",
+            "- For direct orchestrator mode (`workflow_id` in message), register the workflow first via `POST /projects/{project_id}/workflow-definitions`.",
+            "- For orchestrated mode (no `workflow_id`), configure default orchestrator via `POST /projects/{project_id}/orchestrators` with `set_as_default=true`.",
+            "- If your edge requires Cloudflare Access, include CF-Access headers on every protected API request.",
+            "",
+            "### Example: project bootstrap + registry binding",
+            "```bash",
+            "BASE_URL=\"https://api.runwcr.com\"",
+            "TOKEN=\"<bearer_token>\"",
+            "TENANT=\"local\"",
+            "PROJECT_ID=\"project_future_bank_demo_2026_02\"",
+            "WORKFLOW_ID=\"wf_91ca7892\"",
+            "",
+            "curl -X POST \"$BASE_URL/projects\" \\",
+            "  -H \"Authorization: Bearer $TOKEN\" \\",
+            "  -H \"X-Tenant-Id: $TENANT\" \\",
+            "  -H \"Content-Type: application/json\" \\",
+            "  -d '{\"project_id\":\"'\"$PROJECT_ID\"'\",\"settings\":{\"orchestrator_enabled\":true}}'",
+            "",
+            "curl -X POST \"$BASE_URL/projects/$PROJECT_ID/workflow-definitions\" \\",
+            "  -H \"Authorization: Bearer $TOKEN\" \\",
+            "  -H \"X-Tenant-Id: $TENANT\" \\",
+            "  -H \"Content-Type: application/json\" \\",
+            "  -d '{\"workflow_id\":\"'\"$WORKFLOW_ID\"'\",\"name\":\"Future bank demo\",\"description\":\"Routing index record\",\"tags\":[\"bank\",\"demo\"],\"examples\":[\"open account\"],\"active\":true,\"is_fallback\":false}'",
+            "",
+            "curl -X POST \"$BASE_URL/projects/$PROJECT_ID/orchestrators\" \\",
+            "  -H \"Authorization: Bearer $TOKEN\" \\",
+            "  -H \"X-Tenant-Id: $TENANT\" \\",
+            "  -H \"Content-Type: application/json\" \\",
+            "  -d '{\"orchestrator_id\":\"orc_default\",\"name\":\"Default orchestrator\",\"routing_policy\":{\"confidence_threshold\":0.6,\"switch_margin\":0.2,\"max_disambiguation_turns\":2,\"top_k_candidates\":10},\"fallback_workflow_id\":\"'\"$WORKFLOW_ID\"'\",\"prompt_profile\":\"default\",\"set_as_default\":true}'",
+            "```",
+            "",
+            "### Example: orchestrator message",
+            "```bash",
+            "curl -X POST \"$BASE_URL/orchestrator/messages\" \\",
+            "  -H \"Authorization: Bearer $TOKEN\" \\",
+            "  -H \"X-Tenant-Id: $TENANT\" \\",
+            "  -H \"Content-Type: application/json\" \\",
+            "  -d '{\"project_id\":\"'\"$PROJECT_ID\"'\",\"session_id\":\"sess_001\",\"user_id\":\"user_001\",\"workflow_id\":\"'\"$WORKFLOW_ID\"'\",\"message\":{\"id\":\"msg_001\",\"text\":\"start\"}}'",
+            "```",
         ]
         _integration_log(
             request,
@@ -2206,7 +2264,6 @@ def create_app(
                     or request.url.path == "/agent-integration-test"
                     or request.url.path == "/agent-integration-test.json"
                     or request.url.path == "/agent-integration-test/validate-draft"
-                    or request.url.path == "/agent-integration-logs"
                     or request.url.path.startswith("/schemas/")
                     or request.url.path.startswith("/webhooks/inbound/")
                 ):

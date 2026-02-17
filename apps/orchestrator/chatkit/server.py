@@ -51,7 +51,13 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
             if interrupt:
                 input_data = self._input_from_message(input_user_message)
                 files = self._files_from_message(input_user_message)
-                run = await context.service.resume_interrupt(run, interrupt.id, input_data, files)
+                run = await context.service.resume_interrupt(
+                    run,
+                    interrupt.id,
+                    input_data,
+                    files,
+                    tenant_id=context.tenant_id,
+                )
                 await self._run_store_save(context, run)
                 async for event in self._emit_run_events(run, thread, context, reuse_last=True):
                     yield event
@@ -64,7 +70,15 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         workflow_id, workflow_version_id = workflow
 
         inputs = self._inputs_from_message(input_user_message)
-        run = await context.service.start_run(workflow_id, workflow_version_id, inputs)
+        run_metadata = dict(context.request_metadata or {})
+        run_metadata["tenant_id"] = context.tenant_id
+        run = await context.service.start_run(
+            workflow_id,
+            workflow_version_id,
+            inputs,
+            tenant_id=context.tenant_id,
+            metadata=run_metadata,
+        )
         await self._run_store_save(context, run)
         thread.metadata["run_id"] = run.id
         thread.metadata["workflow_id"] = run.workflow_id
@@ -113,7 +127,7 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         if not idempotency_key:
             idempotency_key = f"{run_id}:{interrupt_id}:{action.type}"
         if idempotency:
-            started = await idempotency.start(idempotency_key, scope)
+            started = await idempotency.start(idempotency_key, scope, tenant_id=context.tenant_id)
             if not started:
                 yield NoticeEvent(level="info", message="Action already processed")
                 return
@@ -133,16 +147,27 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
 
         files = payload.get("files")
         try:
-            run = await context.service.resume_interrupt(run, interrupt_id, input_data, files)
+            run = await context.service.resume_interrupt(
+                run,
+                interrupt_id,
+                input_data,
+                files,
+                tenant_id=context.tenant_id,
+            )
         except Exception as exc:
             if idempotency:
-                await idempotency.fail(idempotency_key, scope, {"error": str(exc)})
+                await idempotency.fail(idempotency_key, scope, {"error": str(exc)}, tenant_id=context.tenant_id)
             yield ErrorEvent(message=str(exc), allow_retry=True)
             return
 
         await self._run_store_save(context, run)
         if idempotency:
-            await idempotency.complete(idempotency_key, scope, {"run_id": run.id, "status": run.status})
+            await idempotency.complete(
+                idempotency_key,
+                scope,
+                {"run_id": run.id, "status": run.status},
+                tenant_id=context.tenant_id,
+            )
         async for event in self._emit_run_events(run, thread, context, reuse_last=True):
             yield event
 
@@ -366,7 +391,7 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         return value
 
     async def _run_store_get(self, context: ChatKitContext, run_id: str) -> Optional[Run]:
-        return await self._await_if_needed(context.run_store.get(run_id))
+        return await self._await_if_needed(context.run_store.get(run_id, tenant_id=context.tenant_id))
 
     async def _run_store_save(self, context: ChatKitContext, run: Run) -> None:
-        await self._await_if_needed(context.run_store.save(run))
+        await self._await_if_needed(context.run_store.save(run, tenant_id=context.tenant_id))

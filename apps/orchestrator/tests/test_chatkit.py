@@ -2,6 +2,8 @@ import asyncio
 import json
 import unittest
 
+from starlette.testclient import TestClient
+
 from chatkit.actions import Action
 from chatkit.server import StreamingResult
 from chatkit.types import (
@@ -15,6 +17,7 @@ from chatkit.types import (
 )
 
 from apps.orchestrator.api.store import InMemoryRunStore
+from apps.orchestrator.chatkit.app import create_app as create_chatkit_app
 from apps.orchestrator.chatkit.context import ChatKitContext
 from apps.orchestrator.chatkit.server import WorkflowChatKitServer
 from apps.orchestrator.chatkit.store import InMemoryAttachmentStore, InMemoryChatKitStore
@@ -42,7 +45,7 @@ class ChatKitTests(unittest.TestCase):
         event_bus = InMemoryEventBus()
         publisher = EventPublisher(event_store, event_bus)
 
-        async def loader(workflow_id: str, version_id: str | None):
+        async def loader(workflow_id: str, version_id: str | None, tenant_id: str):
             if workflow_id != workflow.id:
                 raise RuntimeError("unknown workflow")
             return workflow
@@ -128,7 +131,7 @@ class ChatKitTests(unittest.TestCase):
             for event in events
         )
         self.assertTrue(completed)
-        self.assertEqual(self.run_store.get(run.id).status, "COMPLETED")
+        self.assertEqual(self.run_store.get(run.id, tenant_id="tenant_test").status, "COMPLETED")
 
     def test_agent_executor_is_used(self):
         nodes = [
@@ -147,7 +150,7 @@ class ChatKitTests(unittest.TestCase):
         event_bus = InMemoryEventBus()
         publisher = EventPublisher(event_store, event_bus)
 
-        async def loader(workflow_id: str, version_id: str | None):
+        async def loader(workflow_id: str, version_id: str | None, tenant_id: str):
             if workflow_id != workflow.id:
                 raise RuntimeError("unknown workflow")
             return workflow
@@ -164,14 +167,39 @@ class ChatKitTests(unittest.TestCase):
             executors={"agent": fake_agent_executor},
         )
 
-        run = asyncio.run(service.start_run(workflow.id, workflow.version_id, {}))
+        run = asyncio.run(service.start_run(workflow.id, workflow.version_id, {}, tenant_id="tenant_test"))
         self.assertEqual(run.status, "COMPLETED")
         self.assertEqual(run.node_outputs.get("agent"), {"message": "hi"})
+
+    def test_http_chatkit_requires_tenant_header(self):
+        app = create_chatkit_app(self._workflow())
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            metadata={"workflow_id": self.workflow_id, "workflow_version_id": self.workflow_version_id},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+        missing_tenant = client.post("/chatkit", content=req.model_dump_json())
+        self.assertEqual(missing_tenant.status_code, 422)
+        self.assertEqual(missing_tenant.json()["error"]["code"], "ERR_TENANT_REQUIRED")
+
+        with_tenant = client.post(
+            "/chatkit",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(with_tenant.status_code, 200)
 
     async def _collect_events(self, request) -> list[dict]:
         ctx = ChatKitContext(
             service=self.service,
             run_store=self.run_store,
+            tenant_id="tenant_test",
             request_metadata=getattr(request, "metadata", None),
         )
         result = await self.server.process(request.model_dump_json(), ctx)
@@ -183,6 +211,20 @@ class ChatKitTests(unittest.TestCase):
             payload = json.loads(chunk[len(b"data: ") :].strip())
             events.append(payload)
         return events
+
+    def _workflow(self) -> Workflow:
+        nodes = [
+            Node("start", "start"),
+            Node("approval", "approval", {"prompt": "Approve?"}),
+            Node("end", "end"),
+        ]
+        edges = [Edge("start", "approval"), Edge("approval", "end")]
+        return Workflow(
+            id="wf_chat",
+            version_id="v1",
+            nodes={node.id: node for node in nodes},
+            edges=edges,
+        )
 
 
 if __name__ == "__main__":
