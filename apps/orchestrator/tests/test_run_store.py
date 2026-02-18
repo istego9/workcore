@@ -83,6 +83,37 @@ class InMemoryRunStoreTests(unittest.TestCase):
         self.assertIsInstance(created_at, str)
         self.assertIsInstance(updated_at, str)
 
+    def test_save_applies_projection_from_metadata(self):
+        store = InMemoryRunStore()
+        run = Run(
+            id="run_projection",
+            workflow_id="wf_projection",
+            version_id="v1",
+            status="COMPLETED",
+            inputs={},
+            state={
+                "documents": [
+                    {
+                        "doc_id": "doc_1",
+                        "pages": [{"image_base64": "AAAA", "artifact_ref": "artf_1"}],
+                    }
+                ]
+            },
+            outputs={"result": {"claim_id": "clm_1", "decision": "approve"}},
+            metadata={
+                "state_exclude_paths": ["documents.pages.image_base64"],
+                "output_include_paths": ["result.claim_id"],
+            },
+        )
+
+        store.save(run)
+        loaded = store.get("run_projection")
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        page = loaded.state["documents"][0]["pages"][0]
+        self.assertNotIn("image_base64", page)
+        self.assertEqual(loaded.outputs, {"result": {"claim_id": "clm_1"}})
+
 
 @unittest.skipUnless(_database_url(), "DATABASE_URL or CHATKIT_DATABASE_URL is required")
 class PostgresRunStoreTests(unittest.IsolatedAsyncioTestCase):

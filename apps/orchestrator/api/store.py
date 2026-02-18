@@ -9,6 +9,7 @@ import asyncpg
 
 from apps.orchestrator.runtime.models import Interrupt, NodeRun
 from apps.orchestrator.runtime.models import Run
+from apps.orchestrator.runtime.projection import project_run_payload_for_transport
 
 
 @dataclass
@@ -29,7 +30,25 @@ class InMemoryRunStore:
         run.metadata = dict(run.metadata or {})
         run.metadata["tenant_id"] = tenant
         _apply_run_timestamps(run)
-        self.runs[run.id] = run
+        projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, run.metadata)
+        persisted_run = Run(
+            id=run.id,
+            workflow_id=run.workflow_id,
+            version_id=run.version_id,
+            status=run.status,
+            inputs=run.inputs,
+            state=projected_state if isinstance(projected_state, dict) else {},
+            mode=run.mode,
+            outputs=projected_outputs if isinstance(projected_outputs, dict) else None,
+            node_runs=run.node_runs,
+            node_outputs=run.node_outputs,
+            interrupts=run.interrupts,
+            branch_selection=run.branch_selection,
+            loop_state=run.loop_state,
+            skipped_nodes=run.skipped_nodes,
+            metadata=run.metadata,
+        )
+        self.runs[run.id] = persisted_run
 
     def get(self, run_id: str, tenant_id: Optional[str] = None) -> Optional[Run]:
         run = self.runs.get(run_id)
@@ -150,7 +169,8 @@ class PostgresRunStore:
             cancellable = run.status in {"RUNNING", "WAITING_FOR_INPUT"}
         commit_point_raw = run.metadata.get("commit_point_reached")
         commit_point_reached = commit_point_raw if isinstance(commit_point_raw, bool) else None
-        outputs_json = _jsonb(run.outputs) if run.outputs is not None else None
+        projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, run.metadata)
+        outputs_json = _jsonb(projected_outputs) if projected_outputs is not None else None
         node_outputs_json = _jsonb(run.node_outputs or {})
         branch_selection_json = _jsonb(run.branch_selection or {})
         loop_state_json = _jsonb(run.loop_state or {})
@@ -206,7 +226,7 @@ class PostgresRunStore:
                     tenant,
                     run.status,
                     _jsonb(run.inputs or {}),
-                    _jsonb(run.state or {}),
+                    _jsonb(projected_state or {}),
                     outputs_json,
                     mode,
                     project_id,

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from apps.orchestrator.api.workflow_store import WorkflowConflictError, WorkflowNotFoundError
 from apps.orchestrator.runtime.models import Event as RuntimeEvent, Run
+from apps.orchestrator.runtime.projection import apply_output_include_paths, projection_paths_from_metadata
 
 from .dispatcher import DispatcherConfig, OutboundDispatcher
 from .models import IdempotencyRecord, WebhookDelivery, WebhookSubscription
@@ -195,7 +196,8 @@ class WebhookService:
             }
             if event.type == "run_completed":
                 event_type = "run_completed"
-                payload["outputs"] = run.outputs
+                _, output_include_paths = projection_paths_from_metadata(run.metadata or {})
+                payload["outputs"] = apply_output_include_paths(run.outputs, output_include_paths)
             elif event.type == "run_failed":
                 event_type = "run_failed"
                 payload["error"] = event.payload

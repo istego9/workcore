@@ -32,6 +32,16 @@ type ApiError = {
 
 type ApiResult<T> = { data?: T; error?: ApiError };
 
+export type ProjectRecord = {
+  project_id: string;
+  project_name: string;
+  tenant_id: string;
+  default_orchestrator_id?: string | null;
+  settings: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+};
+
 const readStorageValue = (key: string): string => {
   if (typeof window === 'undefined') return '';
   try {
@@ -240,4 +250,19 @@ export const listRuns = async (params?: {
   }
   const suffix = query.toString();
   return request(`/runs${suffix ? `?${suffix}` : ''}`);
+};
+
+export const listProjects = async (params?: {
+  limit?: number;
+  cursor?: string;
+}): Promise<ApiResult<{ items: ProjectRecord[]; next_cursor?: string | null }>> => {
+  const query = new URLSearchParams();
+  if (typeof params?.limit === 'number') {
+    query.set('limit', String(params.limit));
+  }
+  if (params?.cursor) {
+    query.set('cursor', params.cursor);
+  }
+  const suffix = query.toString();
+  return request(`/projects${suffix ? `?${suffix}` : ''}`);
 };

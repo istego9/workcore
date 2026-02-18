@@ -37,7 +37,7 @@ ChatKit service auth is configured independently:
 - `X-Correlation-Id`: request correlation key; echoed in responses/errors.
 - `X-Trace-Id`: distributed trace key; propagated to run metadata/events.
 - `X-Project-Id`: required for all `/workflows*` authoring/read operations.
-- `X-Project-Id` is not required for `POST /projects` (project is created from request body).
+- `X-Project-Id` is not required for `GET /projects` and `POST /projects`.
 
 Optional headers:
 - `X-Import-Run-Id`
@@ -62,13 +62,80 @@ All API errors use:
 - Builder import/export schema (`workflow_export_v1`): `docs/api/schemas/workflow-export-v1.schema.json`
 - Orchestrator strict routing schema: `docs/api/schemas/routing-decision.schema.json`
 
+## Set State batch assignments
+`set_state` supports two compatible config styles:
+- Legacy single assignment:
+  - `target` + `expression`
+- Batch assignments:
+  - `assignments[]` with items `{ "target": "...", "expression": "..." }`
+
+Runtime applies `assignments[]` in order when present. If `assignments[]` is missing, runtime falls back to legacy `target` + `expression`.
+
+## Artifact references and run projections
+For document-heavy workflows, prefer artifact references over inline binary payloads.
+
+Run start (`POST /workflows/{workflow_id}/runs`) supports:
+- `inputs.documents[].pages[].artifact_ref` as preferred page-content carrier.
+- `state_exclude_paths: string[]` to exclude heavy paths from persisted/returned run state.
+- `output_include_paths: string[]` to return only required output paths.
+
+Compatibility:
+- Inline fields (for example `image_base64`) are still accepted during migration.
+
+Projection path syntax:
+- Dot-delimited paths (for example `documents.pages.image_base64`).
+- `*` matches one path segment.
+- Invalid projection paths return `error.code = projection.path_invalid`.
+
+Rollout semantics:
+- Newly published workflow versions use no-inline defaults (`state_exclude_paths` preconfigured for document binary fields).
+- Existing published versions keep legacy behavior unless explicitly switched.
+
+Agent default behavior:
+- Document metadata-first context is preferred by default.
+- Full content should be fetched explicitly via artifact read operation (for example `read_artifact(ref)`).
+
+Artifact read endpoint:
+- `GET /artifacts/{artifact_ref}` returns explicit artifact payload.
+- Error codes:
+  - `artifact.not_found`
+  - `artifact.access_denied`
+  - `artifact.expired`
+
+## Capability registry and version pinning
+- Register versioned capability contracts:
+  - `POST /capabilities`
+- List capability versions:
+  - `GET /capabilities?capability_id=...`
+  - `GET /capabilities/{capability_id}/versions`
+
+Capability contract supports:
+- `inputs`
+- `outputs`
+- `constraints`
+- `timeout_s`
+- `retry_policy`
+- `error_codes`
+
+Workflow nodes can pin capability version through `node.config`:
+- `capability_id`
+- `capability_version`
+
+Runtime validates pinned references when present.
+
 ## Projects API
+- List projects: `GET /projects`
+  - Query params:
+    - `limit` (optional, default `50`, max `200`)
+    - `cursor` (optional, reserved for future pagination)
+  - Response: `200` with `items[]` (`Project`) and `next_cursor` (`null` for current implementation).
 - Create project: `POST /projects`
 - Request body:
   - `project_id` (required)
+  - `project_name` (required, human-readable display name)
   - `default_orchestrator_id` (optional)
   - `settings` (optional object, default `{}`)
-- Response: `201` with `project_id`, `tenant_id`, `default_orchestrator_id`, `settings`, timestamps.
+- Response: `201` with `project_id`, `project_name`, `tenant_id`, `default_orchestrator_id`, `settings`, timestamps.
 - Conflict behavior: if `project_id` already exists in the same tenant, API returns `409` with `error.code = CONFLICT`.
 
 ## Project registry bootstrap endpoints
@@ -122,33 +189,16 @@ Session stack diagnostics:
 - Markdown entrypoint: `/agent-integration-kit`
 - Machine-readable bundle: `/agent-integration-kit.json`
 - Workflow authoring guide: `/workflow-authoring-guide`
+- Project list endpoint: `GET /projects`
 - Project bootstrap endpoint: `POST /projects`
-- Capability registry endpoint: `POST /capabilities`
-- Capability versions endpoint: `GET /capabilities/{capability_id}/versions`
 - Project orchestrator config endpoint: `POST /projects/{project_id}/orchestrators`
 - Project workflow definition endpoint: `POST /projects/{project_id}/workflow-definitions`
 - Orchestrator message endpoint: `POST /orchestrator/messages`
 - Orchestrator stack diagnostics: `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
-- Atomic handoff endpoint: `POST /handoff/packages`
-- Deterministic replay endpoint: `POST /handoff/packages/{handoff_id}/replay`
-- Run ledger endpoint: `GET /runs/{run_id}/ledger`
 - Integration test UI: `/agent-integration-test`
 - Integration test JSON report: `/agent-integration-test.json`
 - Detailed integration logs: `/agent-integration-logs`
 - Draft validator: `POST /agent-integration-test/validate-draft`
-
-## Capability registry and handoff
-- Register a versioned capability contract:
-  - `POST /capabilities`
-- List capability contracts:
-  - `GET /capabilities`
-  - `GET /capabilities/{capability_id}/versions`
-- Create atomic handoff package and start run:
-  - `POST /handoff/packages`
-- Deterministic replay (if package was created with `replay_mode=deterministic`):
-  - `POST /handoff/packages/{handoff_id}/replay`
-- Inspect immutable run trace:
-  - `GET /runs/{run_id}/ledger`
 
 ## Detailed integration logging for agent onboarding
 Use `GET /agent-integration-logs` to quickly diagnose integration issues when an external agent calls integration-kit/test endpoints.
@@ -173,8 +223,8 @@ curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_
 ```
 
 ## Core workflow lifecycle
-1. `POST /projects` create project scope
-2. `POST /capabilities` register capability versions used by pinned nodes
+1. `GET /projects` list available project scopes (or `POST /projects` to create one with `project_id` + `project_name`)
+2. `POST /capabilities` register capability contracts/versions used by workflow nodes
 3. `POST /workflows` create workflow draft
 4. `PUT /workflows/{workflow_id}/draft` update draft
 5. `POST /workflows/{workflow_id}/publish` publish immutable version
@@ -182,13 +232,27 @@ curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_
 7. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
 8. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
 9. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
-10. `POST /handoff/packages` transfer package and start run atomically (optional)
-11. `GET /runs/{run_id}` read state
-12. `GET /runs/{run_id}/ledger` inspect immutable run ledger
-13. `GET /runs/{run_id}/stream` consume SSE events
-14. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
-15. `POST /runs/{run_id}/cancel` cancel run
-16. `POST /runs/{run_id}/rerun-node` rerun node
+10. `GET /runs/{run_id}` read state
+11. `GET /runs/{run_id}/stream` consume SSE events
+12. `GET /runs/{run_id}/ledger` read immutable execution ledger
+13. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
+14. `POST /runs/{run_id}/cancel` cancel run
+15. `POST /runs/{run_id}/rerun-node` rerun node
+
+## Atomic handoff API
+- Create handoff package and start run atomically:
+  - `POST /handoff/packages`
+- Deterministic replay from stored package:
+  - `POST /handoff/packages/{handoff_id}/replay`
+
+Handoff package includes:
+- `context`
+- `constraints`
+- `expected_result`
+- `acceptance_checks`
+- optional `replay_mode=deterministic`
+
+Use `Idempotency-Key` on handoff endpoints for retry-safe delivery.
 
 ## Chat-first integration for external clients
 For full user interaction (approval/forms/files) integrate `POST /chatkit` in addition to run APIs.
@@ -289,7 +353,25 @@ curl -sS -X POST "https://api.workcore.build/workflows/<workflow_id>/runs" \
   -H "X-Trace-Id: trace_run_1" \
   -H "Idempotency-Key: run_start_001" \
   -d '{
-    "inputs": {"source":"upload"},
+    "inputs": {
+      "source":"upload",
+      "documents":[
+        {
+          "doc_id":"doc_1",
+          "filename":"claim-photo.jpg",
+          "type":"image",
+          "pages":[
+            {
+              "page_number":1,
+              "mime_type":"image/jpeg",
+              "artifact_ref":"artf_tenant_a_01"
+            }
+          ]
+        }
+      ]
+    },
+    "state_exclude_paths":["documents","documents.pages.image_base64"],
+    "output_include_paths":["result.claim_id","result.decision"],
     "metadata": {"user_id":"u_77"},
     "mode": "async"
   }'

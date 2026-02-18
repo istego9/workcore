@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from apps.orchestrator.runtime.models import Event as RuntimeEvent
 from apps.orchestrator.runtime.models import Run
+from apps.orchestrator.runtime.projection import project_run_payload_for_transport
 
 
 @dataclass
@@ -214,6 +215,7 @@ class WorkflowEngineAdapter:
 
     def _snapshot_from_run(self, run: Run) -> WorkflowEngineStateSnapshot:
         metadata = dict(run.metadata or {})
+        projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, metadata)
         commit_point = metadata.get("commit_point_reached")
         if not isinstance(commit_point, bool):
             commit_point = False
@@ -229,8 +231,8 @@ class WorkflowEngineAdapter:
             status=run.status,
             cancellable=cancellable,
             commit_point_reached=bool(commit_point),
-            state=dict(run.state or {}),
-            outputs=run.outputs if isinstance(run.outputs, dict) else None,
+            state=dict(projected_state or {}) if isinstance(projected_state, dict) else {},
+            outputs=projected_outputs if isinstance(projected_outputs, dict) else None,
         )
 
     def _normalize_events(self, run: Run, events: List[Any]) -> List[Dict[str, Any]]:

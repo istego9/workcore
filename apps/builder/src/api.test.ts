@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE, listRuns, listWorkflows } from './api';
+import { API_BASE, listProjects, listRuns, listWorkflows } from './api';
 
 describe('api listRuns', () => {
   const fetchMock = vi.fn();
@@ -50,6 +50,25 @@ describe('api listRuns', () => {
     );
   });
 
+  it('builds /projects query params for project dropdown', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: null })
+    } as Response);
+
+    await listProjects({ limit: 200, cursor: 'cursor_projects_1' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects?limit=200&cursor=cursor_projects_1`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json'
+        })
+      })
+    );
+  });
+
   it('returns parsed API error for run history request', async () => {
     fetchMock.mockResolvedValue({
       ok: false,
@@ -87,6 +106,29 @@ describe('api listRuns', () => {
           Authorization: 'Bearer token_local',
           'X-Tenant-Id': 'tenant_local',
           'X-Project-Id': 'proj_merge'
+        })
+      })
+    );
+  });
+
+  it('sends auth/tenant headers for project list requests', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: null })
+    } as Response);
+
+    window.history.replaceState({}, '', '/?api_token=token_local&tenant_id=tenant_local');
+
+    await listProjects({ limit: 50 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects?limit=50`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token_local',
+          'X-Tenant-Id': 'tenant_local'
         })
       })
     );

@@ -117,7 +117,10 @@ Do not introduce custom node types.
 - `while`
   - Required: `condition`, `max_iterations`, `body_target`, `exit_target`, `loop_back`.
 - `set_state`
-  - Required: `target` and `expression`.
+  - Required:
+    - legacy mode: `target` and `expression`, or
+    - batch mode: `assignments` with at least one `{ target, expression }` item.
+  - In batch mode, assignments execute in order and later expressions can reference prior state updates.
 - `interaction`
   - `prompt` should be non-empty (warning otherwise).
   - Optional: `allow_file_upload`, `input_schema`, `state_target`.
@@ -156,6 +159,10 @@ Do not introduce custom node types.
 - If model returns JSON as a string, runtime parses it into an object before schema validation.
 - If `user_input` is omitted in an Agent node, runtime supplies default JSON context with keys:
   `input`, `state`, `node_outputs`.
+- For document inputs, agents should prefer artifact-reference flow:
+  - page payloads use `artifact_ref` by default;
+  - default agent context should pass document metadata first;
+  - full page/body content is fetched explicitly when required.
 - Validated output is persisted as:
   - `node_runs[agent_node_id].output`
   - `node_outputs[agent_node_id]`
@@ -164,7 +171,7 @@ Do not introduce custom node types.
   - Without `state_target`, structured JSON outputs auto-merge top-level keys into state.
   - To keep output only in `node_outputs`, set `merge_output_to_state=false`.
 - Recommended downstream pattern:
-  - Immediately map required JSON fields in the next `set_state` nodes so numeric fields are available for later `if_else`, `output`, and `end`.
+  - Immediately map required JSON fields with a `set_state` node (prefer one node with `assignments[]`) so numeric fields are available for later `if_else`, `output`, and `end`.
 - Example category schema for travel estimate:
 
 ```json
@@ -192,7 +199,7 @@ Agents must ensure:
 - There is a path from `Start` to `End`.
 - All nodes are reachable from `Start`.
 - `while` and `if_else` structural config is complete.
-- `set_state` has both `target` and `expression`.
+- `set_state` has either legacy `target` + `expression` or non-empty `assignments[]`.
 
 Warnings are allowed by UI, but should be resolved unless explicitly accepted.
 

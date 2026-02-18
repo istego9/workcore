@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.6.0
+  version: 0.9.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -349,6 +349,20 @@ paths:
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [projects]
+      summary: List projects
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectList'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
     post:
       tags: [projects]
       summary: Create project
@@ -360,6 +374,7 @@ paths:
               $ref: '#/components/schemas/ProjectCreateRequest'
             example:
               project_id: proj_hq21
+              project_name: HQ21 Production
               settings:
                 orchestrator_enabled: true
       responses:
@@ -465,7 +480,7 @@ paths:
         '409': { $ref: '#/components/responses/ErrorResponse' }
     get:
       tags: [capabilities]
-      summary: List capability contracts
+      summary: List capability versions
       parameters:
         - in: query
           name: capability_id
@@ -692,7 +707,10 @@ paths:
     post:
       tags: [runs]
       summary: Start a run
-      description: Project scope must be provided via `X-Project-Id` header or `metadata.project_id`.
+      description: >
+        Project scope must be provided via `X-Project-Id` header or `metadata.project_id`.
+        For document workflows, prefer `documents[].pages[].artifact_ref` over inline payloads;
+        use run projections (`state_exclude_paths`, `output_include_paths`) to reduce persisted and returned payload size.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -704,6 +722,20 @@ paths:
             example:
               inputs:
                 customer_text: "I want a refund"
+                documents:
+                  - doc_id: doc_1
+                    filename: claim-photo-1.jpg
+                    type: image
+                    pages:
+                      - page_number: 1
+                        mime_type: image/jpeg
+                        artifact_ref: artf_tenant_a_01
+              state_exclude_paths:
+                - documents
+                - documents.pages.image_base64
+              output_include_paths:
+                - result.claim_id
+                - result.decision
               metadata:
                 correlation_id: corr_123
                 user_id: user_1
@@ -768,6 +800,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedRuns'
 
+  /artifacts/{artifact_ref}:
+    parameters:
+      - $ref: '#/components/parameters/ArtifactRef'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [runs]
+      summary: Read artifact content explicitly by reference
+      description: >
+        Returns artifact payload on explicit fetch. Use this endpoint to load full content
+        when run input/state/output uses artifact references by default.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactReadResponse'
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '410': { $ref: '#/components/responses/ErrorResponse' }
+
   /runs/{run_id}/ledger:
     parameters:
       - $ref: '#/components/parameters/RunId'
@@ -799,6 +854,9 @@ paths:
     post:
       tags: [handoff]
       summary: Atomic workflow handoff package intake
+      description: >
+        Atomically receives a workflow handoff package (context, constraints, expected result,
+        acceptance checks), starts run execution, and returns handoff+run linkage.
       requestBody:
         required: true
         content:
@@ -1056,6 +1114,11 @@ components:
       name: run_id
       required: true
       schema: { type: string }
+    ArtifactRef:
+      in: path
+      name: artifact_ref
+      required: true
+      schema: { type: string }
     SessionId:
       in: path
       name: session_id
@@ -1180,6 +1243,10 @@ components:
                 - ERR_CAPABILITY_NOT_FOUND
                 - ERR_HANDOFF_REPLAY_NOT_ALLOWED
                 - ERR_HANDOFF_NOT_FOUND
+                - projection.path_invalid
+                - artifact.not_found
+                - artifact.access_denied
+                - artifact.expired
             message: { type: string }
             details:
               oneOf:
@@ -1528,12 +1595,15 @@ components:
       type: object
       properties:
         project_id: { type: string }
+        project_name:
+          type: string
+          description: Human-readable project display name.
         default_orchestrator_id:
           type: string
           nullable: true
         settings:
           type: object
-      required: [project_id]
+      required: [project_id, project_name]
 
     Project:
       type: object
@@ -1541,6 +1611,9 @@ components:
         project_id:
           type: string
           description: Identifier unique within `tenant_id` scope.
+        project_name:
+          type: string
+          description: Human-readable project display name.
         tenant_id: { type: string }
         default_orchestrator_id:
           type: string
@@ -1549,7 +1622,16 @@ components:
           type: object
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [project_id, tenant_id, settings, created_at, updated_at]
+      required: [project_id, project_name, tenant_id, settings, created_at, updated_at]
+
+    ProjectList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Project' }
+        next_cursor: { type: string, nullable: true }
+      required: [items]
 
     CapabilityContract:
       type: object
@@ -1749,7 +1831,22 @@ components:
         type: { type: string }
         config:
           type: object
+          description: >
+            Node-specific config object. For `set_state` nodes, use either legacy
+            single assignment fields (`target`, `expression`) or batch
+            assignments via `assignments[]`.
           properties:
+            target:
+              type: string
+              description: Legacy set_state target path.
+            expression:
+              type: string
+              description: Legacy set_state expression.
+            assignments:
+              type: array
+              description: Set State batch assignments executed in order.
+              items:
+                $ref: '#/components/schemas/WorkflowSetStateAssignment'
             capability_id:
               type: string
               description: Optional capability identifier pinned for this node execution.
@@ -1764,6 +1861,13 @@ components:
         source: { type: string }
         target: { type: string }
       required: [source, target]
+
+    WorkflowSetStateAssignment:
+      type: object
+      properties:
+        target: { type: string }
+        expression: { type: string }
+      required: [target, expression]
 
     WorkflowVersion:
       type: object
@@ -1829,7 +1933,22 @@ components:
     RunCreateRequest:
       type: object
       properties:
-        inputs: { type: object }
+        inputs:
+          $ref: '#/components/schemas/RunInputs'
+        state_exclude_paths:
+          type: array
+          description: >
+            Optional run projection paths excluded from persisted/returned run state snapshots.
+            Dot-delimited syntax; `*` matches a single path segment.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
+        output_include_paths:
+          type: array
+          description: >
+            Optional allowlist of output paths returned from run payloads.
+            Dot-delimited syntax; `*` matches a single path segment.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
         version_id: { type: string }
         metadata:
           type: object
@@ -1855,9 +1974,14 @@ components:
         resolved_version: { type: string }
         status: { type: string }
         mode: { type: string }
-        inputs: { type: object }
-        state: { type: object }
-        outputs: { type: object }
+        inputs:
+          $ref: '#/components/schemas/RunInputs'
+        state:
+          type: object
+          description: Run state payload after applying configured state projection rules.
+        outputs:
+          type: object
+          description: Run outputs payload after applying configured output projection rules.
         metadata:
           type: object
           properties:
@@ -1882,6 +2006,21 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [run_id, workflow_id, version_id, status]
+
+    ArtifactReadResponse:
+      type: object
+      properties:
+        artifact_ref: { type: string }
+        mime_type: { type: string, nullable: true }
+        metadata:
+          type: object
+          additionalProperties: true
+        content:
+          description: Artifact payload returned on explicit fetch.
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+        correlation_id: { type: string }
+      required: [artifact_ref, metadata, content, created_at]
 
     NodeRun:
       type: object
@@ -1934,8 +2073,54 @@ components:
         version_id: { type: string }
         run_id: { type: string }
         interrupt_id: { type: string }
-        inputs: { type: object }
+        inputs:
+          $ref: '#/components/schemas/RunInputs'
       required: [action]
+
+    ProjectionPath:
+      type: string
+      description: Dot-delimited path expression used by run projections.
+      example: documents.pages.image_base64
+
+    RunInputDocumentPage:
+      type: object
+      description: >
+        Document page payload. `artifact_ref` is the preferred content carrier.
+        Inline fields remain supported for compatibility during migration.
+      properties:
+        page_number: { type: integer }
+        mime_type: { type: string }
+        artifact_ref:
+          type: string
+          description: Opaque artifact handle resolved via explicit artifact read operation.
+        text: { type: string }
+        ocr_text: { type: string }
+        markdown: { type: string }
+        image_base64: { type: string }
+
+    RunInputDocument:
+      type: object
+      properties:
+        doc_id: { type: string }
+        filename: { type: string }
+        type: { type: string }
+        mime_type: { type: string }
+        pages:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunInputDocumentPage'
+
+    RunInputs:
+      type: object
+      description: >
+        Run input object. For document workflows, use `documents[].pages[].artifact_ref`
+        by default and fetch full content explicitly when required.
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunInputDocument'
+      additionalProperties: true
 
     WebhookSubscription:
       type: object
@@ -1969,17 +2154,6 @@ components:
           nullable: true
       required: [items]
 
-    PaginatedRunLedger:
-      type: object
-      properties:
-        items:
-          type: array
-          items: { $ref: '#/components/schemas/RunLedgerEntry' }
-        next_cursor:
-          type: string
-          nullable: true
-      required: [items]
-
     RunLedgerEntry:
       type: object
       properties:
@@ -1999,6 +2173,17 @@ components:
         payload: { type: object }
         timestamp: { type: string, format: date-time }
       required: [ledger_id, run_id, workflow_id, version_id, status, event_type, artifacts, payload, timestamp]
+
+    PaginatedRunLedger:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RunLedgerEntry' }
+        next_cursor:
+          type: string
+          nullable: true
+      required: [items]
 
     PaginatedWorkflowVersions:
       type: object

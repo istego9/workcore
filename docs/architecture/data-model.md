@@ -63,6 +63,11 @@ Execution instances pinned to a specific published version.
 - correlation_id (text, nullable)
 - created_at, updated_at, started_at, completed_at (timestamptz)
 
+Notes:
+- For document workflows, `inputs/state/outputs` should store artifact references (for example `artifact_ref`) instead of duplicating large inline binary payloads.
+- `state_exclude_paths` and `output_include_paths` apply projection to persisted/returned payload shape.
+- Projection settings are run-scoped metadata and do not require dedicated columns in the initial additive rollout.
+
 ### node_runs
 Execution state per node in a run.
 - id (text, pk)
@@ -118,6 +123,52 @@ Durable event log for SSE replay and auditing.
 - payload (jsonb)
 - correlation_id (text, nullable)
 - created_at (timestamptz)
+
+### capabilities
+Versioned capability registry for explicit workflow-step pinning.
+- id (text, pk)
+- tenant_id (text, indexed)
+- capability_id (text)
+- version (text)
+- node_type (text)
+- contract (jsonb) // inputs, outputs, constraints, timeout_s, retry_policy, error_codes
+- created_at (timestamptz)
+
+Unique: (tenant_id, capability_id, version)
+
+### run_ledger
+Immutable execution ledger derived from runtime transitions.
+- id (text, pk)
+- tenant_id (text, indexed)
+- run_id (text, indexed)
+- workflow_id (text)
+- version_id (text)
+- step_id (text, nullable)
+- capability_id (text, nullable)
+- capability_version (text, nullable)
+- status (text)
+- event_type (text)
+- decision (jsonb, nullable)
+- artifacts (jsonb array)
+- payload (jsonb)
+- created_at (timestamptz)
+
+### workflow_handoffs
+Atomic handoff package intake records with replay metadata.
+- id (text, pk)
+- tenant_id (text, indexed)
+- workflow_id (text)
+- version_id (text, nullable)
+- context (jsonb)
+- constraints (jsonb)
+- expected_result (jsonb)
+- acceptance_checks (jsonb array)
+- replay_mode (text) // none | deterministic
+- idempotency_key (text, nullable)
+- run_id (text, nullable)
+- status (text)
+- metadata (jsonb)
+- created_at, updated_at (timestamptz)
 
 ### webhook_subscriptions
 Outbound webhook registrations.
@@ -206,6 +257,7 @@ PK: (tenant_id, id)
 Project-level routing scope for orchestrated chat entry.
 - tenant_id (text)
 - project_id (text)
+- project_name (text, not null) // human-readable display name
 - default_orchestrator_id (text, nullable)
 - settings (jsonb) // per-project thresholds, limits, feature flags
 - created_at, updated_at (timestamptz)
@@ -343,6 +395,9 @@ Atomic handoff package intake records with replay metadata.
 - runs: index by (tenant_id, workflow_id, status, created_at).
 - node_runs: index by (run_id, status).
 - events: index by (tenant_id, run_id, created_at).
+- capabilities: index by (tenant_id, capability_id, created_at).
+- run_ledger: index by (tenant_id, run_id, created_at).
+- workflow_handoffs: index by (tenant_id, workflow_id, created_at).
 - webhook_deliveries: index by (status, next_retry_at).
 - idempotency_keys: index by (tenant_id, idempotency_key, scope), (expires_at).
 - capabilities: index by (tenant_id, capability_id, created_at).

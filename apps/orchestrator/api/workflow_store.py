@@ -46,6 +46,71 @@ class WorkflowConflictError(RuntimeError):
     pass
 
 
+_WORKCORE_INTERNAL_KEY = "_workcore"
+_WORKCORE_DOCUMENT_MODE_KEY = "document_mode"
+_WORKCORE_PROJECTION_DEFAULTS_KEY = "projection_defaults"
+_WORKCORE_NO_INLINE_DEFAULT = "no_inline_by_default"
+_WORKCORE_STATE_EXCLUDE_DEFAULTS = ["documents.pages.image_base64", "documents.image_base64"]
+
+
+def _normalize_paths(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def no_inline_projection_defaults(content: Dict[str, Any]) -> Dict[str, List[str]]:
+    if not isinstance(content, dict):
+        return {}
+    internal = content.get(_WORKCORE_INTERNAL_KEY)
+    if not isinstance(internal, dict):
+        return {}
+    if internal.get(_WORKCORE_DOCUMENT_MODE_KEY) != _WORKCORE_NO_INLINE_DEFAULT:
+        return {}
+    defaults = internal.get(_WORKCORE_PROJECTION_DEFAULTS_KEY)
+    if not isinstance(defaults, dict):
+        return {}
+    state_paths = _normalize_paths(defaults.get("state_exclude_paths"))
+    output_paths = _normalize_paths(defaults.get("output_include_paths"))
+    payload: Dict[str, List[str]] = {}
+    if state_paths:
+        payload["state_exclude_paths"] = state_paths
+    if output_paths:
+        payload["output_include_paths"] = output_paths
+    return payload
+
+
+def _build_version_content(draft: Dict[str, Any]) -> Dict[str, Any]:
+    content = dict(draft or {})
+    internal = content.get(_WORKCORE_INTERNAL_KEY)
+    internal_payload = dict(internal) if isinstance(internal, dict) else {}
+    internal_payload[_WORKCORE_DOCUMENT_MODE_KEY] = _WORKCORE_NO_INLINE_DEFAULT
+    internal_payload[_WORKCORE_PROJECTION_DEFAULTS_KEY] = {
+        "state_exclude_paths": list(_WORKCORE_STATE_EXCLUDE_DEFAULTS),
+        "output_include_paths": [],
+    }
+    content[_WORKCORE_INTERNAL_KEY] = internal_payload
+    return content
+
+
+def strip_internal_workcore_content(content: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(content, dict):
+        return {}
+    cleaned = dict(content)
+    cleaned.pop(_WORKCORE_INTERNAL_KEY, None)
+    return cleaned
+
+
 @dataclass
 class WorkflowRecord:
     workflow_id: str
@@ -201,13 +266,14 @@ class InMemoryWorkflowStore:
         record = await self.get_workflow(workflow_id, tenant_id=tenant_id, project_id=project_id)
         version_number = len(self.workflow_versions.get(workflow_id, [])) + 1
         version_id = _new_id("wfv")
+        version_content = _build_version_content(record.draft)
         version = WorkflowVersionRecord(
             version_id=version_id,
             workflow_id=workflow_id,
             tenant_id=record.tenant_id,
             version_number=version_number,
-            hash=_hash_content(record.draft),
-            content=record.draft,
+            hash=_hash_content(version_content),
+            content=version_content,
             created_at=_now(),
         )
         self.versions[version_id] = version
@@ -228,7 +294,7 @@ class InMemoryWorkflowStore:
         version = self.versions.get(record.active_version_id)
         if not version:
             raise WorkflowConflictError("active version not found")
-        record.draft = version.content
+        record.draft = strip_internal_workcore_content(version.content)
         record.updated_at = _now()
         return record
 
@@ -456,7 +522,8 @@ class PostgresWorkflowStore:
             tenant,
         )
         version_id = _new_id("wfv")
-        hash_value = _hash_content(record.draft)
+        version_content = _build_version_content(record.draft)
+        hash_value = _hash_content(version_content)
         await self.pool.execute(
             """
             insert into workflow_versions (id, workflow_id, tenant_id, version_number, hash, content)
@@ -467,7 +534,7 @@ class PostgresWorkflowStore:
             tenant,
             version_number,
             hash_value,
-            _jsonb(record.draft),
+            _jsonb(version_content),
         )
         await self.pool.execute(
             """
@@ -498,7 +565,7 @@ class PostgresWorkflowStore:
             set draft = $1::jsonb, updated_at = now()
             where id = $2 and tenant_id = $3
             """,
-            _jsonb(version.content),
+            _jsonb(strip_internal_workcore_content(version.content)),
             workflow_id,
             tenant,
         )

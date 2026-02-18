@@ -38,6 +38,45 @@ class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(snapshot)
         self.assertEqual(snapshot.payload.get("status"), run.status)
 
+    async def test_service_snapshot_applies_projection_from_run_metadata(self):
+        nodes = [
+            Node("start", "start"),
+            Node("out", "output", {"value": {"result": {"claim_id": "clm_1", "decision": "approve"}}}),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "out"),
+            Edge("out", "end"),
+        ]
+        workflow = Workflow(
+            id="wf_projection",
+            version_id="v1",
+            nodes={node.id: node for node in nodes},
+            edges=edges,
+        )
+        engine = OrchestratorEngine(workflow, SimpleEvaluator())
+        service = OrchestratorService.create(engine)
+
+        run = await service.start_run(
+            {
+                "documents": [
+                    {
+                        "doc_id": "doc_1",
+                        "pages": [{"image_base64": "AAAA", "artifact_ref": "artf_1"}],
+                    }
+                ]
+            },
+            metadata={
+                "state_exclude_paths": ["documents.pages.image_base64"],
+                "output_include_paths": ["result.claim_id"],
+            },
+        )
+        snapshot = service.store.get_snapshot(run.id)
+        self.assertIsNotNone(snapshot)
+        state_page = snapshot.payload["state"]["documents"][0]["pages"][0]
+        self.assertNotIn("image_base64", state_page)
+        self.assertEqual(snapshot.payload["outputs"], {"result": {"claim_id": "clm_1"}})
+
 
 if __name__ == "__main__":
     unittest.main()

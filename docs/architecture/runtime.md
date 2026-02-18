@@ -6,6 +6,7 @@ Status: Draft
 ## Overview
 The orchestrator executes workflow runs against a pinned published version. A run advances by scheduling node_runs when their dependencies are satisfied.
 Runtime state is persisted in Postgres (`runs`, `node_runs`, `interrupts`) so runs can be resumed after service restarts.
+For document-heavy workloads, runtime supports artifact-reference inputs and run-level payload projections to reduce stored/returned JSON size.
 
 Project-level orchestration adds an intent-routing layer in front of workflow execution:
 - inbound message with `project_id` enters project router
@@ -95,6 +96,23 @@ Low-confidence handling:
 - On start, engine resolves and pins `resolved_version` in run state.
 - Resume always uses the pinned `resolved_version`, even if a newer workflow version is published later.
 
+## Capability registry pinning
+- Workflow steps can optionally pin capability contract via:
+  - `node.config.capability_id`
+  - `node.config.capability_version`
+- Runtime validates pinned capability reference against tenant-scoped capability registry.
+- If capability pin is missing in registry, run start fails with explicit validation error.
+- Capability bindings are attached to run metadata to make chosen capability/version visible in downstream observability.
+
+## Document payload mode and projections
+- Document page content should be provided via `documents[].pages[].artifact_ref` by default.
+- Inline content fields (for example `image_base64`) remain compatibility paths for migration windows.
+- Run-level projection controls:
+  - `state_exclude_paths`: excludes configured paths from persisted/returned run state payloads.
+  - `output_include_paths`: allowlists output paths returned in run payloads.
+- Projection controls target persistence/transport payload size and do not change expression evaluation semantics for the active in-memory execution context.
+- Default behavior changes must be rollout-gated to new workflow versions; previously published versions keep legacy behavior unless explicitly migrated.
+
 ## Prompt templates
 - Agent `instructions` and `user_input` support template expressions: `{{ ... }}`.
 - Interaction `prompt` also supports templates.
@@ -112,6 +130,25 @@ Every state transition emits an event to Kafka and is persisted to the events ta
 - message_generated (agent streaming)
 - run_cancelled (user requested cancellation)
 - snapshot, stream_end
+
+## Run ledger (immutable trace)
+- Runtime events are projected into append-only `run_ledger` records.
+- Each ledger record includes:
+  - `workflow_id`, `version_id`, `run_id`
+  - `step_id` (when available)
+  - chosen `capability_id` and `capability_version` (when step pin is configured)
+  - normalized `status`, event type, payload
+  - extracted artifact references and timestamp
+- Ledger records are immutable and ordered by creation time for RCA/audit/replay diagnostics.
+
+## Atomic handoff
+- `POST /handoff/packages` receives a workflow package and starts run execution in one API operation.
+- Handoff payload captures:
+  - context
+  - constraints
+  - expected_result
+  - acceptance_checks
+- Optional `replay_mode=deterministic` allows replay from stored package while preserving workflow version pin and package payload.
 
 ## Determinism
 - Given the same inputs, workflow version, and tool outputs, the run must be reproducible.

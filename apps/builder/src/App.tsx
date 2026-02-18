@@ -33,6 +33,7 @@ import {
   API_BASE,
   createWorkflow,
   getWorkflow,
+  listProjects,
   listRuns,
   listWorkflows,
   publishWorkflow,
@@ -42,7 +43,7 @@ import {
   updateDraft,
   updateWorkflowMeta
 } from './api';
-import type { RunRecord } from './api';
+import type { ProjectRecord, RunRecord } from './api';
 import { buildIntegrationKitLinks } from './integration-kit';
 import {
   DEFAULT_DRAFT,
@@ -65,6 +66,12 @@ import type {
   WorkflowExport,
   WorkflowSummary
 } from './builder/types';
+import {
+  CANVAS_SCALE_STEP,
+  CANVAS_WHEEL_ZOOM_SENSITIVITY,
+  clampCanvasScale,
+  computeZoomedOffset
+} from './builder/viewport';
 import {
   RECENT_PROJECT_IDS_STORAGE_KEY,
   mergeRecentProjectIds,
@@ -192,6 +199,17 @@ type HistorySummary = {
   avgTokensPerRun: number;
   avgCostPerRun: number;
   days: DailyRunSummary[];
+};
+type HistoryWorkflowScope = 'selected' | 'all';
+type HistoryProjectScope = 'active' | 'all';
+type RunInputDocumentPreview = {
+  docId: string;
+  filename: string;
+  docType: string;
+  pages: number;
+  textChars: number;
+  imageBase64Chars: number;
+  textSample: string;
 };
 
 const TOKENS_IN_MILLION = 1_000_000;
@@ -376,6 +394,79 @@ const hasContent = (value: unknown) => {
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
   return true;
+};
+
+const asObjectRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+};
+
+const asUnknownArray = (value: unknown): unknown[] => {
+  if (!Array.isArray(value)) return [];
+  return value;
+};
+
+const asString = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  return value;
+};
+
+const truncateText = (value: string, maxLength = 320): string => {
+  if (!value) return '';
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 3)}...`;
+};
+
+const summarizeRunDocuments = (inputs: unknown): RunInputDocumentPreview[] => {
+  const inputsObject = asObjectRecord(inputs);
+  if (!inputsObject) return [];
+  const documents = asUnknownArray(inputsObject.documents);
+
+  return documents
+    .map((item, index) => {
+      const doc = asObjectRecord(item);
+      if (!doc) return null;
+
+      const pages = asUnknownArray(doc.pages);
+      let textChars = 0;
+      let imageBase64Chars = 0;
+      let firstTextSample = '';
+
+      pages.forEach((pageItem) => {
+        const page = asObjectRecord(pageItem);
+        if (!page) return;
+
+        const textSources = [asString(page.text), asString(page.ocr_text), asString(page.markdown)];
+        textSources.forEach((source) => {
+          if (!source) return;
+          textChars += source.length;
+          if (!firstTextSample) {
+            firstTextSample = source;
+          }
+        });
+
+        const imageBase64 = asString(page.image_base64);
+        if (imageBase64) {
+          imageBase64Chars += imageBase64.length;
+        }
+      });
+
+      const docLevelImageBase64 = asString(doc.image_base64);
+      if (docLevelImageBase64) {
+        imageBase64Chars += docLevelImageBase64.length;
+      }
+
+      return {
+        docId: asString(doc.doc_id) || `doc_${index + 1}`,
+        filename: asString(doc.filename) || `Document ${index + 1}`,
+        docType: asString(doc.type) || 'unknown',
+        pages: pages.length,
+        textChars,
+        imageBase64Chars,
+        textSample: truncateText(firstTextSample.trim())
+      };
+    })
+    .filter((item): item is RunInputDocumentPreview => !!item);
 };
 
 const formatJson = (value: unknown) => {
@@ -762,16 +853,22 @@ export default function App() {
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const scaleRef = useRef(scale);
+  const offsetRef = useRef(offset);
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [panning, setPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0, ox: 0, oy: 0 });
+  const [projectList, setProjectList] = useState<ProjectRecord[]>([]);
+  const [projectListLoading, setProjectListLoading] = useState(false);
   const [workflowList, setWorkflowList] = useState<WorkflowSummary[]>([]);
   const [workflowQuery, setWorkflowQuery] = useState('');
   const [workflowListLoading, setWorkflowListLoading] = useState(false);
-  const [runHistory, setRunHistory] = useState<RunRecord[]>([]);
+  const [runHistoryRaw, setRunHistoryRaw] = useState<RunRecord[]>([]);
   const [runHistoryLoading, setRunHistoryLoading] = useState(false);
   const [runHistoryExpandedId, setRunHistoryExpandedId] = useState<string | null>(null);
+  const [historyWorkflowScope, setHistoryWorkflowScope] = useState<HistoryWorkflowScope>('selected');
+  const [historyProjectScope, setHistoryProjectScope] = useState<HistoryProjectScope>('active');
   const [historyInputRateUsdPer1M, setHistoryInputRateUsdPer1M] = useState(
     DEFAULT_INPUT_RATE_USD_PER_1M
   );
@@ -813,11 +910,70 @@ export default function App() {
     });
   }, [workflowList, workflowQuery]);
   const normalizedProjectId = normalizeProjectId(projectId);
+  const projectDisplayNameById = useMemo(() => {
+    const labels = new Map<string, string>();
+    projectList.forEach((item) => {
+      const normalized = normalizeProjectId(item.project_id);
+      if (!normalized) return;
+      labels.set(normalized, item.project_name?.trim() || normalized);
+    });
+    return labels;
+  }, [projectList]);
   const projectSwitcherOptions = useMemo(
-    () => recentProjectIds.map((id) => ({ value: id, label: id })),
-    [recentProjectIds]
+    () => {
+      const seen = new Set<string>();
+      const options: Array<{ value: string; label: string }> = [];
+      const addOption = (value: unknown, label?: unknown) => {
+        const normalized = normalizeProjectId(value);
+        if (!normalized || seen.has(normalized)) return;
+        seen.add(normalized);
+        const normalizedLabel =
+          typeof label === 'string' && label.trim() ? label.trim() : normalized;
+        options.push({ value: normalized, label: normalizedLabel });
+      };
+
+      addOption(normalizedProjectId, projectDisplayNameById.get(normalizedProjectId));
+      projectList.forEach((item) => addOption(item.project_id, item.project_name));
+      recentProjectIds.forEach((value) =>
+        addOption(value, projectDisplayNameById.get(normalizeProjectId(value)))
+      );
+      return options;
+    },
+    [normalizedProjectId, projectDisplayNameById, projectList, recentProjectIds]
   );
   const activeProjectId = normalizedProjectId || undefined;
+  const runHistory = useMemo(() => {
+    let items = runHistoryRaw;
+
+    if (historyWorkflowScope === 'selected') {
+      const selectedWorkflowId = workflowId.trim();
+      if (!selectedWorkflowId) {
+        return [];
+      }
+      items = items.filter((item) => item.workflow_id === selectedWorkflowId);
+    }
+
+    if (historyProjectScope === 'active') {
+      if (!activeProjectId) {
+        return [];
+      }
+      items = items.filter((item) => normalizeProjectId(item.project_id) === activeProjectId);
+    }
+
+    return items;
+  }, [runHistoryRaw, historyWorkflowScope, workflowId, historyProjectScope, activeProjectId]);
+  const runHistoryProjectIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          runHistoryRaw
+            .map((item) => normalizeProjectId(item.project_id))
+            .filter((value): value is string => !!value)
+        )
+      ).sort(),
+    [runHistoryRaw]
+  );
+  const filteredOutRunCount = Math.max(runHistoryRaw.length - runHistory.length, 0);
 
   const historySummary = useMemo(
     () => summarizeHistory(runHistory, historyInputRateUsdPer1M, historyOutputRateUsdPer1M),
@@ -949,6 +1105,10 @@ export default function App() {
   }, [autoCreatedWorkflowId, isTestEnv, activeProjectId]);
 
   useEffect(() => {
+    void fetchProjects();
+  }, []);
+
+  useEffect(() => {
     if (!listOpen) return;
     void fetchWorkflows();
   }, [listOpen, activeProjectId]);
@@ -968,6 +1128,11 @@ export default function App() {
   useEffect(() => {
     void fetchWorkflows();
   }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!runHistoryOpen) return;
+    void fetchRunHistory(workflowId);
+  }, [runHistoryOpen, workflowId, historyWorkflowScope]);
 
   const markDirty = () => {
     setDirty(true);
@@ -1001,6 +1166,29 @@ export default function App() {
       )
     );
     markDirty();
+  };
+
+  const getSetStateAssignments = (config: Record<string, any>) => {
+    if (Array.isArray(config.assignments) && config.assignments.length > 0) {
+      return config.assignments.map((assignment: any) => ({
+        target: assignment?.target || '',
+        expression: assignment?.expression || ''
+      }));
+    }
+    return [{ target: config.target || '', expression: config.expression || '' }];
+  };
+
+  const updateSetStateAssignments = (
+    nodeId: string,
+    assignments: Array<{ target: string; expression: string }>
+  ) => {
+    const normalized = assignments.length > 0 ? assignments : [{ target: '', expression: '' }];
+    const first = normalized[0];
+    updateNodeConfig(nodeId, {
+      assignments: normalized,
+      target: first?.target || '',
+      expression: first?.expression || ''
+    });
   };
 
   const updateNode = (nodeId: string, updates: Partial<BuilderNode>) => {
@@ -1159,7 +1347,7 @@ export default function App() {
       setWorkflowName(workflow.name);
       setWorkflowDescription(workflow.description || '');
       setActiveVersionId(workflow.active_version_id || null);
-      setRunHistory([]);
+      setRunHistoryRaw([]);
       setDirty(false);
       setMetaDirty(false);
       void fetchWorkflows();
@@ -1204,7 +1392,7 @@ export default function App() {
     setWorkflowName(workflow.name);
     setWorkflowDescription(workflow.description || '');
     setActiveVersionId(workflow.active_version_id || null);
-    setRunHistory([]);
+    setRunHistoryRaw([]);
     setMetaDirty(false);
     void fetchRunHistory(workflow.workflow_id);
     setStatus({ tone: 'ok', label: 'Workflow created', detail: workflow.workflow_id });
@@ -1267,7 +1455,7 @@ export default function App() {
     setWorkflowDescription(workflow.description || '');
     setActiveVersionId(workflow.active_version_id || null);
     setWorkflowInput(workflow.workflow_id);
-    setRunHistory([]);
+    setRunHistoryRaw([]);
     setDirty(false);
     void fetchRunHistory(workflow.workflow_id);
     setStatus({ tone: 'ok', label: 'Workflow loaded' });
@@ -1313,11 +1501,38 @@ export default function App() {
       setWorkflowName('');
       setWorkflowDescription('');
       setActiveVersionId(null);
-      setRunHistory([]);
+      setRunHistoryRaw([]);
       resetDraftToDefault();
       setMetaDirty(false);
       setStatus({ tone: normalized ? 'ok' : 'warn', label: normalized ? `Project ${normalized}` : 'Select project' });
     }
+  };
+
+  const fetchProjects = async () => {
+    setProjectListLoading(true);
+    const result = await listProjects({ limit: 200 });
+    if (result.error) {
+      setProjectListLoading(false);
+      setStatus({ tone: 'warn', label: 'Project list unavailable', detail: result.error.message });
+      return;
+    }
+    const projects = (result.data?.items || [])
+      .map((item) => {
+        const project_id = normalizeProjectId(item.project_id);
+        if (!project_id) return null;
+        const project_name =
+          typeof item.project_name === 'string' && item.project_name.trim()
+            ? item.project_name.trim()
+            : project_id;
+        return {
+          ...item,
+          project_id,
+          project_name
+        };
+      })
+      .filter((item): item is ProjectRecord => item !== null);
+    setProjectList(projects);
+    setProjectListLoading(false);
   };
 
   const fetchWorkflows = async () => {
@@ -1339,19 +1554,22 @@ export default function App() {
 
   const fetchRunHistory = async (workflowIdToLoad?: string) => {
     const targetWorkflowId = (workflowIdToLoad || workflowId).trim();
-    if (!targetWorkflowId) {
-      setRunHistory([]);
+    if (historyWorkflowScope === 'selected' && !targetWorkflowId) {
+      setRunHistoryRaw([]);
       return;
     }
     setRunHistoryLoading(true);
-    const result = await listRuns({ workflowId: targetWorkflowId, limit: 100 });
+    const result = await listRuns({
+      workflowId: historyWorkflowScope === 'selected' ? targetWorkflowId : undefined,
+      limit: historyWorkflowScope === 'selected' ? 100 : 200
+    });
     if (result.error) {
       setStatus({ tone: 'error', label: 'Run history failed', detail: result.error.message });
       setRunHistoryLoading(false);
       return;
     }
     const historyItems = result.data?.items || [];
-    setRunHistory(historyItems);
+    setRunHistoryRaw(historyItems);
     rememberProjectIds(...historyItems.map((item) => item.project_id));
     setRunHistoryLoading(false);
   };
@@ -1455,9 +1673,12 @@ export default function App() {
   };
 
   const handleOpenRunHistory = async () => {
-    if (!workflowId) {
-      setStatus({ tone: 'warn', label: 'Select a workflow first' });
+    if (!workflowId && !activeProjectId) {
+      setStatus({ tone: 'warn', label: 'Select project or workflow first' });
       return;
+    }
+    if (!workflowId && historyWorkflowScope === 'selected') {
+      setHistoryWorkflowScope('all');
     }
     setRunHistoryExpandedId(null);
     openRunHistory();
@@ -1528,11 +1749,71 @@ export default function App() {
     void handleImportWorkflow(file);
   };
 
+  const setCanvasScale = (nextScale: number) => {
+    scaleRef.current = nextScale;
+    setScale(nextScale);
+  };
+
+  const setCanvasOffset = (nextOffset: { x: number; y: number }) => {
+    offsetRef.current = nextOffset;
+    setOffset(nextOffset);
+  };
+
+  const toCanvasPoint = (clientX: number, clientY: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  };
+
+  const zoomCanvas = (nextScale: number, anchorClient?: { x: number; y: number }) => {
+    const previousScale = scaleRef.current;
+    const clampedScale = clampCanvasScale(nextScale);
+    if (Math.abs(clampedScale - previousScale) < 0.0001) return;
+
+    if (anchorClient) {
+      const anchor = toCanvasPoint(anchorClient.x, anchorClient.y);
+      if (anchor) {
+        const nextOffset = computeZoomedOffset({
+          anchor,
+          offset: offsetRef.current,
+          previousScale,
+          nextScale: clampedScale
+        });
+        setCanvasOffset(nextOffset);
+      }
+    }
+
+    setCanvasScale(clampedScale);
+  };
+
+  const zoomCanvasFromCenter = (nextScale: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) {
+      zoomCanvas(nextScale);
+      return;
+    }
+    zoomCanvas(nextScale, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+  };
+
+  const handleZoomOut = () => {
+    zoomCanvasFromCenter(scaleRef.current - CANVAS_SCALE_STEP);
+  };
+
+  const handleZoomIn = () => {
+    zoomCanvasFromCenter(scaleRef.current + CANVAS_SCALE_STEP);
+  };
+
+  const handleZoomReset = () => {
+    zoomCanvasFromCenter(1);
+  };
+
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const x = (event.clientX - rect.left - offset.x) / scale;
-    const y = (event.clientY - rect.top - offset.y) / scale;
+    const currentScale = scaleRef.current;
+    const currentOffset = offsetRef.current;
+    const x = (event.clientX - rect.left - currentOffset.x) / currentScale;
+    const y = (event.clientY - rect.top - currentOffset.y) / currentScale;
     setCursor({ x, y });
 
     if (draggingNodeId) {
@@ -1552,7 +1833,7 @@ export default function App() {
     if (panning) {
       const dx = event.clientX - panStart.x;
       const dy = event.clientY - panStart.y;
-      setOffset({ x: panStart.ox + dx, y: panStart.oy + dy });
+      setCanvasOffset({ x: panStart.ox + dx, y: panStart.oy + dy });
     }
   };
 
@@ -1568,8 +1849,10 @@ export default function App() {
   const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
-    const next = Math.max(0.6, Math.min(1.6, scale - event.deltaY * 0.001));
-    setScale(next);
+    zoomCanvas(scaleRef.current - event.deltaY * CANVAS_WHEEL_ZOOM_SENSITIVITY, {
+      x: event.clientX,
+      y: event.clientY
+    });
   };
 
   const beginDragNode = (event: ReactPointerEvent, nodeId: string) => {
@@ -1578,8 +1861,10 @@ export default function App() {
     if (!rect) return;
     const node = nodes.find((item) => item.id === nodeId);
     if (!node) return;
-    const x = (event.clientX - rect.left - offset.x) / scale;
-    const y = (event.clientY - rect.top - offset.y) / scale;
+    const currentScale = scaleRef.current;
+    const currentOffset = offsetRef.current;
+    const x = (event.clientX - rect.left - currentOffset.x) / currentScale;
+    const y = (event.clientY - rect.top - currentOffset.y) / currentScale;
     setDraggingNodeId(nodeId);
     setDragOffset({ x: x - node.position.x, y: y - node.position.y });
     setSelectedNodeId(nodeId);
@@ -1600,7 +1885,7 @@ export default function App() {
       setSelectedNodeId(null);
     }
     setPanning(true);
-    setPanStart({ x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y });
+    setPanStart({ x: event.clientX, y: event.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y });
   };
 
   const renderInspector = () => {
@@ -1653,6 +1938,7 @@ export default function App() {
     }
 
     const config = selectedNode.config || defaultNodeConfig(selectedNode.type);
+    const setStateAssignments = selectedNode.type === 'set_state' ? getSetStateAssignments(config) : [];
     const relatedEdges = edges.filter(
       (edge) => edge.source === selectedNode.id || edge.target === selectedNode.id
     );
@@ -1938,16 +2224,59 @@ export default function App() {
 
         {selectedNode.type === 'set_state' && (
           <Stack gap="sm">
-            <TextInput
-              label="Target"
-              value={config.target || ''}
-              onChange={(event) => updateNodeConfig(selectedNode.id, { target: event.currentTarget.value })}
-            />
-            <TextInput
-              label="Expression"
-              value={config.expression || ''}
-              onChange={(event) => updateNodeConfig(selectedNode.id, { expression: event.currentTarget.value })}
-            />
+            <Text size="xs" c="dimmed">
+              Assignments execute in order and can reference previous state updates.
+            </Text>
+            {setStateAssignments.map((assignment, index) => (
+              <Card key={`set-assignment-${index}`} withBorder radius="md" padding="sm">
+                <Stack gap="xs">
+                  <TextInput
+                    label={`Target ${index + 1}`}
+                    value={assignment.target}
+                    onChange={(event) => {
+                      const next = [...setStateAssignments];
+                      next[index] = { ...next[index], target: event.currentTarget.value };
+                      updateSetStateAssignments(selectedNode.id, next);
+                    }}
+                  />
+                  <TextInput
+                    label={`Expression ${index + 1}`}
+                    value={assignment.expression}
+                    onChange={(event) => {
+                      const next = [...setStateAssignments];
+                      next[index] = { ...next[index], expression: event.currentTarget.value };
+                      updateSetStateAssignments(selectedNode.id, next);
+                    }}
+                  />
+                  <Group justify="flex-end">
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      disabled={setStateAssignments.length <= 1}
+                      onClick={() => {
+                        const next = setStateAssignments.filter(
+                          (_, assignmentIndex) => assignmentIndex !== index
+                        );
+                        updateSetStateAssignments(selectedNode.id, next);
+                      }}
+                    >
+                      Remove assignment
+                    </Button>
+                  </Group>
+                </Stack>
+              </Card>
+            ))}
+            <Button
+              size="xs"
+              variant="light"
+              onClick={() => {
+                const next = [...setStateAssignments, { target: '', expression: '' }];
+                updateSetStateAssignments(selectedNode.id, next);
+              }}
+            >
+              Add assignment
+            </Button>
           </Stack>
         )}
 
@@ -2077,14 +2406,14 @@ export default function App() {
   return (
     <AppShell
       className="app-shell"
-      header={{ height: 72 }}
+      header={{ height: 86 }}
       navbar={{ width: 300, breakpoint: 'sm' }}
       aside={{ width: 360, breakpoint: 'sm' }}
       padding="md"
     >
-      <AppShell.Header>
-        <Group h="100%" px="lg" justify="space-between" className="header">
-          <Group gap="sm">
+      <AppShell.Header className="header-shell">
+        <Group h="100%" px="lg" justify="space-between" wrap="nowrap" className="header">
+          <Group gap="sm" wrap="nowrap" className="header-brand">
             <Badge color="brand" variant="filled">
               Builder
             </Badge>
@@ -2095,152 +2424,184 @@ export default function App() {
               </Text>
             </Stack>
           </Group>
-          <Group gap="xs">
-            <Autocomplete
-              placeholder={projectSwitcherOptions.length ? 'Project' : 'Project ID'}
-              w={180}
-              data={projectSwitcherOptions}
-              value={projectId}
-              data-testid="project-selector"
-              onChange={(value) => setProjectId(value)}
-              onOptionSubmit={(value) => applyProjectId(value)}
-              onBlur={(event) => applyProjectId(event.currentTarget.value)}
-            />
-            <Select
-              placeholder="Select workflow"
-              searchable
-              clearable
-              w={260}
-              data={workflowList.map((item) => ({
-                value: item.workflow_id,
-                label: `${item.name} (${item.workflow_id})`
-              }))}
-              value={workflowId || undefined}
-              onChange={(value) => {
-                if (!value) return;
-                setWorkflowInput(value);
-                void loadWorkflowById(value);
-              }}
-              nothingFoundMessage={workflowListLoading ? 'Loading...' : 'No workflows'}
-            />
-            <Button variant="light" onClick={openList}>
-              Browse
-            </Button>
-            <Button variant="outline" onClick={handleNewWorkflow} disabled={creatingWorkflow}>
-              New
-            </Button>
-            <Divider orientation="vertical" />
-            <Button variant="light" onClick={handleSaveDraft}>
-              Save
-            </Button>
-            <Button variant="light" onClick={handleAutoLayout} data-testid="auto-layout">
-              Auto layout
-            </Button>
-            <Button variant="filled" onClick={handlePublish}>
-              Publish
-            </Button>
-            <Select
-              value={runMode}
-              onChange={(value) => setRunMode((value as 'live' | 'test') || 'live')}
-              data={[
-                { value: 'live', label: 'Live' },
-                { value: 'test', label: 'Test' }
-              ]}
-              w={110}
-            />
-            <Button color="teal" variant="filled" onClick={handleRun}>
-              Run
-            </Button>
-            <Button variant="light" onClick={handleOpenRunHistory}>
-              History
-            </Button>
-            <Button
-              variant="light"
-              onClick={handleOpenChat}
-              data-testid="open-chatkit"
-              data-chatkit-url={chatkitUrl || undefined}
-            >
-              Open Chat
-            </Button>
-            <Menu
-              shadow="md"
-              width={220}
-              position="bottom-end"
-              keepMounted
-              opened={moreMenuOpen}
-              onChange={setMoreMenuOpen}
-            >
-              <Menu.Target>
-                <Button variant="light" onClick={() => setMoreMenuOpen((prev) => !prev)}>
-                  More
-                </Button>
-              </Menu.Target>
-              <Menu.Dropdown>
-                <Menu.Item
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    fetchWorkflows();
-                  }}
-                >
-                  Refresh list
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    handleAutoLayout();
-                  }}
-                  data-testid="auto-layout-menu"
-                >
-                  Auto layout
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    handleExportWorkflow();
-                  }}
-                  data-testid="export-workflow"
-                >
-                  Export JSON
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    handleImportClick();
-                  }}
-                  disabled={creatingWorkflow}
-                  data-testid="import-workflow"
-                >
-                  Import JSON
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    openIntegration();
-                  }}
-                  data-testid="open-integration-kit"
-                >
-                  Integration kit
-                </Menu.Item>
-                <Menu.Divider />
-                <Menu.Item
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    handleRollback();
-                  }}
-                >
-                  Rollback draft
-                </Menu.Item>
-              </Menu.Dropdown>
-            </Menu>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept="application/json,.json"
-              onChange={handleImportFileChange}
-              data-testid="import-workflow-input"
-              style={{ display: 'none' }}
-            />
-          </Group>
+          <Box className="header-controls-wrap">
+            <Group gap="xs" wrap="nowrap" className="header-controls">
+              <Autocomplete
+                placeholder={
+                  projectListLoading
+                    ? 'Loading projects...'
+                    : projectSwitcherOptions.length
+                      ? 'Project'
+                      : 'Project ID'
+                }
+                className="header-project-input"
+                w={196}
+                size="sm"
+                limit={200}
+                data={projectSwitcherOptions}
+                value={projectId}
+                data-testid="project-selector"
+                renderOption={({ option }) => {
+                  const optionProjectId = normalizeProjectId(option.value);
+                  const optionProjectName =
+                    projectDisplayNameById.get(optionProjectId) || option.value;
+                  return (
+                    <Group justify="space-between" wrap="nowrap" gap="xs">
+                      <Text size="sm">{optionProjectName}</Text>
+                      {optionProjectName !== optionProjectId && (
+                        <Text size="xs" c="dimmed">
+                          {optionProjectId}
+                        </Text>
+                      )}
+                    </Group>
+                  );
+                }}
+                onChange={(value) => setProjectId(value)}
+                onOptionSubmit={(value) => applyProjectId(value)}
+                onBlur={(event) => applyProjectId(event.currentTarget.value)}
+              />
+              <Select
+                placeholder="Select workflow"
+                searchable
+                clearable
+                className="header-workflow-select"
+                w={280}
+                size="sm"
+                data={workflowList.map((item) => ({
+                  value: item.workflow_id,
+                  label: `${item.name} (${item.workflow_id})`
+                }))}
+                value={workflowId || undefined}
+                onChange={(value) => {
+                  if (!value) return;
+                  setWorkflowInput(value);
+                  void loadWorkflowById(value);
+                }}
+                nothingFoundMessage={workflowListLoading ? 'Loading...' : 'No workflows'}
+              />
+              <Button variant="default" size="sm" onClick={openList}>
+                Browse
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleNewWorkflow} disabled={creatingWorkflow}>
+                New
+              </Button>
+              <Divider orientation="vertical" />
+              <Button variant="default" size="sm" onClick={handleSaveDraft}>
+                Save
+              </Button>
+              <Button variant="default" size="sm" onClick={handleAutoLayout} data-testid="auto-layout">
+                Auto layout
+              </Button>
+              <Button variant="filled" size="sm" onClick={handlePublish}>
+                Publish
+              </Button>
+              <Select
+                className="header-runmode-select"
+                value={runMode}
+                onChange={(value) => setRunMode((value as 'live' | 'test') || 'live')}
+                data={[
+                  { value: 'live', label: 'Live' },
+                  { value: 'test', label: 'Test' }
+                ]}
+                size="sm"
+                w={112}
+              />
+              <Button color="teal" variant="filled" size="sm" onClick={handleRun}>
+                Run
+              </Button>
+              <Button variant="default" size="sm" onClick={handleOpenRunHistory}>
+                History
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleOpenChat}
+                data-testid="open-chatkit"
+                data-chatkit-url={chatkitUrl || undefined}
+              >
+                Open Chat
+              </Button>
+              <Menu
+                shadow="md"
+                width={220}
+                position="bottom-end"
+                keepMounted
+                opened={moreMenuOpen}
+                onChange={setMoreMenuOpen}
+              >
+                <Menu.Target>
+                  <Button variant="default" size="sm" onClick={() => setMoreMenuOpen((prev) => !prev)}>
+                    More
+                  </Button>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      void fetchProjects();
+                      void fetchWorkflows();
+                    }}
+                  >
+                    Refresh list
+                  </Menu.Item>
+                  <Menu.Item
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      handleAutoLayout();
+                    }}
+                    data-testid="auto-layout-menu"
+                  >
+                    Auto layout
+                  </Menu.Item>
+                  <Menu.Item
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      handleExportWorkflow();
+                    }}
+                    data-testid="export-workflow"
+                  >
+                    Export JSON
+                  </Menu.Item>
+                  <Menu.Item
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      handleImportClick();
+                    }}
+                    disabled={creatingWorkflow}
+                    data-testid="import-workflow"
+                  >
+                    Import JSON
+                  </Menu.Item>
+                  <Menu.Item
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      openIntegration();
+                    }}
+                    data-testid="open-integration-kit"
+                  >
+                    Integration kit
+                  </Menu.Item>
+                  <Menu.Divider />
+                  <Menu.Item
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      handleRollback();
+                    }}
+                  >
+                    Rollback draft
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={handleImportFileChange}
+                data-testid="import-workflow-input"
+                style={{ display: 'none' }}
+              />
+            </Group>
+          </Box>
         </Group>
       </AppShell.Header>
 
@@ -2417,6 +2778,22 @@ export default function App() {
             onPointerDown={beginPan}
             onWheel={handleWheel}
           >
+            <Box className="canvas-zoom-controls" onPointerDown={(event) => event.stopPropagation()}>
+              <Group gap={6} wrap="nowrap">
+                <ActionIcon size="sm" radius="xl" variant="light" aria-label="Zoom out" onClick={handleZoomOut}>
+                  -
+                </ActionIcon>
+                <Text size="xs" fw={600} className="canvas-zoom-value">
+                  {Math.round(scale * 100)}%
+                </Text>
+                <ActionIcon size="sm" radius="xl" variant="light" aria-label="Zoom in" onClick={handleZoomIn}>
+                  +
+                </ActionIcon>
+                <Button size="xs" variant="light" onClick={handleZoomReset}>
+                  Reset
+                </Button>
+              </Group>
+            </Box>
             <svg className="edge-layer" style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})` }}>
               {edgePaths.map((edge) => (
                 <path key={edge.id} d={edge.path} />
@@ -2577,18 +2954,70 @@ export default function App() {
       >
         <Stack gap="sm">
           <Group justify="space-between" align="center">
-            <Text size="sm" c="dimmed">
-              {workflowId ? `Workflow ${workflowId}` : 'No workflow selected'}
-            </Text>
+            <Stack gap={2}>
+              <Text size="sm" c="dimmed">
+                {workflowId ? `Workflow ${workflowId}` : 'No workflow selected'}
+              </Text>
+              <Text size="xs" c="dimmed">
+                Active project {activeProjectId || '—'}
+              </Text>
+            </Stack>
             <Button
               variant="light"
               loading={runHistoryLoading}
               onClick={() => void fetchRunHistory(workflowId)}
-              disabled={!workflowId}
+              disabled={historyWorkflowScope === 'selected' && !workflowId}
             >
               Refresh
             </Button>
           </Group>
+          <Card withBorder radius="md" padding="sm">
+            <Stack gap="xs">
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                <Select
+                  label="Workflow scope"
+                  value={historyWorkflowScope}
+                  data={[
+                    { value: 'selected', label: 'Selected workflow' },
+                    { value: 'all', label: 'All workflows' }
+                  ]}
+                  allowDeselect={false}
+                  onChange={(value) => setHistoryWorkflowScope((value as HistoryWorkflowScope) || 'selected')}
+                />
+                <Select
+                  label="Project scope"
+                  value={historyProjectScope}
+                  data={[
+                    { value: 'active', label: 'Active project' },
+                    { value: 'all', label: 'All projects' }
+                  ]}
+                  allowDeselect={false}
+                  onChange={(value) => setHistoryProjectScope((value as HistoryProjectScope) || 'active')}
+                />
+              </SimpleGrid>
+              <Group gap={6} wrap="wrap">
+                <Badge variant="outline" color="gray">
+                  Showing {runHistory.length}
+                </Badge>
+                <Badge variant="outline" color="gray">
+                  Fetched {runHistoryRaw.length}
+                </Badge>
+                {filteredOutRunCount > 0 && (
+                  <Badge variant="light" color="yellow">
+                    Filtered out {filteredOutRunCount}
+                  </Badge>
+                )}
+                <Badge variant="outline" color="gray">
+                  Projects in data {runHistoryProjectIds.length}
+                </Badge>
+              </Group>
+              {historyProjectScope === 'active' && !activeProjectId && (
+                <Text size="xs" c="yellow">
+                  Select a project to scope run history.
+                </Text>
+              )}
+            </Stack>
+          </Card>
           <ScrollArea h={360}>
             <Stack gap="sm">
               <Card withBorder radius="md" padding="sm">
@@ -2719,12 +3148,19 @@ export default function App() {
                     historyOutputRateUsdPer1M
                   );
                   const nodeStats = runNodeStats(run);
+                  const documentPreviews = summarizeRunDocuments(run.inputs);
                   const isExpanded = runHistoryExpandedId === run.run_id;
                   return (
                     <Card key={run.run_id} withBorder radius="md">
                       <Group justify="space-between" align="flex-start">
                         <Stack gap={2}>
                           <Text fw={600}>{run.run_id}</Text>
+                          <Text size="xs" c="dimmed">
+                            Workflow {run.workflow_id}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            Project {run.project_id || '—'}
+                          </Text>
                           <Text size="xs" c="dimmed">
                             Version {run.version_id}
                           </Text>
@@ -2808,6 +3244,64 @@ export default function App() {
                           </SimpleGrid>
 
                           <JsonPreviewCard title="Metadata" value={run.metadata} emptyLabel="No metadata" maxHeight={160} />
+
+                          <Stack gap="xs">
+                            <Text size="xs" fw={600}>
+                              Documents preview
+                            </Text>
+                            {documentPreviews.length === 0 ? (
+                              <Text size="xs" c="dimmed">
+                                No documents in run inputs.
+                              </Text>
+                            ) : (
+                              documentPreviews.map((doc) => (
+                                <Card
+                                  key={`${run.run_id}-${doc.docId}-${doc.filename}`}
+                                  withBorder
+                                  radius="sm"
+                                  padding="sm"
+                                >
+                                  <Stack gap={6}>
+                                    <Group justify="space-between" align="flex-start">
+                                      <Stack gap={2}>
+                                        <Text size="sm" fw={600}>
+                                          {doc.filename}
+                                        </Text>
+                                        <Text size="xs" c="dimmed">
+                                          {doc.docId}
+                                        </Text>
+                                      </Stack>
+                                      <Badge variant="light" color="gray">
+                                        {doc.docType}
+                                      </Badge>
+                                    </Group>
+                                    <Group gap={6} wrap="wrap">
+                                      <Badge variant="outline" color="gray">
+                                        Pages {doc.pages}
+                                      </Badge>
+                                      <Badge variant="outline" color="gray">
+                                        Text chars {doc.textChars.toLocaleString()}
+                                      </Badge>
+                                      {doc.imageBase64Chars > 0 && (
+                                        <Badge variant="light" color="orange">
+                                          image_base64 {doc.imageBase64Chars.toLocaleString()} chars
+                                        </Badge>
+                                      )}
+                                    </Group>
+                                    {doc.textSample ? (
+                                      <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+                                        {doc.textSample}
+                                      </Text>
+                                    ) : (
+                                      <Text size="xs" c="dimmed">
+                                        No text/ocr/markdown in this document payload.
+                                      </Text>
+                                    )}
+                                  </Stack>
+                                </Card>
+                              ))
+                            )}
+                          </Stack>
 
                           <Group gap={8} wrap="wrap">
                             <Badge variant="outline" color="gray">

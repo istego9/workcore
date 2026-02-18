@@ -15,6 +15,7 @@ from apps.orchestrator.orchestrator_runtime import (
 )
 
 from apps.orchestrator.runtime.models import Interrupt, Run
+from apps.orchestrator.runtime.projection import project_run_payload_for_transport
 
 
 def _to_text(value: Any) -> str:
@@ -58,6 +59,7 @@ def _backfill_mock_usage(node_output: Any) -> Dict[str, Any] | None:
 
 def run_to_dict(run: Run) -> Dict[str, Any]:
     metadata = dict(run.metadata or {})
+    projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, metadata)
     node_runs = []
     for node_id, node_run in run.node_runs.items():
         usage = node_run.usage
@@ -82,8 +84,8 @@ def run_to_dict(run: Run) -> Dict[str, Any]:
         "status": run.status,
         "mode": run.mode,
         "inputs": run.inputs,
-        "state": run.state,
-        "outputs": run.outputs,
+        "state": projected_state,
+        "outputs": projected_outputs,
         "metadata": metadata,
         "correlation_id": metadata.get("correlation_id"),
         "trace_id": metadata.get("trace_id"),
@@ -117,6 +119,7 @@ def interrupt_to_dict(interrupt: Interrupt) -> Dict[str, Any]:
 def project_to_dict(project: ProjectRecord) -> Dict[str, Any]:
     return {
         "project_id": project.project_id,
+        "project_name": project.project_name,
         "tenant_id": project.tenant_id,
         "default_orchestrator_id": project.default_orchestrator_id,
         "settings": project.settings,
