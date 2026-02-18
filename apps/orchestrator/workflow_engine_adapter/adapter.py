@@ -167,6 +167,19 @@ class WorkflowEngineAdapter:
                 )
             ],
         )
+        await self.runtime._notify_hooks(
+            run,
+            [
+                RuntimeEvent(
+                    type="run_cancelled",
+                    run_id=run.id,
+                    workflow_id=run.workflow_id,
+                    version_id=run.version_id,
+                    payload={"reason": reason},
+                    metadata=dict(run.metadata or {}),
+                )
+            ],
+        )
         await self._save_run(run, tenant_id=tenant_id)
         events = self._collect_events(run.id, after_id=before_event.id if before_event else None)
         return WorkflowEngineResult(

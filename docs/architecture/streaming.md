@@ -31,6 +31,7 @@ Status: Draft
 
 ## Runtime wiring
 - OrchestratorService publishes runtime events to EventPublisher.
+- The same runtime events are also projected into immutable `run_ledger` records for RCA/audit.
 - A snapshot event is stored after each run execution step for SSE initial state.
 
 ## Testing

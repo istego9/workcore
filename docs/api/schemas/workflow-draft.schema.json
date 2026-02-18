@@ -98,7 +98,9 @@
     "nodeConfig": {
       "type": "object",
       "properties": {
-        "ui": { "$ref": "#/$defs/ui" }
+        "ui": { "$ref": "#/$defs/ui" },
+        "capability_id": { "type": "string", "minLength": 1 },
+        "capability_version": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": true
     },

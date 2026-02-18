@@ -290,6 +290,54 @@ Structured orchestration decision log for every inbound message.
 - error_code (text, nullable)
 - created_at (timestamptz)
 
+## Workflow reliability tables
+
+### capabilities
+Versioned capability registry for explicit workflow-step pinning.
+- id (text, pk)
+- tenant_id (text)
+- capability_id (text)
+- version (text)
+- node_type (text)
+- contract (jsonb)
+- created_at (timestamptz)
+
+Unique: (tenant_id, capability_id, version)
+
+### run_ledger
+Immutable execution ledger derived from runtime transitions.
+- id (text, pk)
+- tenant_id (text)
+- run_id (text)
+- workflow_id (text)
+- version_id (text)
+- step_id (text, nullable)
+- capability_id (text, nullable)
+- capability_version (text, nullable)
+- status (text)
+- event_type (text)
+- decision (jsonb, nullable)
+- artifacts (jsonb array)
+- payload (jsonb)
+- created_at (timestamptz)
+
+### workflow_handoffs
+Atomic handoff package intake records with replay metadata.
+- id (text, pk)
+- tenant_id (text)
+- workflow_id (text)
+- version_id (text, nullable)
+- run_id (text, nullable)
+- replay_mode (text) // none | deterministic
+- status (text) // RECEIVED | STARTED | REPLAYED | FAILED
+- context (jsonb)
+- constraints (jsonb)
+- expected_result (jsonb)
+- acceptance_checks (jsonb array)
+- metadata (jsonb)
+- idempotency_key (text, nullable)
+- created_at, updated_at (timestamptz)
+
 ## Indexing notes
 - workflows: index by (tenant_id, project_id, updated_at).
 - runs: index by (tenant_id, workflow_id, status, created_at).
@@ -297,6 +345,9 @@ Structured orchestration decision log for every inbound message.
 - events: index by (tenant_id, run_id, created_at).
 - webhook_deliveries: index by (status, next_retry_at).
 - idempotency_keys: index by (tenant_id, idempotency_key, scope), (expires_at).
+- capabilities: index by (tenant_id, capability_id, created_at).
+- run_ledger: index by (tenant_id, run_id, created_at).
+- workflow_handoffs: index by (tenant_id, workflow_id, created_at).
 
 ## Headless testing
 All UI/E2E tests run headless by default in CI. No GUI dependencies are assumed for automated pipelines.

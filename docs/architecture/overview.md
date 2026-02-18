@@ -22,6 +22,7 @@ Status: Draft (Phase 0)
 ## Core entities and IDs
 - workflow_id, version_id, node_id
 - run_id, node_run_id, interrupt_id
+- handoff_id, ledger_id, capability_id
 - project_id, orchestrator_id, session_id, decision_id
 - event_id, correlation_id, tenant_id, user_id
 - project_id uniqueness is tenant-scoped (`tenant_id + project_id`).
@@ -54,6 +55,9 @@ Ordering guarantees:
 ## API boundary map (logical ownership)
 - Workflow Service: /workflows, /workflows/{id}/draft, /workflows/{id}/publish, /workflows/{id}/rollback, /workflows/{id}/versions
 - Orchestrator Service: /workflows/{id}/runs, /runs/{run_id}, /runs/{run_id}/cancel, /runs/{run_id}/rerun-node, /runs/{run_id}/interrupts/*
+- Capability Registry Service: /capabilities, /capabilities/{capability_id}/versions
+- Handoff Service: /handoff/packages, /handoff/packages/{handoff_id}/replay
+- Run Ledger Service: /runs/{run_id}/ledger
 - Project Router / Orchestrator entry: /orchestrator/messages, /orchestrator/sessions/{session_id}/stack
 - Streaming Service: /runs/{run_id}/stream (SSE)
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*

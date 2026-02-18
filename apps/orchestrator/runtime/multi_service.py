@@ -22,6 +22,7 @@ from .config import RuntimeConfig
 
 
 WorkflowLoader = Callable[..., Awaitable[Workflow]]
+CapabilityResolver = Callable[[str, str, str], Awaitable[Optional[Dict[str, Any]]]]
 
 
 @dataclass
@@ -33,6 +34,7 @@ class MultiWorkflowRuntimeService:
     workflow_loader: WorkflowLoader
     executors: Dict[str, Any]
     event_hook: Optional[Callable[[Run, list[RuntimeEvent]], Awaitable[None]]] = None
+    resolve_capability: Optional[CapabilityResolver] = None
 
     @classmethod
     def create(
@@ -41,6 +43,7 @@ class MultiWorkflowRuntimeService:
         config: Optional[RuntimeConfig] = None,
         evaluator: Any | None = None,
         executors: Optional[Dict[str, Any]] = None,
+        resolve_capability: Optional[CapabilityResolver] = None,
     ) -> "MultiWorkflowRuntimeService":
         cfg = config or RuntimeConfig.from_env()
         store = InMemoryEventStore()
@@ -67,6 +70,7 @@ class MultiWorkflowRuntimeService:
             evaluator=evaluator,
             workflow_loader=workflow_loader,
             executors=executors or {},
+            resolve_capability=resolve_capability,
         )
 
     async def startup(self) -> None:
@@ -91,8 +95,12 @@ class MultiWorkflowRuntimeService:
             if isinstance(value, str) and value:
                 tenant_id = value
         workflow = await self._load_workflow(workflow_id, version_id, tenant_id=tenant_id)
+        run_metadata = dict(metadata or {})
+        capability_bindings = await self._resolve_capability_bindings(workflow, tenant_id=tenant_id)
+        if capability_bindings:
+            run_metadata["capability_bindings"] = capability_bindings
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
-        run = engine.start_run(inputs, mode=mode, metadata=metadata)
+        run = engine.start_run(inputs, mode=mode, metadata=run_metadata)
         events = engine.execute_until_blocked(run)
         await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
@@ -110,6 +118,10 @@ class MultiWorkflowRuntimeService:
         if isinstance(value, str) and value:
             tenant_id = value
         workflow = await self._load_workflow(run.workflow_id, run.version_id, tenant_id=tenant_id)
+        capability_bindings = await self._resolve_capability_bindings(workflow, tenant_id=tenant_id)
+        if capability_bindings:
+            run.metadata = dict(run.metadata or {})
+            run.metadata.setdefault("capability_bindings", capability_bindings)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
         events = engine.resume_interrupt(run, interrupt_id, input_data, files)
         await self._publish_with_snapshot(run, events)
@@ -122,6 +134,10 @@ class MultiWorkflowRuntimeService:
         if isinstance(value, str) and value:
             tenant_id = value
         workflow = await self._load_workflow(run.workflow_id, run.version_id, tenant_id=tenant_id)
+        capability_bindings = await self._resolve_capability_bindings(workflow, tenant_id=tenant_id)
+        if capability_bindings:
+            run.metadata = dict(run.metadata or {})
+            run.metadata.setdefault("capability_bindings", capability_bindings)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
         engine.rerun_node(run, node_id, scope)
         events = engine.execute_until_blocked(run)
@@ -200,3 +216,49 @@ class MultiWorkflowRuntimeService:
     async def _notify_hooks(self, run: Run, events: list[RuntimeEvent]) -> None:
         if self.event_hook:
             await self.event_hook(run, events)
+
+    async def _resolve_capability_bindings(
+        self,
+        workflow: Workflow,
+        tenant_id: Optional[str],
+    ) -> Dict[str, Dict[str, str]]:
+        bindings: Dict[str, Dict[str, str]] = {}
+        for node in workflow.nodes.values():
+            config = node.config if isinstance(node.config, dict) else {}
+            capability_id = config.get("capability_id")
+            capability_version = config.get("capability_version")
+            cap_id = capability_id.strip() if isinstance(capability_id, str) else ""
+            cap_version = capability_version.strip() if isinstance(capability_version, str) else ""
+            if bool(cap_id) != bool(cap_version):
+                raise ValueError(
+                    f"node {node.id} capability pin requires both capability_id and capability_version"
+                )
+            if not cap_id:
+                continue
+            bindings[node.id] = {"capability_id": cap_id, "capability_version": cap_version}
+            if self.resolve_capability is None:
+                continue
+            tenant = tenant_id or "local"
+            contract = await self.resolve_capability(tenant, cap_id, cap_version)
+            if contract is None:
+                raise ValueError(f"capability {cap_id}@{cap_version} not found for node {node.id}")
+            self._apply_capability_contract_defaults(node, contract)
+        return bindings
+
+    @staticmethod
+    def _apply_capability_contract_defaults(node, contract: Dict[str, Any]) -> None:
+        if not isinstance(node.config, dict) or not isinstance(contract, dict):
+            return
+        constraints = contract.get("constraints")
+        if not isinstance(constraints, dict):
+            constraints = {}
+        timeout_value = constraints.get("timeout_s", contract.get("timeout_s"))
+        if node.config.get("timeout_s") is None and isinstance(timeout_value, (int, float)):
+            node.config["timeout_s"] = float(timeout_value)
+
+        retry_policy = contract.get("retry_policy")
+        if not isinstance(retry_policy, dict):
+            retry_policy = {}
+        max_retries = retry_policy.get("max_retries")
+        if node.config.get("max_retries") is None and isinstance(max_retries, int):
+            node.config["max_retries"] = max_retries

@@ -123,14 +123,32 @@ Session stack diagnostics:
 - Machine-readable bundle: `/agent-integration-kit.json`
 - Workflow authoring guide: `/workflow-authoring-guide`
 - Project bootstrap endpoint: `POST /projects`
+- Capability registry endpoint: `POST /capabilities`
+- Capability versions endpoint: `GET /capabilities/{capability_id}/versions`
 - Project orchestrator config endpoint: `POST /projects/{project_id}/orchestrators`
 - Project workflow definition endpoint: `POST /projects/{project_id}/workflow-definitions`
 - Orchestrator message endpoint: `POST /orchestrator/messages`
 - Orchestrator stack diagnostics: `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
+- Atomic handoff endpoint: `POST /handoff/packages`
+- Deterministic replay endpoint: `POST /handoff/packages/{handoff_id}/replay`
+- Run ledger endpoint: `GET /runs/{run_id}/ledger`
 - Integration test UI: `/agent-integration-test`
 - Integration test JSON report: `/agent-integration-test.json`
 - Detailed integration logs: `/agent-integration-logs`
 - Draft validator: `POST /agent-integration-test/validate-draft`
+
+## Capability registry and handoff
+- Register a versioned capability contract:
+  - `POST /capabilities`
+- List capability contracts:
+  - `GET /capabilities`
+  - `GET /capabilities/{capability_id}/versions`
+- Create atomic handoff package and start run:
+  - `POST /handoff/packages`
+- Deterministic replay (if package was created with `replay_mode=deterministic`):
+  - `POST /handoff/packages/{handoff_id}/replay`
+- Inspect immutable run trace:
+  - `GET /runs/{run_id}/ledger`
 
 ## Detailed integration logging for agent onboarding
 Use `GET /agent-integration-logs` to quickly diagnose integration issues when an external agent calls integration-kit/test endpoints.
@@ -156,18 +174,21 @@ curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_
 
 ## Core workflow lifecycle
 1. `POST /projects` create project scope
-2. `POST /workflows` create workflow draft
-3. `PUT /workflows/{workflow_id}/draft` update draft
-4. `POST /workflows/{workflow_id}/publish` publish immutable version
-5. `POST /projects/{project_id}/workflow-definitions` register workflow in project routing index
-6. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
-7. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
-8. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
-9. `GET /runs/{run_id}` read state
-10. `GET /runs/{run_id}/stream` consume SSE events
-11. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
-12. `POST /runs/{run_id}/cancel` cancel run
-13. `POST /runs/{run_id}/rerun-node` rerun node
+2. `POST /capabilities` register capability versions used by pinned nodes
+3. `POST /workflows` create workflow draft
+4. `PUT /workflows/{workflow_id}/draft` update draft
+5. `POST /workflows/{workflow_id}/publish` publish immutable version
+6. `POST /projects/{project_id}/workflow-definitions` register workflow in project routing index
+7. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
+8. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
+9. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
+10. `POST /handoff/packages` transfer package and start run atomically (optional)
+11. `GET /runs/{run_id}` read state
+12. `GET /runs/{run_id}/ledger` inspect immutable run ledger
+13. `GET /runs/{run_id}/stream` consume SSE events
+14. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
+15. `POST /runs/{run_id}/cancel` cancel run
+16. `POST /runs/{run_id}/rerun-node` rerun node
 
 ## Chat-first integration for external clients
 For full user interaction (approval/forms/files) integrate `POST /chatkit` in addition to run APIs.

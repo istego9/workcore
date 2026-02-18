@@ -4,6 +4,40 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-02-18
+
+### API diff vs previous version
+- Previous API version: `0.5.0`
+- Current API version: `0.6.0`
+- Compatibility: additive (capability registry, run ledger, and handoff APIs added without removing existing endpoints)
+
+### Added
+- Capability registry endpoints:
+  - `POST /capabilities`
+  - `GET /capabilities`
+  - `GET /capabilities/{capability_id}/versions`
+- Immutable run ledger endpoint:
+  - `GET /runs/{run_id}/ledger`
+- Atomic handoff endpoints:
+  - `POST /handoff/packages`
+  - `POST /handoff/packages/{handoff_id}/replay`
+- New error codes:
+  - `ERR_CAPABILITY_NOT_FOUND`
+  - `ERR_HANDOFF_REPLAY_NOT_ALLOWED`
+  - `ERR_HANDOFF_NOT_FOUND`
+
+### Changed
+- Workflow node config contract now documents optional capability pinning fields:
+  - `capability_id`
+  - `capability_version`
+- Agent integration metadata now includes capability/handoff/ledger URLs.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-02-16
 
 ### API diff vs previous version

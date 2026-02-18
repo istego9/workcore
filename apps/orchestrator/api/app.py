@@ -17,11 +17,17 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from apps.orchestrator.api.capability_store import CapabilityConflictError, create_capability_store
+from apps.orchestrator.api.handoff_store import create_handoff_store
 from apps.orchestrator.api.idempotency import IdempotencyStore, create_idempotency_store
+from apps.orchestrator.api.ledger_store import create_run_ledger_store, runtime_events_to_ledger_entries
 from apps.orchestrator.api.serializers import (
+    capability_to_dict,
+    handoff_to_dict,
     interrupt_to_dict,
     orchestrator_config_to_dict,
     project_to_dict,
+    run_ledger_entry_to_dict,
     run_to_dict,
     workflow_definition_to_dict,
     workflow_summary_to_dict,
@@ -105,19 +111,26 @@ class ApiContext:
         self.runtime = runtime
         self.orchestration_store = orchestration_store
         self.idempotency: Optional[IdempotencyStore] = None
+        self.capability_store: Optional[Any] = None
+        self.run_ledger_store: Optional[Any] = None
+        self.handoff_store: Optional[Any] = None
         self.project_router: Optional[ProjectRouter] = None
         self.workflow_engine_adapter: Optional[WorkflowEngineAdapter] = None
         self.project_orchestrator: Optional[ProjectOrchestratorRuntime] = None
         self._workflow_store_owned = False
         self._run_store_owned = False
         self._idempotency_owned = False
+        self._capability_store_owned = False
+        self._run_ledger_store_owned = False
+        self._handoff_store_owned = False
         self._orchestration_store_owned = False
         self._runtime_started = False
         self.webhooks = WebhookService.create()
         if default_inbound_secret:
             self.webhooks.register_inbound_key(default_integration_key, default_inbound_secret)
         if self.runtime:
-            self.runtime.event_hook = self.webhooks.handle_events
+            self.runtime.event_hook = self._handle_runtime_events
+            self.runtime.resolve_capability = self._resolve_capability
 
     async def ensure_workflow_store(self) -> None:
         if self.workflow_store is None:
@@ -135,6 +148,24 @@ class ApiContext:
             await self.ensure_workflow_store()
             self.idempotency = await create_idempotency_store(self.workflow_store)
             self._idempotency_owned = True
+
+    async def ensure_capability_store(self) -> None:
+        if self.capability_store is None:
+            await self.ensure_workflow_store()
+            self.capability_store = await create_capability_store(self.workflow_store)
+            self._capability_store_owned = True
+
+    async def ensure_run_ledger_store(self) -> None:
+        if self.run_ledger_store is None:
+            await self.ensure_workflow_store()
+            self.run_ledger_store = await create_run_ledger_store(self.workflow_store)
+            self._run_ledger_store_owned = True
+
+    async def ensure_handoff_store(self) -> None:
+        if self.handoff_store is None:
+            await self.ensure_workflow_store()
+            self.handoff_store = await create_handoff_store(self.workflow_store)
+            self._handoff_store_owned = True
 
     async def ensure_runtime(self) -> None:
         if self.runtime is None:
@@ -164,8 +195,12 @@ class ApiContext:
             elif executors.get("agent_live"):
                 executors["agent"] = executors["agent_live"]
 
-            self.runtime = MultiWorkflowRuntimeService.create(loader, executors=executors)
-            self.runtime.event_hook = self.webhooks.handle_events
+            self.runtime = MultiWorkflowRuntimeService.create(
+                loader,
+                executors=executors,
+                resolve_capability=self._resolve_capability,
+            )
+            self.runtime.event_hook = self._handle_runtime_events
 
     async def ensure_orchestration(self) -> None:
         if self.orchestration_store is None:
@@ -188,6 +223,18 @@ class ApiContext:
         await self.webhooks.stop_background_dispatcher()
         if self._idempotency_owned and self.idempotency:
             await self.idempotency.close()
+        if self._capability_store_owned and self.capability_store:
+            close_result = self.capability_store.close()
+            if isawaitable(close_result):
+                await close_result
+        if self._run_ledger_store_owned and self.run_ledger_store:
+            close_result = self.run_ledger_store.close()
+            if isawaitable(close_result):
+                await close_result
+        if self._handoff_store_owned and self.handoff_store:
+            close_result = self.handoff_store.close()
+            if isawaitable(close_result):
+                await close_result
         if self._orchestration_store_owned and self.orchestration_store:
             close_result = self.orchestration_store.close()
             if isawaitable(close_result):
@@ -200,6 +247,31 @@ class ApiContext:
             await self.workflow_store.close()
         if self.runtime and self._runtime_started:
             await self.runtime.shutdown()
+
+    async def _resolve_capability(self, tenant_id: str, capability_id: str, version: str) -> Optional[Dict[str, Any]]:
+        await self.ensure_capability_store()
+        if self.capability_store is None:
+            return None
+        record = await self.capability_store.get(capability_id, version, tenant_id=tenant_id)
+        if not record:
+            return None
+        return {
+            "capability_id": record.capability_id,
+            "version": record.version,
+            "node_type": record.node_type,
+            "contract": record.contract,
+            **(record.contract or {}),
+        }
+
+    async def _handle_runtime_events(self, run, events) -> None:
+        await self.webhooks.handle_events(run, events)
+        await self.ensure_run_ledger_store()
+        if self.run_ledger_store is None:
+            return
+        entries = runtime_events_to_ledger_entries(run, events)
+        if not entries:
+            return
+        await self.run_ledger_store.append_entries(entries)
 
 
 def _workflow_from_content(workflow_id: str, version_id: str, content: Dict[str, Any]) -> Workflow:
@@ -287,6 +359,9 @@ def create_app(
         await ctx.ensure_workflow_store()
         await ctx.ensure_run_store()
         await ctx.ensure_idempotency()
+        await ctx.ensure_capability_store()
+        await ctx.ensure_run_ledger_store()
+        await ctx.ensure_handoff_store()
         await ctx.ensure_runtime()
         await ctx.ensure_orchestration()
         await ctx.runtime.startup()
@@ -295,6 +370,9 @@ def create_app(
         app.state.runtime = ctx.runtime
         app.state.run_store = ctx.run_store
         app.state.workflow_store = ctx.workflow_store
+        app.state.capability_store = ctx.capability_store
+        app.state.run_ledger_store = ctx.run_ledger_store
+        app.state.handoff_store = ctx.handoff_store
         app.state.orchestration_store = ctx.orchestration_store
         app.state.project_router = ctx.project_router
         app.state.project_orchestrator = ctx.project_orchestrator
@@ -591,6 +669,37 @@ def create_app(
 
         return errors
 
+    async def _validate_capability_refs(draft: Dict[str, Any], tenant_id: str) -> list[str]:
+        errors: list[str] = []
+        nodes_raw = draft.get("nodes")
+        if not isinstance(nodes_raw, list):
+            return errors
+        await ctx.ensure_capability_store()
+        if ctx.capability_store is None:
+            return errors
+        for idx, node in enumerate(nodes_raw):
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id") or f"node_{idx}")
+            config = node.get("config")
+            if config is None:
+                config = {}
+            if not isinstance(config, dict):
+                continue
+            cap_id_raw = config.get("capability_id")
+            cap_version_raw = config.get("capability_version")
+            cap_id = cap_id_raw.strip() if isinstance(cap_id_raw, str) else ""
+            cap_version = cap_version_raw.strip() if isinstance(cap_version_raw, str) else ""
+            if bool(cap_id) != bool(cap_version):
+                errors.append(f"node {node_id} requires both capability_id and capability_version")
+                continue
+            if not cap_id:
+                continue
+            record = await ctx.capability_store.get(cap_id, cap_version, tenant_id=tenant_id)
+            if record is None:
+                errors.append(f"node {node_id} references unknown capability {cap_id}@{cap_version}")
+        return errors
+
     async def _require_runtime() -> MultiWorkflowRuntimeService:
         if ctx.runtime is None:
             await ctx.ensure_workflow_store()
@@ -659,6 +768,80 @@ def create_app(
             return _error(request, "CONFLICT", "project already exists", 409)
 
         return _json(request, project_to_dict(project), status_code=201)
+
+    async def create_capability(request: Request) -> JSONResponse:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+        capability_id = payload.get("capability_id")
+        version = payload.get("version")
+        node_type = payload.get("node_type")
+        contract = payload.get("contract")
+        if not isinstance(capability_id, str) or not capability_id.strip():
+            return _error(request, "INVALID_ARGUMENT", "capability_id is required", 400)
+        if not isinstance(version, str) or not version.strip():
+            return _error(request, "INVALID_ARGUMENT", "version is required", 400)
+        if not isinstance(node_type, str) or not node_type.strip():
+            return _error(request, "INVALID_ARGUMENT", "node_type is required", 400)
+        if not isinstance(contract, dict):
+            return _error(request, "INVALID_ARGUMENT", "contract must be an object", 400)
+
+        await ctx.ensure_capability_store()
+        if ctx.capability_store is None:
+            return _error(request, "INTERNAL", "capability store unavailable", 500)
+        try:
+            record = await ctx.capability_store.create(
+                capability_id=capability_id.strip(),
+                version=version.strip(),
+                node_type=node_type.strip(),
+                contract=contract,
+                tenant_id=_tenant_id(request),
+            )
+        except CapabilityConflictError:
+            return _error(request, "CONFLICT", "capability version already exists", 409)
+        return _json(request, capability_to_dict(record), status_code=201)
+
+    async def list_capabilities(request: Request) -> JSONResponse:
+        limit_raw = request.query_params.get("limit", "100")
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            return _error(request, "INVALID_ARGUMENT", "limit must be an integer", 400)
+        if limit < 1 or limit > 1000:
+            return _error(request, "INVALID_ARGUMENT", "limit must be between 1 and 1000", 400)
+        capability_id = request.query_params.get("capability_id")
+
+        await ctx.ensure_capability_store()
+        if ctx.capability_store is None:
+            return _error(request, "INTERNAL", "capability store unavailable", 500)
+        items = await ctx.capability_store.list_capabilities(
+            tenant_id=_tenant_id(request),
+            capability_id=capability_id.strip() if isinstance(capability_id, str) and capability_id.strip() else None,
+            limit=limit,
+        )
+        return _json(request, {"items": [capability_to_dict(item) for item in items], "next_cursor": None})
+
+    async def list_capability_versions(request: Request) -> JSONResponse:
+        capability_id = str(request.path_params.get("capability_id") or "").strip()
+        if not capability_id:
+            return _error(request, "INVALID_ARGUMENT", "capability_id is required", 400)
+        limit_raw = request.query_params.get("limit", "100")
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            return _error(request, "INVALID_ARGUMENT", "limit must be an integer", 400)
+        if limit < 1 or limit > 1000:
+            return _error(request, "INVALID_ARGUMENT", "limit must be between 1 and 1000", 400)
+
+        await ctx.ensure_capability_store()
+        if ctx.capability_store is None:
+            return _error(request, "INTERNAL", "capability store unavailable", 500)
+        items = await ctx.capability_store.list_versions(
+            capability_id=capability_id,
+            tenant_id=_tenant_id(request),
+            limit=limit,
+        )
+        return _json(request, {"items": [capability_to_dict(item) for item in items], "next_cursor": None})
 
     def _require_string_list(payload: Dict[str, Any], field: str) -> list[str]:
         raw = payload.get(field)
@@ -963,6 +1146,7 @@ def create_app(
                 project_id=project_id,
             )
             errors = _validate_draft(workflow.draft)
+            errors.extend(await _validate_capability_refs(workflow.draft, tenant_id=tenant))
             if errors:
                 return _error(request, "INVALID_ARGUMENT", "draft is invalid", 400, details=errors)
             version = await ctx.workflow_store.publish(
@@ -1079,6 +1263,14 @@ def create_app(
                 return _error(request, "NOT_FOUND", "workflow not found", 404)
             except WorkflowConflictError as exc:
                 return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+            except ValueError as exc:
+                message = str(exc)
+                code = (
+                    "ERR_CAPABILITY_NOT_FOUND"
+                    if "capability" in message.lower() and "not found" in message.lower()
+                    else "INVALID_ARGUMENT"
+                )
+                return _error(request, code, message, 400)
             await _run_store_save(run, tenant_id=tenant)
             return _json(request, run_to_dict(run), status_code=201)
 
@@ -1099,6 +1291,254 @@ def create_app(
             tenant_id=_tenant_id(request),
         )
         return _json(request, {"items": [run_to_dict(run) for run in runs], "next_cursor": None})
+
+    async def create_handoff_package(request: Request) -> Response:
+        async def _create_impl() -> Response:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+            workflow_id = payload.get("workflow_id")
+            if not isinstance(workflow_id, str) or not workflow_id.strip():
+                return _error(request, "INVALID_ARGUMENT", "workflow_id is required", 400)
+            version_id = payload.get("version_id")
+            if version_id is not None and (not isinstance(version_id, str) or not version_id.strip()):
+                return _error(request, "INVALID_ARGUMENT", "version_id must be a non-empty string or null", 400)
+
+            package = payload.get("package")
+            if not isinstance(package, dict):
+                return _error(request, "INVALID_ARGUMENT", "package must be an object", 400)
+            context_payload = package.get("context")
+            constraints = package.get("constraints")
+            expected_result = package.get("expected_result")
+            acceptance_checks_raw = package.get("acceptance_checks")
+            if not isinstance(context_payload, dict):
+                return _error(request, "INVALID_ARGUMENT", "package.context must be an object", 400)
+            if not isinstance(constraints, dict):
+                return _error(request, "INVALID_ARGUMENT", "package.constraints must be an object", 400)
+            if not isinstance(expected_result, dict):
+                return _error(request, "INVALID_ARGUMENT", "package.expected_result must be an object", 400)
+            if not isinstance(acceptance_checks_raw, list):
+                return _error(request, "INVALID_ARGUMENT", "package.acceptance_checks must be an array", 400)
+            acceptance_checks: list[dict[str, Any]] = []
+            for idx, item in enumerate(acceptance_checks_raw):
+                if not isinstance(item, dict):
+                    return _error(
+                        request,
+                        "INVALID_ARGUMENT",
+                        f"package.acceptance_checks[{idx}] must be an object",
+                        400,
+                    )
+                acceptance_checks.append(item)
+
+            replay_mode = payload.get("replay_mode", "none")
+            if replay_mode not in {"none", "deterministic"}:
+                return _error(request, "INVALID_ARGUMENT", "replay_mode must be one of: none, deterministic", 400)
+
+            metadata_raw = payload.get("metadata")
+            if metadata_raw is not None and not isinstance(metadata_raw, dict):
+                return _error(request, "INVALID_ARGUMENT", "metadata must be an object", 400)
+            run_metadata = _run_metadata(request, metadata_raw if isinstance(metadata_raw, dict) else None)
+            project_id = str(run_metadata.get("project_id") or "").strip()
+            if not project_id:
+                return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+            run_metadata["project_id"] = project_id
+
+            tenant = str(run_metadata.get("tenant_id") or _tenant_id(request))
+            await ctx.ensure_handoff_store()
+            if ctx.handoff_store is None:
+                return _error(request, "INTERNAL", "handoff store unavailable", 500)
+            idempotency_key = request.headers.get("Idempotency-Key")
+            handoff_record = await ctx.handoff_store.create(
+                workflow_id=workflow_id.strip(),
+                version_id=version_id.strip() if isinstance(version_id, str) else None,
+                context=context_payload,
+                constraints=constraints,
+                expected_result=expected_result,
+                acceptance_checks=acceptance_checks,
+                replay_mode=replay_mode,
+                metadata=run_metadata,
+                tenant_id=tenant,
+                idempotency_key=idempotency_key,
+            )
+
+            handoff_metadata = dict(run_metadata)
+            handoff_metadata.update(
+                {
+                    "handoff_id": handoff_record.handoff_id,
+                    "handoff_constraints": constraints,
+                    "handoff_expected_result": expected_result,
+                    "handoff_acceptance_checks": acceptance_checks,
+                    "handoff_replay_mode": replay_mode,
+                    "deterministic_replay": replay_mode == "deterministic",
+                }
+            )
+
+            try:
+                resolved_workflow_id = workflow_id.strip()
+                workflow = await ctx.workflow_store.get_workflow(
+                    resolved_workflow_id,
+                    tenant_id=tenant,
+                    project_id=project_id,
+                )
+                resolved_version_id = version_id.strip() if isinstance(version_id, str) else workflow.active_version_id
+                if not resolved_version_id:
+                    raise WorkflowConflictError("workflow has no active published version")
+                version = await ctx.workflow_store.get_version(resolved_version_id, tenant_id=tenant)
+                if version.workflow_id != resolved_workflow_id:
+                    raise WorkflowNotFoundError("workflow version not found")
+                handoff_metadata["resolved_version"] = version.version_id
+                runtime = await _require_runtime()
+                run = await runtime.start_run(
+                    resolved_workflow_id,
+                    version.version_id,
+                    context_payload,
+                    mode="async",
+                    metadata=handoff_metadata,
+                )
+            except WorkflowNotFoundError:
+                await ctx.handoff_store.update_status(
+                    handoff_record.handoff_id,
+                    status="FAILED",
+                    run_id=None,
+                    tenant_id=tenant,
+                )
+                return _error(request, "NOT_FOUND", "workflow not found", 404)
+            except ValueError as exc:
+                await ctx.handoff_store.update_status(
+                    handoff_record.handoff_id,
+                    status="FAILED",
+                    run_id=None,
+                    tenant_id=tenant,
+                )
+                message = str(exc)
+                code = (
+                    "ERR_CAPABILITY_NOT_FOUND"
+                    if "capability" in message.lower() and "not found" in message.lower()
+                    else "INVALID_ARGUMENT"
+                )
+                return _error(request, code, message, 400)
+            except WorkflowConflictError as exc:
+                await ctx.handoff_store.update_status(
+                    handoff_record.handoff_id,
+                    status="FAILED",
+                    run_id=None,
+                    tenant_id=tenant,
+                )
+                return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+
+            await _run_store_save(run, tenant_id=tenant)
+            handoff_record = await ctx.handoff_store.update_status(
+                handoff_record.handoff_id,
+                status="STARTED",
+                run_id=run.id,
+                tenant_id=tenant,
+            )
+            if handoff_record is None:
+                return _error(request, "INTERNAL", "handoff store unavailable", 500)
+            return _json(request, handoff_to_dict(handoff_record), status_code=201)
+
+        return await _idempotent(request, "handoff_create", _create_impl)
+
+    async def replay_handoff_package(request: Request) -> Response:
+        handoff_id = str(request.path_params.get("handoff_id") or "").strip()
+
+        async def _replay_impl() -> Response:
+            if not handoff_id:
+                return _error(request, "INVALID_ARGUMENT", "handoff_id is required", 400)
+            await ctx.ensure_handoff_store()
+            if ctx.handoff_store is None:
+                return _error(request, "INTERNAL", "handoff store unavailable", 500)
+            tenant = _tenant_id(request)
+            handoff_record = await ctx.handoff_store.get(handoff_id, tenant_id=tenant)
+            if handoff_record is None:
+                return _error(request, "ERR_HANDOFF_NOT_FOUND", "handoff package not found", 404)
+            if handoff_record.replay_mode != "deterministic":
+                return _error(
+                    request,
+                    "ERR_HANDOFF_REPLAY_NOT_ALLOWED",
+                    "handoff package is not deterministic replay enabled",
+                    409,
+                )
+
+            replay_metadata = dict(handoff_record.metadata or {})
+            replay_metadata.update(
+                {
+                    "handoff_id": handoff_record.handoff_id,
+                    "replay_of_handoff_id": handoff_record.handoff_id,
+                    "handoff_constraints": handoff_record.constraints,
+                    "handoff_expected_result": handoff_record.expected_result,
+                    "handoff_acceptance_checks": handoff_record.acceptance_checks,
+                    "handoff_replay_mode": handoff_record.replay_mode,
+                    "deterministic_replay": True,
+                }
+            )
+            project_id = str(replay_metadata.get("project_id") or "").strip()
+            if not project_id:
+                return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+            try:
+                workflow = await ctx.workflow_store.get_workflow(
+                    handoff_record.workflow_id,
+                    tenant_id=tenant,
+                    project_id=project_id,
+                )
+                resolved_version_id = handoff_record.version_id or workflow.active_version_id
+                if not resolved_version_id:
+                    raise WorkflowConflictError("workflow has no active published version")
+                version = await ctx.workflow_store.get_version(resolved_version_id, tenant_id=tenant)
+                if version.workflow_id != handoff_record.workflow_id:
+                    raise WorkflowNotFoundError("workflow version not found")
+                replay_metadata["resolved_version"] = version.version_id
+                runtime = await _require_runtime()
+                run = await runtime.start_run(
+                    handoff_record.workflow_id,
+                    version.version_id,
+                    handoff_record.context,
+                    mode="async",
+                    metadata=replay_metadata,
+                )
+            except WorkflowNotFoundError:
+                return _error(request, "NOT_FOUND", "workflow not found", 404)
+            except ValueError as exc:
+                message = str(exc)
+                code = (
+                    "ERR_CAPABILITY_NOT_FOUND"
+                    if "capability" in message.lower() and "not found" in message.lower()
+                    else "INVALID_ARGUMENT"
+                )
+                return _error(request, code, message, 400)
+            except WorkflowConflictError as exc:
+                return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+
+            await _run_store_save(run, tenant_id=tenant)
+            handoff_record = await ctx.handoff_store.update_status(
+                handoff_record.handoff_id,
+                status="REPLAYED",
+                run_id=run.id,
+                tenant_id=tenant,
+            )
+            if handoff_record is None:
+                return _error(request, "INTERNAL", "handoff store unavailable", 500)
+            return _json(request, handoff_to_dict(handoff_record), status_code=200)
+
+        return await _idempotent(request, f"handoff_replay:{handoff_id}", _replay_impl)
+
+    async def list_run_ledger(request: Request) -> JSONResponse:
+        run_id = request.path_params["run_id"]
+        limit_raw = request.query_params.get("limit", "200")
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            return _error(request, "INVALID_ARGUMENT", "limit must be an integer", 400)
+        if limit < 1 or limit > 1000:
+            return _error(request, "INVALID_ARGUMENT", "limit must be between 1 and 1000", 400)
+        await ctx.ensure_run_ledger_store()
+        if ctx.run_ledger_store is None:
+            return _error(request, "INTERNAL", "run ledger store unavailable", 500)
+        entries = await ctx.run_ledger_store.list_run(run_id, tenant_id=_tenant_id(request), limit=limit)
+        return _json(
+            request,
+            {"items": [run_ledger_entry_to_dict(entry) for entry in entries], "next_cursor": None},
+        )
 
     async def orchestrator_message(request: Request) -> Response:
         async def _message_impl() -> Response:
@@ -1415,6 +1855,8 @@ def create_app(
             "workflow_export_schema": f"{base_url}/schemas/workflow-export-v1.schema.json",
             "routing_decision_schema": f"{base_url}/schemas/routing-decision.schema.json",
             "projects_create": f"{base_url}/projects",
+            "capabilities_create": f"{base_url}/capabilities",
+            "capabilities_versions_template": f"{base_url}/capabilities/{{capability_id}}/versions",
             "project_orchestrator_upsert_template": (
                 f"{base_url}/projects/{{project_id}}/orchestrators"
             ),
@@ -1423,6 +1865,9 @@ def create_app(
             ),
             "orchestrator_message": f"{base_url}/orchestrator/messages",
             "orchestrator_stack_template": f"{base_url}/orchestrator/sessions/{{session_id}}/stack?project_id={{project_id}}",
+            "handoff_create": f"{base_url}/handoff/packages",
+            "handoff_replay_template": f"{base_url}/handoff/packages/{{handoff_id}}/replay",
+            "run_ledger_template": f"{base_url}/runs/{{run_id}}/ledger",
         }
 
     def _integration_check_report(request: Request) -> Dict[str, Any]:
@@ -1542,8 +1987,13 @@ def create_app(
             "/projects",
             "/projects/{project_id}/orchestrators",
             "/projects/{project_id}/workflow-definitions",
+            "/capabilities",
+            "/capabilities/{capability_id}/versions",
             "/orchestrator/messages",
             "/orchestrator/sessions/{session_id}/stack",
+            "/handoff/packages",
+            "/handoff/packages/{handoff_id}/replay",
+            "/runs/{run_id}/ledger",
         )
         missing_paths = [path for path in required_openapi_paths if path not in openapi_text]
         add_check(
@@ -1797,14 +2247,16 @@ def create_app(
             "2. Create project scope via `POST /projects` and retain `project_id` for authoring/routing.",
             "3. Define workflow goal and output, then follow workflow authoring guide.",
             "4. Validate workflow payloads with the provided schemas.",
-            "5. Create/publish workflow via `/workflows` and `/workflows/{workflow_id}/publish`.",
-            "6. Register workflow in project routing index via `POST /projects/{project_id}/workflow-definitions`.",
-            "7. Configure project orchestrator via `POST /projects/{project_id}/orchestrators`.",
-            "8. Run integration checks and ensure status=PASS.",
-            "9. For project routing, call `POST /orchestrator/messages` with `project_id`, `session_id`, `user_id`, and `message`.",
-            "10. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
-            "11. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...`.",
-            "12. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
+            "5. Register capability contracts via `POST /capabilities` before publishing capability-pinned steps.",
+            "6. Create/publish workflow via `/workflows` and `/workflows/{workflow_id}/publish`.",
+            "7. Register workflow in project routing index via `POST /projects/{project_id}/workflow-definitions`.",
+            "8. Configure project orchestrator via `POST /projects/{project_id}/orchestrators`.",
+            "9. Run integration checks and ensure status=PASS.",
+            "10. For project routing, call `POST /orchestrator/messages` with `project_id`, `session_id`, `user_id`, and `message`.",
+            "11. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
+            "12. For deterministic package transfer, use `POST /handoff/packages` and replay via `/handoff/packages/{handoff_id}/replay`.",
+            "13. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...` and `GET /runs/{run_id}/ledger`.",
+            "14. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
             "",
             "## Special instructions and examples",
             "- Keep tenant scope consistent: use the same `X-Tenant-Id` for `/projects`, project-registry bootstrap, and `/orchestrator/messages`.",
@@ -2220,6 +2672,9 @@ def create_app(
         Route("/projects", create_project, methods=["POST"]),
         Route("/projects/{project_id}/orchestrators", upsert_project_orchestrator, methods=["POST"]),
         Route("/projects/{project_id}/workflow-definitions", upsert_project_workflow_definition, methods=["POST"]),
+        Route("/capabilities", create_capability, methods=["POST"]),
+        Route("/capabilities", list_capabilities, methods=["GET"]),
+        Route("/capabilities/{capability_id}/versions", list_capability_versions, methods=["GET"]),
         Route("/workflows", list_workflows, methods=["GET"]),
         Route("/workflows", create_workflow, methods=["POST"]),
         Route("/workflows/{workflow_id}", update_workflow, methods=["PATCH"]),
@@ -2232,8 +2687,11 @@ def create_app(
         Route("/workflows/{workflow_id}/runs", start_run, methods=["POST"]),
         Route("/orchestrator/messages", orchestrator_message, methods=["POST"]),
         Route("/orchestrator/sessions/{session_id}/stack", orchestrator_stack, methods=["GET"]),
+        Route("/handoff/packages", create_handoff_package, methods=["POST"]),
+        Route("/handoff/packages/{handoff_id}/replay", replay_handoff_package, methods=["POST"]),
         Route("/runs", list_runs, methods=["GET"]),
         Route("/runs/{run_id}", get_run, methods=["GET"]),
+        Route("/runs/{run_id}/ledger", list_run_ledger, methods=["GET"]),
         Route("/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
         Route("/runs/{run_id}/rerun-node", rerun_node, methods=["POST"]),
         Route("/runs/{run_id}/interrupts/{interrupt_id}/resume", resume_interrupt, methods=["POST"]),

@@ -116,3 +116,21 @@ Every state transition emits an event to Kafka and is persisted to the events ta
 ## Determinism
 - Given the same inputs, workflow version, and tool outputs, the run must be reproducible.
 - Tool outputs and external calls should be recorded for auditability.
+
+## Capability pinning
+- Workflow nodes can optionally pin capability contract via:
+  - `node.config.capability_id`
+  - `node.config.capability_version`
+- Runtime validates pinned capability references against tenant-scoped capability registry.
+- If capability pin is missing in registry, publish/start fails with explicit validation error.
+- Resolved capability bindings are attached to run metadata for observability.
+
+## Run ledger (immutable trace)
+- Runtime events are projected into append-only `run_ledger` records.
+- Each ledger record includes workflow/run identity, optional step, chosen capability/version, event/status, payload, artifact refs, and timestamp.
+- Ledger has no update/delete API surface; records are immutable by design.
+
+## Atomic handoff
+- `POST /handoff/packages` accepts a workflow package (context, constraints, expected result, acceptance checks) and starts run execution atomically.
+- Handoff record persists replay mode and package metadata.
+- `POST /handoff/packages/{handoff_id}/replay` starts deterministic replay only for packages created with `replay_mode=deterministic`.

@@ -672,6 +672,156 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.json()["run_id"], second.json()["run_id"])
 
+    def test_capability_registry_create_and_list_versions(self):
+        create_response = self.client.post(
+            "/capabilities",
+            json={
+                "capability_id": "cap_agent_triage",
+                "version": "1.0.0",
+                "node_type": "agent",
+                "contract": {"inputs": {"type": "object"}, "outputs": {"type": "object"}},
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.json()
+        self.assertEqual(created["capability_id"], "cap_agent_triage")
+        self.assertEqual(created["version"], "1.0.0")
+
+        list_response = self.client.get("/capabilities", params={"capability_id": "cap_agent_triage"})
+        self.assertEqual(list_response.status_code, 200)
+        items = list_response.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["version"], "1.0.0")
+
+        versions_response = self.client.get("/capabilities/cap_agent_triage/versions")
+        self.assertEqual(versions_response.status_code, 200)
+        self.assertEqual(len(versions_response.json()["items"]), 1)
+
+    def test_publish_rejects_unknown_capability_pin(self):
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "set",
+                    "type": "set_state",
+                    "config": {
+                        "target": "x",
+                        "expression": "1",
+                        "capability_id": "cap_missing",
+                        "capability_version": "9.9.9",
+                    },
+                },
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [{"source": "start", "target": "set"}, {"source": "set", "target": "end"}],
+            "variables_schema": {},
+        }
+        create_response = self.client.post(
+            "/workflows",
+            json={"name": "Pinned capability wf", "draft": draft},
+            headers=self._with_project(),
+        )
+        self.assertEqual(create_response.status_code, 201)
+        workflow_id = create_response.json()["workflow_id"]
+
+        publish_response = self.client.post(f"/workflows/{workflow_id}/publish", headers=self._with_project())
+        self.assertEqual(publish_response.status_code, 400)
+        details = publish_response.json()["error"].get("details") or []
+        self.assertTrue(any("unknown capability cap_missing@9.9.9" in item for item in details))
+
+    def test_start_run_with_pinned_capability_writes_ledger(self):
+        capability_response = self.client.post(
+            "/capabilities",
+            json={
+                "capability_id": "cap_set_state",
+                "version": "1.0.0",
+                "node_type": "set_state",
+                "contract": {"retry_policy": {"max_retries": 1}, "constraints": {"timeout_s": 5}},
+            },
+        )
+        self.assertEqual(capability_response.status_code, 201)
+
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "set",
+                    "type": "set_state",
+                    "config": {
+                        "target": "result",
+                        "expression": "1",
+                        "capability_id": "cap_set_state",
+                        "capability_version": "1.0.0",
+                    },
+                },
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [{"source": "start", "target": "set"}, {"source": "set", "target": "end"}],
+            "variables_schema": {},
+        }
+        create_response = self.client.post(
+            "/workflows",
+            json={"name": "Ledger wf", "draft": draft},
+            headers=self._with_project(),
+        )
+        self.assertEqual(create_response.status_code, 201)
+        workflow_id = create_response.json()["workflow_id"]
+        publish_response = self.client.post(f"/workflows/{workflow_id}/publish", headers=self._with_project())
+        self.assertEqual(publish_response.status_code, 200)
+
+        run_response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}},
+            headers=self._with_project(),
+        )
+        self.assertEqual(run_response.status_code, 201)
+        run_id = run_response.json()["run_id"]
+
+        ledger_response = self.client.get(f"/runs/{run_id}/ledger", headers=self._with_project())
+        self.assertEqual(ledger_response.status_code, 200)
+        items = ledger_response.json()["items"]
+        self.assertTrue(
+            any(
+                item.get("step_id") == "set"
+                and item.get("capability_id") == "cap_set_state"
+                and item.get("capability_version") == "1.0.0"
+                for item in items
+            )
+        )
+
+    def test_handoff_package_create_and_deterministic_replay(self):
+        workflow_id, _ = self._create_workflow()
+        headers = self._with_project({"Idempotency-Key": "idem_handoff_1"})
+        create_response = self.client.post(
+            "/handoff/packages",
+            json={
+                "workflow_id": workflow_id,
+                "package": {
+                    "context": {"foo": "bar"},
+                    "constraints": {"deadline_s": 120},
+                    "expected_result": {"ok": True},
+                    "acceptance_checks": [{"type": "exists", "path": "foo"}],
+                },
+                "replay_mode": "deterministic",
+            },
+            headers=headers,
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.json()
+        self.assertTrue(created.get("handoff_id"))
+        self.assertEqual(created.get("replay_mode"), "deterministic")
+        self.assertTrue(created.get("run_id"))
+
+        replay_response = self.client.post(
+            f"/handoff/packages/{created['handoff_id']}/replay",
+            headers=self._with_project({"Idempotency-Key": "idem_handoff_replay_1"}),
+        )
+        self.assertEqual(replay_response.status_code, 200)
+        replayed = replay_response.json()
+        self.assertEqual(replayed.get("handoff_id"), created["handoff_id"])
+        self.assertEqual(replayed.get("status"), "REPLAYED")
+        self.assertTrue(replayed.get("run_id"))
+
     def test_sse_snapshot(self):
         workflow_id, _ = self._create_workflow()
         response = self.client.post(

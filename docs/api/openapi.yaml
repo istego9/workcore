@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.5.0
+  version: 0.6.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -16,7 +16,9 @@ security:
 tags:
   - name: projects
   - name: workflows
+  - name: capabilities
   - name: runs
+  - name: handoff
   - name: interrupts
   - name: streaming
   - name: webhooks
@@ -438,6 +440,63 @@ paths:
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }
         '409': { $ref: '#/components/responses/ErrorResponse' }
+  /capabilities:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [capabilities]
+      summary: Register versioned capability contract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CapabilityCreateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Capability'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+    get:
+      tags: [capabilities]
+      summary: List capability contracts
+      parameters:
+        - in: query
+          name: capability_id
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCapabilities'
+  /capabilities/{capability_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - in: path
+        name: capability_id
+        required: true
+        schema: { type: string }
+    get:
+      tags: [capabilities]
+      summary: List versions for capability id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCapabilities'
   /workflows:
     parameters:
       - $ref: '#/components/parameters/TenantId'
@@ -708,6 +767,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedRuns'
+
+  /runs/{run_id}/ledger:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [runs]
+      summary: List immutable run ledger entries
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedRunLedger'
+
+  /handoff/packages:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [handoff]
+      summary: Atomic workflow handoff package intake
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HandoffPackageCreateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffPackage'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+
+  /handoff/packages/{handoff_id}/replay:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - in: path
+        name: handoff_id
+        required: true
+        schema: { type: string }
+    post:
+      tags: [handoff]
+      summary: Deterministic replay from stored handoff package
+      responses:
+        '200':
+          description: Replay started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffPackage'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
 
   /runs/{run_id}/cancel:
     parameters:
@@ -1046,6 +1177,9 @@ components:
                 - ERR_LLM_BAD_SCHEMA_OUTPUT
                 - ERR_CANCEL_NOT_ALLOWED
                 - ERR_CONTEXT_FETCH_FAILED
+                - ERR_CAPABILITY_NOT_FOUND
+                - ERR_HANDOFF_REPLAY_NOT_ALLOWED
+                - ERR_HANDOFF_NOT_FOUND
             message: { type: string }
             details:
               oneOf:
@@ -1417,6 +1551,54 @@ components:
         updated_at: { type: string, format: date-time }
       required: [project_id, tenant_id, settings, created_at, updated_at]
 
+    CapabilityContract:
+      type: object
+      description: Versioned capability contract payload.
+      properties:
+        inputs: { type: object }
+        outputs: { type: object }
+        constraints: { type: object }
+        timeout_s:
+          type: number
+          nullable: true
+        retry_policy: { type: object }
+        error_codes:
+          type: array
+          items: { type: string }
+      additionalProperties: true
+
+    CapabilityCreateRequest:
+      type: object
+      properties:
+        capability_id: { type: string }
+        version: { type: string }
+        node_type: { type: string }
+        contract:
+          $ref: '#/components/schemas/CapabilityContract'
+      required: [capability_id, version, node_type, contract]
+
+    Capability:
+      type: object
+      properties:
+        capability_id: { type: string }
+        version: { type: string }
+        node_type: { type: string }
+        contract:
+          $ref: '#/components/schemas/CapabilityContract'
+        created_at: { type: string, format: date-time }
+      required: [capability_id, version, node_type, contract, created_at]
+
+    PaginatedCapabilities:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Capability' }
+        next_cursor:
+          type: string
+          nullable: true
+      required: [items]
+
     OrchestratorConfigUpsertRequest:
       type: object
       properties:
@@ -1565,7 +1747,15 @@ components:
       properties:
         id: { type: string }
         type: { type: string }
-        config: { type: object }
+        config:
+          type: object
+          properties:
+            capability_id:
+              type: string
+              description: Optional capability identifier pinned for this node execution.
+            capability_version:
+              type: string
+              description: Optional capability contract version pinned for this node execution.
       required: [id, type]
 
     WorkflowEdge:
@@ -1585,6 +1775,56 @@ components:
         content: { type: object }
         created_at: { type: string, format: date-time }
       required: [version_id, workflow_id, version_number]
+
+    HandoffPackagePayload:
+      type: object
+      properties:
+        context: { type: object }
+        constraints: { type: object }
+        expected_result: { type: object }
+        acceptance_checks:
+          type: array
+          items: { type: object }
+      required: [context, constraints, expected_result, acceptance_checks]
+
+    HandoffPackageCreateRequest:
+      type: object
+      properties:
+        workflow_id: { type: string }
+        version_id: { type: string, nullable: true }
+        package:
+          $ref: '#/components/schemas/HandoffPackagePayload'
+        replay_mode:
+          type: string
+          enum: [none, deterministic]
+        metadata:
+          type: object
+          properties:
+            correlation_id: { type: string }
+            tenant_id: { type: string }
+            project_id: { type: string }
+            import_run_id: { type: string }
+            trace_id: { type: string }
+            user_id: { type: string }
+      required: [workflow_id, package]
+
+    HandoffPackage:
+      type: object
+      properties:
+        handoff_id: { type: string }
+        workflow_id: { type: string }
+        version_id: { type: string }
+        run_id: { type: string, nullable: true }
+        replay_mode:
+          type: string
+          enum: [none, deterministic]
+        status: { type: string }
+        package:
+          $ref: '#/components/schemas/HandoffPackagePayload'
+        metadata: { type: object }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [handoff_id, workflow_id, version_id, replay_mode, status, package, created_at, updated_at]
 
     RunCreateRequest:
       type: object
@@ -1729,6 +1969,37 @@ components:
           nullable: true
       required: [items]
 
+    PaginatedRunLedger:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RunLedgerEntry' }
+        next_cursor:
+          type: string
+          nullable: true
+      required: [items]
+
+    RunLedgerEntry:
+      type: object
+      properties:
+        ledger_id: { type: string }
+        run_id: { type: string }
+        workflow_id: { type: string }
+        version_id: { type: string }
+        step_id: { type: string, nullable: true }
+        capability_id: { type: string, nullable: true }
+        capability_version: { type: string, nullable: true }
+        status: { type: string }
+        event_type: { type: string }
+        decision: { type: object, nullable: true }
+        artifacts:
+          type: array
+          items: { type: string }
+        payload: { type: object }
+        timestamp: { type: string, format: date-time }
+      required: [ledger_id, run_id, workflow_id, version_id, status, event_type, artifacts, payload, timestamp]
+
     PaginatedWorkflowVersions:
       type: object
       properties:
@@ -1792,10 +2063,15 @@ components:
             workflow_export_schema: { type: string, format: uri }
             routing_decision_schema: { type: string, format: uri }
             projects_create: { type: string, format: uri }
+            capabilities_create: { type: string, format: uri }
+            capabilities_versions_template: { type: string }
             project_orchestrator_upsert_template: { type: string }
             project_workflow_definition_upsert_template: { type: string }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
+            handoff_create: { type: string, format: uri }
+            handoff_replay_template: { type: string }
+            run_ledger_template: { type: string }
         integration_test:
           $ref: '#/components/schemas/AgentIntegrationCheckReport'
         docs:
@@ -1842,10 +2118,15 @@ components:
             workflow_export_schema: { type: string, format: uri }
             routing_decision_schema: { type: string, format: uri }
             projects_create: { type: string, format: uri }
+            capabilities_create: { type: string, format: uri }
+            capabilities_versions_template: { type: string }
             project_orchestrator_upsert_template: { type: string }
             project_workflow_definition_upsert_template: { type: string }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
+            handoff_create: { type: string, format: uri }
+            handoff_replay_template: { type: string }
+            run_ledger_template: { type: string }
         summary:
           type: object
           properties:
