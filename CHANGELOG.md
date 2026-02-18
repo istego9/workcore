@@ -4,6 +4,167 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-02-18
+
+### API diff vs previous version
+- Previous API version: `0.8.0`
+- Current API version: `0.9.0`
+- Compatibility: additive (new artifact read endpoint and error codes; no-inline defaults apply only to newly published workflow versions)
+
+### Added
+- Artifact read endpoint:
+  - `GET /artifacts/{artifact_ref}`
+- New API schema:
+  - `ArtifactReadResponse`
+- New error codes:
+  - `artifact.not_found`
+  - `artifact.access_denied`
+  - `artifact.expired`
+  - `projection.path_invalid`
+
+### Changed
+- `POST /workflows/{workflow_id}/runs` now returns `projection.path_invalid` for invalid projection path syntax.
+- Newly published workflow versions now apply no-inline defaults by version metadata; existing published versions preserve legacy behavior unless explicitly switched.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-18
+
+### API diff vs previous version
+- Previous API version: `0.7.0`
+- Current API version: `0.8.0`
+- Compatibility: additive (new reliability endpoints and schemas; existing flows remain supported)
+
+### Added
+- Capability Registry endpoints:
+  - `POST /capabilities`
+  - `GET /capabilities`
+  - `GET /capabilities/{capability_id}/versions`
+- Run Ledger endpoint:
+  - `GET /runs/{run_id}/ledger`
+- Atomic Handoff endpoints:
+  - `POST /handoff/packages`
+  - `POST /handoff/packages/{handoff_id}/replay`
+- New API schemas:
+  - `CapabilityContract`
+  - `CapabilityCreateRequest`
+  - `Capability`
+  - `PaginatedCapabilities`
+  - `RunLedgerEntry`
+  - `PaginatedRunLedger`
+  - `HandoffPackagePayload`
+  - `HandoffPackageCreateRequest`
+  - `HandoffPackage`
+
+### Changed
+- `WorkflowNode.config` now documents optional capability pin fields:
+  - `capability_id`
+  - `capability_version`
+- API reference now documents capability registry, run ledger, and atomic handoff/replay flows.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-18
+
+### API diff vs previous version
+- Previous API version: `0.6.0`
+- Current API version: `0.7.0`
+- Compatibility: additive (artifact-reference and projection controls added; inline payloads remain supported for migration)
+
+### Added
+- Run request projection controls:
+  - `RunCreateRequest.state_exclude_paths`
+  - `RunCreateRequest.output_include_paths`
+- Document input schemas for run/webhook inputs:
+  - `RunInputs`
+  - `RunInputDocument`
+  - `RunInputDocumentPage`
+  - `ProjectionPath`
+- OpenAPI run-start example now includes artifact-reference document page payload and projection controls.
+
+### Changed
+- Run input contract guidance now prefers `documents[].pages[].artifact_ref` over inline binary content.
+- Run/state/output payload schema descriptions now document projection-aware transport behavior.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-18
+
+### API diff vs previous version
+- Previous API version: `0.5.2`
+- Current API version: `0.6.0`
+- Compatibility: breaking (`POST /projects` now requires `project_name`)
+
+### Added
+- Project contract now includes human-readable `project_name` in `Project` response schema.
+
+### Changed
+- `POST /projects` request now requires both:
+  - `project_id`
+  - `project_name`
+- Project creation/list responses now include `project_name`.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-18
+
+### API diff vs previous version
+- Previous API version: `0.5.1`
+- Current API version: `0.5.2`
+- Compatibility: additive (workflow draft contract extended for batch `set_state` assignments; legacy fields retained)
+
+### Added
+- Workflow draft contract now supports batch `set_state` config:
+  - `set_state.config.assignments[]` with `{ target, expression }`.
+- OpenAPI now documents `WorkflowSetStateAssignment` and `WorkflowNode.config.assignments`.
+
+### Changed
+- Workflow authoring/reference docs now describe `set_state` dual-mode contract:
+  - legacy `target` + `expression`
+  - batch `assignments[]` (executed in order)
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-18
+
+### API diff vs previous version
+- Previous API version: `0.5.0`
+- Current API version: `0.5.1`
+- Compatibility: additive (new read endpoint, existing project bootstrap/write endpoints unchanged)
+
+### Added
+- Project listing endpoint:
+  - `GET /projects` returns tenant-scoped `ProjectList` (`items`, `next_cursor`).
+
+### Changed
+- API reference now documents project listing for admin/project-selection flows.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-02-16
 
 ### API diff vs previous version

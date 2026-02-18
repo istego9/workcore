@@ -15,6 +15,7 @@ from apps.orchestrator.streaming import (
     now_ts,
     new_event_id,
 )
+from apps.orchestrator.runtime.projection import project_run_payload_for_transport
 
 from .config import RuntimeConfig
 
@@ -88,6 +89,7 @@ class OrchestratorService:
         last_event_id = last_event.id if last_event else None
         last_sequence = last_event.sequence if last_event else self.store.last_sequence(run.id)
         run_metadata = run.metadata or {}
+        projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, run_metadata)
         snapshot = EventEnvelope(
             id=new_event_id(),
             type="snapshot",
@@ -97,8 +99,8 @@ class OrchestratorService:
             node_id=None,
             payload={
                 "status": run.status,
-                "state": run.state,
-                "outputs": run.outputs,
+                "state": projected_state,
+                "outputs": projected_outputs,
                 "node_runs": {nid: nr.status for nid, nr in run.node_runs.items()},
                 "mode": run.mode,
                 "metadata": run_metadata,

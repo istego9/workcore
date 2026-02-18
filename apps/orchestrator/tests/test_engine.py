@@ -104,6 +104,65 @@ class RuntimeEngineTests(unittest.TestCase):
         engine.execute_until_blocked(run)
         self.assertEqual(run.node_outputs.get("set"), "Alice")
 
+    def test_set_state_batch_assignments_updates_state_and_node_output_patch(self):
+        nodes = [
+            Node("start", "start"),
+            Node(
+                "set",
+                "set_state",
+                {
+                    "assignments": [
+                        {"target": "budget.base", "expression": "inputs['amount']"},
+                        {"target": "budget.total", "expression": "state['budget']['base'] + 10"},
+                    ]
+                },
+            ),
+            Node("out", "output", {"expression": "state['budget']['total']"}),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "set"),
+            Edge("set", "out"),
+            Edge("out", "end"),
+        ]
+
+        engine = self._engine(nodes, edges)
+        run = engine.start_run({"amount": 15})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(run.state["budget"]["base"], 15)
+        self.assertEqual(run.state["budget"]["total"], 25)
+        self.assertEqual(run.node_outputs["set"], {"budget": {"base": 15, "total": 25}})
+
+    def test_set_state_batch_assignments_are_executed_in_order(self):
+        nodes = [
+            Node("start", "start"),
+            Node(
+                "set",
+                "set_state",
+                {
+                    "assignments": [
+                        {"target": "base", "expression": "inputs['base']"},
+                        {"target": "double_base", "expression": "state['base'] * 2"},
+                    ]
+                },
+            ),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "set"),
+            Edge("set", "end"),
+        ]
+
+        engine = self._engine(nodes, edges)
+        run = engine.start_run({"base": 7})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(run.state["base"], 7)
+        self.assertEqual(run.state["double_base"], 14)
+
     def test_agent_prefers_live_executor_from_agent_mode_flag(self):
         nodes = [
             Node("start", "start"),

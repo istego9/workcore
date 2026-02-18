@@ -19,7 +19,10 @@ Status: Draft
 - Config requires body_target, exit_target, and loop_back (node id that returns to the while node).
 
 ## Set State
-- Evaluate expression and assign to target path.
+- Supports two config styles:
+  - legacy single assignment: `target` + `expression`
+  - batch assignments: `assignments[]` with `{ target, expression }`
+- Runtime applies assignments in order; each next expression sees state updates from prior assignments.
 - Result type must match the variable schema.
 
 ## Interaction
@@ -35,6 +38,7 @@ Status: Draft
 - Executed via OpenAI Agents SDK.
 - Supports tools, structured outputs, and streaming partial results.
 - Output is always persisted to `node_runs.output` and `node_outputs[node_id]`.
+- For document workflows, agent defaults should receive metadata-first document context; full page/body content is fetched explicitly from artifact references when needed.
 - State propagation rules:
   - If `state_target` is configured, full node output is written to that state path.
   - If `state_target` is not set and node uses structured JSON output

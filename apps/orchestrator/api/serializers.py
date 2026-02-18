@@ -4,6 +4,9 @@ import json
 import math
 from typing import Any, Dict
 
+from apps.orchestrator.api.capability_store import CapabilityRecord
+from apps.orchestrator.api.handoff_store import HandoffPackageRecord
+from apps.orchestrator.api.ledger_store import RunLedgerEntry
 from apps.orchestrator.api.workflow_store import WorkflowRecord, WorkflowSummary, WorkflowVersionRecord
 from apps.orchestrator.orchestrator_runtime import (
     OrchestratorConfigRecord,
@@ -12,6 +15,7 @@ from apps.orchestrator.orchestrator_runtime import (
 )
 
 from apps.orchestrator.runtime.models import Interrupt, Run
+from apps.orchestrator.runtime.projection import project_run_payload_for_transport
 
 
 def _to_text(value: Any) -> str:
@@ -55,6 +59,7 @@ def _backfill_mock_usage(node_output: Any) -> Dict[str, Any] | None:
 
 def run_to_dict(run: Run) -> Dict[str, Any]:
     metadata = dict(run.metadata or {})
+    projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, metadata)
     node_runs = []
     for node_id, node_run in run.node_runs.items():
         usage = node_run.usage
@@ -79,8 +84,8 @@ def run_to_dict(run: Run) -> Dict[str, Any]:
         "status": run.status,
         "mode": run.mode,
         "inputs": run.inputs,
-        "state": run.state,
-        "outputs": run.outputs,
+        "state": projected_state,
+        "outputs": projected_outputs,
         "metadata": metadata,
         "correlation_id": metadata.get("correlation_id"),
         "trace_id": metadata.get("trace_id"),
@@ -114,6 +119,7 @@ def interrupt_to_dict(interrupt: Interrupt) -> Dict[str, Any]:
 def project_to_dict(project: ProjectRecord) -> Dict[str, Any]:
     return {
         "project_id": project.project_id,
+        "project_name": project.project_name,
         "tenant_id": project.tenant_id,
         "default_orchestrator_id": project.default_orchestrator_id,
         "settings": project.settings,
@@ -183,4 +189,52 @@ def workflow_version_to_dict(version: WorkflowVersionRecord) -> Dict[str, Any]:
         "hash": version.hash,
         "content": version.content,
         "created_at": version.created_at.isoformat(),
+    }
+
+
+def capability_to_dict(capability: CapabilityRecord) -> Dict[str, Any]:
+    return {
+        "capability_id": capability.capability_id,
+        "version": capability.version,
+        "node_type": capability.node_type,
+        "contract": capability.contract,
+        "created_at": capability.created_at.isoformat(),
+    }
+
+
+def run_ledger_entry_to_dict(entry: RunLedgerEntry) -> Dict[str, Any]:
+    return {
+        "ledger_id": entry.ledger_id,
+        "run_id": entry.run_id,
+        "workflow_id": entry.workflow_id,
+        "version_id": entry.version_id,
+        "step_id": entry.step_id,
+        "capability_id": entry.capability_id,
+        "capability_version": entry.capability_version,
+        "status": entry.status,
+        "event_type": entry.event_type,
+        "decision": entry.decision,
+        "artifacts": entry.artifacts,
+        "payload": entry.payload,
+        "timestamp": entry.timestamp.isoformat(),
+    }
+
+
+def handoff_to_dict(record: HandoffPackageRecord) -> Dict[str, Any]:
+    return {
+        "handoff_id": record.handoff_id,
+        "workflow_id": record.workflow_id,
+        "version_id": record.version_id,
+        "run_id": record.run_id,
+        "replay_mode": record.replay_mode,
+        "status": record.status,
+        "package": {
+            "context": record.context,
+            "constraints": record.constraints,
+            "expected_result": record.expected_result,
+            "acceptance_checks": record.acceptance_checks,
+        },
+        "metadata": record.metadata,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
     }

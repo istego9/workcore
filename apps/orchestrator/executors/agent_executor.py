@@ -250,11 +250,93 @@ class AgentExecutor:
     @classmethod
     def _default_user_input(cls, run) -> str:
         payload = {
-            "input": cls._to_jsonable(getattr(run, "inputs", {}) or {}),
-            "state": cls._to_jsonable(getattr(run, "state", {}) or {}),
-            "node_outputs": cls._to_jsonable(getattr(run, "node_outputs", {}) or {}),
+            "input": cls._documents_metadata_first(cls._to_jsonable(getattr(run, "inputs", {}) or {})),
+            "state": cls._documents_metadata_first(cls._to_jsonable(getattr(run, "state", {}) or {})),
+            "node_outputs": cls._documents_metadata_first(
+                cls._to_jsonable(getattr(run, "node_outputs", {}) or {})
+            ),
         }
         return json.dumps(payload, ensure_ascii=False)
+
+    @classmethod
+    def _documents_metadata_first(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            result: Dict[str, Any] = {}
+            for key, item in value.items():
+                if key == "documents" and isinstance(item, list):
+                    result[key] = cls._summarize_documents(item)
+                    continue
+                result[key] = cls._documents_metadata_first(item)
+            return result
+        if isinstance(value, list):
+            return [cls._documents_metadata_first(item) for item in value]
+        return value
+
+    @classmethod
+    def _summarize_documents(cls, documents: List[Any]) -> List[Dict[str, Any]]:
+        summarized: List[Dict[str, Any]] = []
+        for idx, raw_doc in enumerate(documents):
+            if not isinstance(raw_doc, dict):
+                continue
+            pages_raw = raw_doc.get("pages")
+            pages = pages_raw if isinstance(pages_raw, list) else []
+            page_summaries = [cls._summarize_document_page(page) for page in pages if isinstance(page, dict)]
+
+            doc_summary: Dict[str, Any] = {
+                "doc_id": cls._as_optional_text(raw_doc.get("doc_id")) or f"doc_{idx + 1}",
+                "filename": cls._as_optional_text(raw_doc.get("filename")),
+                "type": cls._as_optional_text(raw_doc.get("type")),
+                "mime_type": cls._as_optional_text(raw_doc.get("mime_type")),
+                "page_count": len(pages),
+                "pages": page_summaries,
+            }
+            preview = cls._extract_preview_text(pages)
+            if preview:
+                doc_summary["preview"] = preview
+            summarized.append({key: value for key, value in doc_summary.items() if value not in (None, "", [])})
+        return summarized
+
+    @classmethod
+    def _summarize_document_page(cls, page: Dict[str, Any]) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {}
+        page_number = page.get("page_number")
+        if isinstance(page_number, int):
+            summary["page_number"] = page_number
+        mime_type = cls._as_optional_text(page.get("mime_type"))
+        if mime_type:
+            summary["mime_type"] = mime_type
+        artifact_ref = cls._as_optional_text(page.get("artifact_ref"))
+        if artifact_ref:
+            summary["artifact_ref"] = artifact_ref
+        has_text = any(
+            cls._as_optional_text(page.get(field))
+            for field in ("text", "ocr_text", "markdown")
+        )
+        if has_text:
+            summary["has_text"] = True
+        if isinstance(page.get("image_base64"), str) and page.get("image_base64"):
+            summary["has_image_base64"] = True
+        return summary
+
+    @classmethod
+    def _extract_preview_text(cls, pages: List[Any], max_len: int = 180) -> Optional[str]:
+        for raw_page in pages:
+            if not isinstance(raw_page, dict):
+                continue
+            for field in ("text", "ocr_text", "markdown"):
+                value = cls._as_optional_text(raw_page.get(field))
+                if value:
+                    if len(value) <= max_len:
+                        return value
+                    return value[: max_len - 3] + "..."
+        return None
+
+    @staticmethod
+    def _as_optional_text(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        return text or None
 
     @staticmethod
     def _output_type(config: AgentNodeConfig) -> Optional[Any]:

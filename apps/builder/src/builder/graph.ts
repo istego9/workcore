@@ -77,7 +77,11 @@ export const defaultNodeConfig = (type: NodeType): Record<string, any> => {
         loop_back: ''
       };
     case 'set_state':
-      return { target: '', expression: '' };
+      return {
+        target: '',
+        expression: '',
+        assignments: [{ target: '', expression: '' }]
+      };
     case 'interaction':
       return { prompt: '', allow_file_upload: false, input_schema: {}, state_target: '' };
     case 'approval':
@@ -156,6 +160,9 @@ const SUPPORTED_NODE_TYPES = new Set<NodeType>(NODE_PALETTE.map((item) => item.t
 
 const isObjectRecord = (value: unknown): value is Record<string, any> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
 
 const isSupportedNodeType = (value: unknown): value is NodeType =>
   typeof value === 'string' && SUPPORTED_NODE_TYPES.has(value as NodeType);
@@ -550,11 +557,30 @@ export const validateGraph = (nodes: BuilderNode[], edges: BuilderEdge[]): Valid
       }
     }
     if (node.type === 'set_state') {
-      if (!node.config?.target || !node.config?.expression) {
+      const assignments = Array.isArray(node.config?.assignments) ? node.config.assignments : [];
+      const hasLegacy = isNonEmptyString(node.config?.target) && isNonEmptyString(node.config?.expression);
+      const hasAssignments = assignments.length > 0;
+      const assignmentsValid =
+        hasAssignments &&
+        assignments.every(
+          (assignment) =>
+            isObjectRecord(assignment) &&
+            isNonEmptyString(assignment.target) &&
+            isNonEmptyString(assignment.expression)
+        );
+
+      if (!hasLegacy && !hasAssignments) {
         issues.push({
           id: `set-state-${node.id}`,
           level: 'error',
-          message: 'Set State needs target and expression.',
+          message: 'Set State needs target + expression or non-empty assignments.',
+          nodeId: node.id
+        });
+      } else if (hasAssignments && !assignmentsValid) {
+        issues.push({
+          id: `set-state-${node.id}`,
+          level: 'error',
+          message: 'Set State assignments must contain target and expression in every item.',
           nodeId: node.id
         });
       }

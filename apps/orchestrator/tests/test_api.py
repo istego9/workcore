@@ -1,12 +1,14 @@
 import asyncio
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from starlette.testclient import TestClient
 
 from apps.orchestrator.api import create_app
 from apps.orchestrator.api.app import validate_runtime_security_env
+from apps.orchestrator.api.artifact_store import InMemoryArtifactStore
 from apps.orchestrator.api.workflow_store import InMemoryWorkflowStore
 from apps.orchestrator.streaming.sse import _event_stream
 
@@ -14,8 +16,9 @@ from apps.orchestrator.streaming.sse import _event_stream
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.workflow_store = InMemoryWorkflowStore()
+        self.artifact_store = InMemoryArtifactStore()
         self.default_project_id = "proj_test"
-        self.client = TestClient(create_app(workflow_store=self.workflow_store))
+        self.client = TestClient(create_app(workflow_store=self.workflow_store, artifact_store=self.artifact_store))
 
     def _with_project(self, headers=None, project_id: str | None = None):
         merged = dict(headers or {})
@@ -57,6 +60,29 @@ class ApiTests(unittest.TestCase):
         version_id = publish_response.json()["version_id"]
         return workflow_id, version_id
 
+    def _create_output_workflow(self, headers=None):
+        headers = self._with_project(headers)
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "out",
+                    "type": "output",
+                    "config": {"value": {"result": {"claim_id": "clm_1", "decision": "approve", "raw": "x"}}},
+                },
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [{"source": "start", "target": "out"}, {"source": "out", "target": "end"}],
+            "variables_schema": {},
+        }
+        response = self.client.post("/workflows", json={"name": "Output workflow", "draft": draft}, headers=headers)
+        self.assertEqual(response.status_code, 201)
+        workflow_id = response.json()["workflow_id"]
+        publish_response = self.client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+        self.assertEqual(publish_response.status_code, 200)
+        version_id = publish_response.json()["version_id"]
+        return workflow_id, version_id
+
     def _bootstrap_project(
         self,
         project_id: str,
@@ -74,6 +100,7 @@ class ApiTests(unittest.TestCase):
             await store.upsert_project(
                 project_id=project_id,
                 tenant_id="local",
+                project_name="Test Project",
                 default_orchestrator_id=orchestrator_id,
                 settings={"orchestrator_enabled": True},
             )
@@ -112,12 +139,14 @@ class ApiTests(unittest.TestCase):
             "/projects",
             json={
                 "project_id": "proj_new",
+                "project_name": "New Project",
                 "settings": {"orchestrator_enabled": True},
             },
         )
         self.assertEqual(response.status_code, 201)
         payload = response.json()
         self.assertEqual(payload["project_id"], "proj_new")
+        self.assertEqual(payload["project_name"], "New Project")
         self.assertEqual(payload["tenant_id"], "local")
         self.assertEqual(payload["settings"], {"orchestrator_enabled": True})
         self.assertIsNone(payload["default_orchestrator_id"])
@@ -133,16 +162,63 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(missing_id.status_code, 400)
         self.assertEqual(missing_id.json()["error"]["code"], "INVALID_ARGUMENT")
 
-        bad_settings = self.client.post("/projects", json={"project_id": "proj_bad_settings", "settings": "bad"})
+        missing_name = self.client.post("/projects", json={"project_id": "proj_missing_name"})
+        self.assertEqual(missing_name.status_code, 400)
+        self.assertEqual(missing_name.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_settings = self.client.post(
+            "/projects",
+            json={"project_id": "proj_bad_settings", "project_name": "Bad Settings", "settings": "bad"},
+        )
         self.assertEqual(bad_settings.status_code, 400)
         self.assertEqual(bad_settings.json()["error"]["code"], "INVALID_ARGUMENT")
 
     def test_create_project_returns_conflict_when_duplicate(self):
-        first = self.client.post("/projects", json={"project_id": "proj_dup"})
+        first = self.client.post("/projects", json={"project_id": "proj_dup", "project_name": "Dup Project"})
         self.assertEqual(first.status_code, 201)
-        second = self.client.post("/projects", json={"project_id": "proj_dup"})
+        second = self.client.post("/projects", json={"project_id": "proj_dup", "project_name": "Dup Project"})
         self.assertEqual(second.status_code, 409)
         self.assertEqual(second.json()["error"]["code"], "CONFLICT")
+
+    def test_list_projects(self):
+        self.client.post("/projects", json={"project_id": "proj_list_a", "project_name": "List A"})
+        self.client.post("/projects", json={"project_id": "proj_list_b", "project_name": "List B"})
+        self.client.post("/projects", json={"project_id": "proj_list_c", "project_name": "List C"})
+
+        response = self.client.get("/projects", params={"limit": 2})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["next_cursor"], None)
+        self.assertEqual(len(payload["items"]), 2)
+        self.assertEqual(payload["items"][0]["project_id"], "proj_list_c")
+        self.assertEqual(payload["items"][0]["project_name"], "List C")
+        self.assertEqual(payload["items"][1]["project_id"], "proj_list_b")
+        self.assertEqual(payload["items"][1]["project_name"], "List B")
+
+    def test_list_projects_is_tenant_scoped(self):
+        self.client.post(
+            "/projects",
+            json={"project_id": "proj_local_only", "project_name": "Local Only"},
+            headers={"X-Tenant-Id": "tenant_local"},
+        )
+        self.client.post(
+            "/projects",
+            json={"project_id": "proj_other_only", "project_name": "Other Only"},
+            headers={"X-Tenant-Id": "tenant_other"},
+        )
+
+        local_response = self.client.get("/projects", headers={"X-Tenant-Id": "tenant_local"})
+        self.assertEqual(local_response.status_code, 200)
+        self.assertEqual([item["project_id"] for item in local_response.json()["items"]], ["proj_local_only"])
+
+        other_response = self.client.get("/projects", headers={"X-Tenant-Id": "tenant_other"})
+        self.assertEqual(other_response.status_code, 200)
+        self.assertEqual([item["project_id"] for item in other_response.json()["items"]], ["proj_other_only"])
+
+    def test_list_projects_validates_limit(self):
+        response = self.client.get("/projects", params={"limit": "not_an_int"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "INVALID_ARGUMENT")
 
     def test_upsert_project_workflow_definition_enables_direct_orchestrator_mode(self):
         project_id = "proj_registry_direct"
@@ -153,6 +229,7 @@ class ApiTests(unittest.TestCase):
             "/projects",
             json={
                 "project_id": project_id,
+                "project_name": "Registry Direct",
                 "settings": {"orchestrator_enabled": True},
             },
         )
@@ -198,6 +275,7 @@ class ApiTests(unittest.TestCase):
             "/projects",
             json={
                 "project_id": project_id,
+                "project_name": "Registry Scope",
                 "settings": {"orchestrator_enabled": True},
             },
         )
@@ -234,6 +312,7 @@ class ApiTests(unittest.TestCase):
             "/projects",
             json={
                 "project_id": project_id,
+                "project_name": "Registry Orchestrator",
                 "settings": {"orchestrator_enabled": True},
             },
         )
@@ -649,6 +728,152 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["error"]["code"], "INVALID_ARGUMENT")
 
+    def test_start_run_applies_state_and_output_projection_controls(self):
+        workflow_id, _ = self._create_output_workflow()
+        response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={
+                "inputs": {
+                    "documents": [
+                        {
+                            "doc_id": "doc_1",
+                            "pages": [
+                                {
+                                    "page_number": 1,
+                                    "artifact_ref": "artf_1",
+                                    "image_base64": "AAAABBBB",
+                                    "text": "hello",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "state_exclude_paths": ["documents.pages.image_base64"],
+                "output_include_paths": ["result.claim_id"],
+            },
+            headers=self._with_project(),
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        page = payload["state"]["documents"][0]["pages"][0]
+        self.assertNotIn("image_base64", page)
+        self.assertEqual(page.get("artifact_ref"), "artf_1")
+        self.assertEqual(payload.get("outputs"), {"result": {"claim_id": "clm_1"}})
+
+        get_response = self.client.get(f"/runs/{payload['run_id']}", headers=self._with_project())
+        self.assertEqual(get_response.status_code, 200)
+        loaded = get_response.json()
+        self.assertEqual(loaded.get("outputs"), {"result": {"claim_id": "clm_1"}})
+        loaded_page = loaded["state"]["documents"][0]["pages"][0]
+        self.assertNotIn("image_base64", loaded_page)
+
+    def test_start_run_validates_projection_controls(self):
+        workflow_id, _ = self._create_workflow()
+        bad_type = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}, "state_exclude_paths": "documents"},
+            headers=self._with_project(),
+        )
+        self.assertEqual(bad_type.status_code, 400)
+        self.assertEqual(bad_type.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_path = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}, "output_include_paths": ["documents..image_base64"]},
+            headers=self._with_project(),
+        )
+        self.assertEqual(bad_path.status_code, 400)
+        self.assertEqual(bad_path.json()["error"]["code"], "projection.path_invalid")
+
+    def test_start_run_applies_version_projection_defaults_for_newly_published_versions(self):
+        workflow_id, _ = self._create_output_workflow()
+        response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={
+                "inputs": {
+                    "documents": [
+                        {
+                            "doc_id": "doc_1",
+                            "pages": [{"page_number": 1, "artifact_ref": "artf_1", "image_base64": "AAAABBBB"}],
+                        }
+                    ]
+                }
+            },
+            headers=self._with_project(),
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        page = payload["state"]["documents"][0]["pages"][0]
+        self.assertNotIn("image_base64", page)
+        self.assertEqual(payload.get("outputs"), {"result": {"claim_id": "clm_1", "decision": "approve", "raw": "x"}})
+        metadata = payload.get("metadata", {})
+        self.assertEqual(metadata.get("state_exclude_paths"), ["documents.pages.image_base64", "documents.image_base64"])
+
+    def test_start_run_keeps_legacy_behavior_without_version_defaults(self):
+        workflow_id, version_id = self._create_output_workflow()
+        version = self.workflow_store.versions[version_id]
+        content = dict(version.content)
+        content.pop("_workcore", None)
+        version.content = content
+
+        response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={
+                "version_id": version_id,
+                "inputs": {
+                    "documents": [
+                        {
+                            "doc_id": "doc_1",
+                            "pages": [{"page_number": 1, "artifact_ref": "artf_1", "image_base64": "AAAABBBB"}],
+                        }
+                    ]
+                },
+            },
+            headers=self._with_project(),
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        page = payload["state"]["documents"][0]["pages"][0]
+        self.assertEqual(page.get("image_base64"), "AAAABBBB")
+
+    def test_read_artifact_returns_content(self):
+        self.artifact_store.put(
+            "artf_local_1",
+            {"text": "payload"},
+            mime_type="application/json",
+            metadata={"source": "test"},
+            tenant_id="local",
+        )
+        response = self.client.get("/artifacts/artf_local_1")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload.get("artifact_ref"), "artf_local_1")
+        self.assertEqual(payload.get("mime_type"), "application/json")
+        self.assertEqual(payload.get("content"), {"text": "payload"})
+        self.assertEqual(payload.get("metadata"), {"source": "test"})
+
+    def test_read_artifact_returns_not_found_code(self):
+        response = self.client.get("/artifacts/artf_missing")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "artifact.not_found")
+
+    def test_read_artifact_returns_access_denied_code(self):
+        self.artifact_store.put("artf_tenant_a", {"text": "x"}, tenant_id="tenant_a")
+        response = self.client.get("/artifacts/artf_tenant_a", headers={"X-Tenant-Id": "tenant_b"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "artifact.access_denied")
+
+    def test_read_artifact_returns_expired_code(self):
+        self.artifact_store.put(
+            "artf_expired",
+            {"text": "x"},
+            tenant_id="local",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        response = self.client.get("/artifacts/artf_expired")
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.json()["error"]["code"], "artifact.expired")
+
     def test_start_run_requires_project_id(self):
         workflow_id, _ = self._create_workflow()
         response = self.client.post(f"/workflows/{workflow_id}/runs", json={"inputs": {}})
@@ -671,6 +896,171 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.json()["run_id"], second.json()["run_id"])
+
+    def test_capability_registry_create_and_list_versions(self):
+        create_response = self.client.post(
+            "/capabilities",
+            json={
+                "capability_id": "cap_agent_triage",
+                "version": "1.0.0",
+                "node_type": "agent",
+                "contract": {
+                    "inputs": {"type": "object"},
+                    "outputs": {"type": "object"},
+                    "constraints": {"timeout_s": 20},
+                    "retry_policy": {"max_retries": 1},
+                    "error_codes": ["ERR_TIMEOUT"],
+                },
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.json()
+        self.assertEqual(created["capability_id"], "cap_agent_triage")
+        self.assertEqual(created["version"], "1.0.0")
+
+        list_response = self.client.get("/capabilities", params={"capability_id": "cap_agent_triage"})
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.json()["items"]), 1)
+
+        versions_response = self.client.get("/capabilities/cap_agent_triage/versions")
+        self.assertEqual(versions_response.status_code, 200)
+        self.assertEqual(len(versions_response.json()["items"]), 1)
+        self.assertEqual(versions_response.json()["items"][0]["version"], "1.0.0")
+
+    def test_publish_rejects_unknown_capability_pin(self):
+        headers = self._with_project()
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "agent_1",
+                    "type": "agent",
+                    "config": {
+                        "instructions": "Classify",
+                        "capability_id": "cap_missing",
+                        "capability_version": "9.9.9",
+                    },
+                },
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [
+                {"source": "start", "target": "agent_1"},
+                {"source": "agent_1", "target": "end"},
+            ],
+            "variables_schema": {},
+        }
+        create_response = self.client.post("/workflows", json={"name": "Pinned capability wf", "draft": draft}, headers=headers)
+        self.assertEqual(create_response.status_code, 201)
+        workflow_id = create_response.json()["workflow_id"]
+
+        publish_response = self.client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+        self.assertEqual(publish_response.status_code, 400)
+        error = publish_response.json()["error"]
+        self.assertEqual(error["code"], "INVALID_ARGUMENT")
+        details = error.get("details") or []
+        self.assertTrue(any("unknown capability cap_missing@9.9.9" in item for item in details))
+
+    def test_start_run_with_pinned_capability_writes_ledger(self):
+        headers = self._with_project()
+        capability_response = self.client.post(
+            "/capabilities",
+            json={
+                "capability_id": "cap_agent_mock",
+                "version": "1.0.0",
+                "node_type": "agent",
+                "contract": {
+                    "constraints": {"timeout_s": 30},
+                    "retry_policy": {"max_retries": 0},
+                    "error_codes": [],
+                },
+            },
+            headers=headers,
+        )
+        self.assertEqual(capability_response.status_code, 201)
+
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "agent_1",
+                    "type": "agent",
+                    "config": {
+                        "instructions": "Return short answer",
+                        "capability_id": "cap_agent_mock",
+                        "capability_version": "1.0.0",
+                    },
+                },
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [
+                {"source": "start", "target": "agent_1"},
+                {"source": "agent_1", "target": "end"},
+            ],
+            "variables_schema": {},
+        }
+        create_response = self.client.post("/workflows", json={"name": "Ledger wf", "draft": draft}, headers=headers)
+        self.assertEqual(create_response.status_code, 201)
+        workflow_id = create_response.json()["workflow_id"]
+        publish_response = self.client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+        self.assertEqual(publish_response.status_code, 200)
+
+        run_response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}, "mode": "test"},
+            headers=headers,
+        )
+        self.assertEqual(run_response.status_code, 201)
+        run_id = run_response.json()["run_id"]
+
+        ledger_response = self.client.get(f"/runs/{run_id}/ledger", headers=headers)
+        self.assertEqual(ledger_response.status_code, 200)
+        items = ledger_response.json()["items"]
+        self.assertTrue(items)
+        self.assertTrue(any(item.get("event_type") == "node_started" for item in items))
+        self.assertTrue(
+            any(
+                item.get("step_id") == "agent_1"
+                and item.get("capability_id") == "cap_agent_mock"
+                and item.get("capability_version") == "1.0.0"
+                for item in items
+            )
+        )
+
+    def test_handoff_package_create_and_deterministic_replay(self):
+        workflow_id, version_id = self._create_workflow()
+        headers = self._with_project()
+        create_response = self.client.post(
+            "/handoff/packages",
+            json={
+                "workflow_id": workflow_id,
+                "version_id": version_id,
+                "replay_mode": "deterministic",
+                "package": {
+                    "context": {"input": "hello"},
+                    "constraints": {"latency_ms": 5000},
+                    "expected_result": {"status": "completed"},
+                    "acceptance_checks": [{"id": "run_completed", "type": "status_equals", "value": "COMPLETED"}],
+                },
+            },
+            headers=headers,
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.json()
+        self.assertEqual(created["replay_mode"], "deterministic")
+        self.assertEqual(created["status"], "STARTED")
+        self.assertTrue(created.get("handoff_id"))
+        first_run_id = created.get("run_id")
+        self.assertTrue(first_run_id)
+
+        replay_response = self.client.post(
+            f"/handoff/packages/{created['handoff_id']}/replay",
+            headers=headers,
+        )
+        self.assertEqual(replay_response.status_code, 200)
+        replayed = replay_response.json()
+        self.assertEqual(replayed["status"], "REPLAYED")
+        self.assertTrue(replayed.get("run_id"))
+        self.assertNotEqual(first_run_id, replayed.get("run_id"))
 
     def test_sse_snapshot(self):
         workflow_id, _ = self._create_workflow()
@@ -923,6 +1313,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Previous API version", markdown_response.text)
         self.assertIn("Current API version", markdown_response.text)
         self.assertIn("Special instructions and examples", markdown_response.text)
+        self.assertIn("set_state.assignments[]", markdown_response.text)
         self.assertIn("Example: project bootstrap + registry binding", markdown_response.text)
         self.assertIn("Example: orchestrator message", markdown_response.text)
 
@@ -933,6 +1324,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("urls", payload)
         self.assertIn("schemas", payload)
         self.assertIn("integration_logs", payload["urls"])
+        self.assertIn("projects_list", payload["urls"])
         self.assertIn("projects_create", payload["urls"])
         self.assertIn("project_orchestrator_upsert_template", payload["urls"])
         self.assertIn("project_workflow_definition_upsert_template", payload["urls"])
@@ -947,7 +1339,9 @@ class ApiTests(unittest.TestCase):
 
         draft_schema_response = self.client.get("/schemas/workflow-draft.schema.json")
         self.assertEqual(draft_schema_response.status_code, 200)
-        self.assertEqual(draft_schema_response.json()["title"], "WorkCore Workflow Draft")
+        draft_schema_payload = draft_schema_response.json()
+        self.assertEqual(draft_schema_payload["title"], "WorkCore Workflow Draft")
+        self.assertIn("assignments", draft_schema_payload["$defs"]["setStateConfig"]["properties"])
 
         export_schema_response = self.client.get("/schemas/workflow-export-v1.schema.json")
         self.assertEqual(export_schema_response.status_code, 200)
@@ -962,6 +1356,10 @@ class ApiTests(unittest.TestCase):
         report = integration_test_json.json()
         self.assertEqual(report["summary"]["status"], "PASS")
         self.assertGreater(report["summary"]["total"], 0)
+        self.assertTrue(
+            any(check.get("id") == "draft_schema_set_state_batch_assignments" for check in report["checks"])
+        )
+        self.assertIn("projects_list", report["urls"])
         self.assertIn("projects_create", report["urls"])
         self.assertIn("project_orchestrator_upsert_template", report["urls"])
         self.assertIn("project_workflow_definition_upsert_template", report["urls"])
@@ -995,6 +1393,32 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(valid_draft_response.status_code, 200)
         self.assertTrue(valid_draft_response.json()["valid"])
+
+        valid_batch_set_state = self.client.post(
+            "/agent-integration-test/validate-draft",
+            json={
+                "draft": {
+                    "nodes": [
+                        {"id": "start", "type": "start"},
+                        {
+                            "id": "set",
+                            "type": "set_state",
+                            "config": {
+                                "assignments": [
+                                    {"target": "budget.base", "expression": "inputs['amount']"},
+                                    {"target": "budget.total", "expression": "state['budget']['base'] + 10"},
+                                ]
+                            },
+                        },
+                        {"id": "end", "type": "end"},
+                    ],
+                    "edges": [{"source": "start", "target": "set"}, {"source": "set", "target": "end"}],
+                    "variables_schema": {},
+                }
+            },
+        )
+        self.assertEqual(valid_batch_set_state.status_code, 200)
+        self.assertTrue(valid_batch_set_state.json()["valid"])
 
         invalid_draft_response = self.client.post(
             "/agent-integration-test/validate-draft",
@@ -1072,13 +1496,26 @@ class ApiAuthTests(unittest.TestCase):
             os.environ["WORKCORE_API_AUTH_TOKEN"] = self._previous_token
 
     def test_auth_required_for_api_routes(self):
-        unauthorized_project = self.client.post("/projects", json={"project_id": "proj_auth_blocked"})
+        unauthorized_list = self.client.get("/projects")
+        self.assertEqual(unauthorized_list.status_code, 401)
+        self.assertEqual(unauthorized_list.json()["error"]["code"], "UNAUTHORIZED")
+
+        unauthorized_project = self.client.post(
+            "/projects",
+            json={"project_id": "proj_auth_blocked", "project_name": "Auth Blocked"},
+        )
         self.assertEqual(unauthorized_project.status_code, 401)
         self.assertEqual(unauthorized_project.json()["error"]["code"], "UNAUTHORIZED")
 
+        authorized_list = self.client.get(
+            "/projects",
+            headers={"Authorization": "Bearer test_api_token"},
+        )
+        self.assertEqual(authorized_list.status_code, 200)
+
         authorized_project = self.client.post(
             "/projects",
-            json={"project_id": "proj_auth_allowed"},
+            json={"project_id": "proj_auth_allowed", "project_name": "Auth Allowed"},
             headers={"Authorization": "Bearer test_api_token"},
         )
         self.assertEqual(authorized_project.status_code, 201)

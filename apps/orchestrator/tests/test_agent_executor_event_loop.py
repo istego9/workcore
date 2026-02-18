@@ -225,7 +225,22 @@ class AgentExecutorLoopTests(unittest.TestCase):
         executor = CaptureConfigAgentExecutor()
         run = SimpleNamespace(
             id="run_missing_user_input",
-            inputs={"documents": [{"doc_id": "doc_1"}]},
+            inputs={
+                "documents": [
+                    {
+                        "doc_id": "doc_1",
+                        "filename": "scan.png",
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "artifact_ref": "artf_1",
+                                "image_base64": "AAAABBBB",
+                                "text": "hello world",
+                            }
+                        ],
+                    }
+                ]
+            },
             state={"phase": "classification"},
             node_outputs={"start": {"phase": "classification"}},
         )
@@ -249,7 +264,16 @@ class AgentExecutorLoopTests(unittest.TestCase):
         captured = executor.captured_config
         self.assertIsNotNone(captured)
         payload = json.loads(captured.user_input or "{}")
-        self.assertEqual(payload.get("input"), run.inputs)
+        input_docs = payload.get("input", {}).get("documents") or []
+        self.assertEqual(len(input_docs), 1)
+        self.assertEqual(input_docs[0].get("doc_id"), "doc_1")
+        self.assertEqual(input_docs[0].get("page_count"), 1)
+        self.assertEqual(input_docs[0].get("filename"), "scan.png")
+        page = (input_docs[0].get("pages") or [{}])[0]
+        self.assertEqual(page.get("artifact_ref"), "artf_1")
+        self.assertTrue(page.get("has_image_base64"))
+        self.assertNotIn("image_base64", page)
+        self.assertNotIn("text", page)
         self.assertEqual(payload.get("state"), run.state)
         self.assertEqual(payload.get("node_outputs"), run.node_outputs)
 

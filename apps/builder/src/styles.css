@@ -30,8 +30,64 @@ body {
   min-height: 100vh;
 }
 
+.header-shell {
+  background: rgba(255, 255, 255, 0.8);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  backdrop-filter: blur(14px);
+}
+
 .header {
-  backdrop-filter: blur(12px);
+  min-width: 0;
+  gap: 12px;
+}
+
+.header-brand {
+  flex: 0 0 auto;
+}
+
+.header-controls-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 2px;
+  scrollbar-width: thin;
+}
+
+.header-controls-wrap::-webkit-scrollbar {
+  height: 8px;
+}
+
+.header-controls-wrap::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.38);
+  border-radius: 999px;
+}
+
+.header-controls {
+  min-width: max-content;
+}
+
+.header-controls .mantine-Input-input {
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.header-controls .mantine-Button-root[data-variant='default'] {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(15, 23, 42, 0.16);
+}
+
+.header-controls .mantine-Button-root[data-variant='default']:hover {
+  background: #ffffff;
+}
+
+.header-controls .mantine-Divider-root {
+  margin-inline: 2px;
+}
+
+.header-project-input,
+.header-workflow-select,
+.header-runmode-select {
+  flex: 0 0 auto;
 }
 
 .panel {
@@ -70,11 +126,30 @@ body {
   transform-origin: top left;
 }
 
+.canvas-zoom-controls {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 3;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+}
+
+.canvas-zoom-value {
+  min-width: 46px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .edge-layer {
   position: absolute;
   inset: 0;
   pointer-events: none;
   overflow: visible;
+  transform-origin: top left;
 }
 
 .edge-layer path {

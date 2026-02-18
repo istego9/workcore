@@ -13,8 +13,10 @@ Status: Draft (Phase 0)
 ## System boundaries (logical)
 - Builder UI: graph editor, validation, draft/publish UI, run view.
 - Workflow Service: workflows, drafts, publish/rollback, versions.
+- Capability Registry Service: versioned capability contracts and step-level capability pin validation.
 - Orchestrator Service: project routing, intent orchestration, runs, node_runs, interrupts, execution semantics.
 - Streaming Service: SSE over run events (snapshot + replay).
+- Handoff Service: atomic workflow package intake and deterministic replay bootstrap.
 - Webhooks Service: inbound triggers and outbound callbacks.
 - ChatKit Server: advanced integration, sessions/threads, widgets/actions.
 - Integrations Layer: Agents SDK executor, MCP client, object storage.
@@ -54,6 +56,8 @@ Ordering guarantees:
 ## API boundary map (logical ownership)
 - Workflow Service: /workflows, /workflows/{id}/draft, /workflows/{id}/publish, /workflows/{id}/rollback, /workflows/{id}/versions
 - Orchestrator Service: /workflows/{id}/runs, /runs/{run_id}, /runs/{run_id}/cancel, /runs/{run_id}/rerun-node, /runs/{run_id}/interrupts/*
+- Capability Registry Service: /capabilities, /capabilities/{capability_id}/versions
+- Handoff Service: /handoff/packages, /handoff/packages/{handoff_id}/replay
 - Project Router / Orchestrator entry: /orchestrator/messages, /orchestrator/sessions/{session_id}/stack
 - Streaming Service: /runs/{run_id}/stream (SSE)
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*
@@ -105,3 +109,4 @@ Ordering guarantees:
 - ADR-0005: Headless testing is the default for UI/E2E.
 - ADR-0006: Vite + Mantine for the builder UI.
 - ADR-0007: Runtime run-state is persisted in Postgres.
+- ADR-0009: Artifact-reference defaults and run projection rollout.

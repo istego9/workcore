@@ -7,11 +7,14 @@ Status: Draft
 - Orchestrator emits runtime events (run_started, node_completed, etc.).
 - EventPublisher wraps runtime events into EventEnvelope (event_id + timestamp).
 - Events are persisted in EventStore and published to EventBus.
+- The same runtime events are also projected into immutable `run_ledger` records for RCA/audit use cases.
 
 ## Replay and snapshot
 - SSE endpoint accepts Last-Event-ID.
 - Replay: EventStore returns events after the given ID.
 - Snapshot: optional SnapshotProvider can emit a snapshot event before replay when Last-Event-ID is not provided.
+- Snapshot payloads should honor run projection settings (`state_exclude_paths`, `output_include_paths`)
+  so SSE reconnect does not re-expand large document payloads.
 
 ## SSE endpoint
 - `/runs/{run_id}/stream`

@@ -263,14 +263,45 @@ class OrchestratorEngine:
             run.branch_selection[node.id] = exit_target
 
     def _handle_set_state(self, run: Run, node: Node, emit) -> None:
-        target = node.config.get("target")
-        expression = node.config.get("expression")
-        if not target or expression is None:
-            raise RuntimeError("Set State requires target and expression")
+        assignments = self._resolve_set_state_assignments(node)
+        patch: Dict[str, Any] = {}
+        single_value: Any = None
 
-        value = self._eval(expression, self._context(run))
-        self._set_path(run.state, target, value)
-        run.node_outputs[node.id] = deepcopy(value)
+        for target, expression in assignments:
+            value = self._eval(expression, self._context(run))
+            self._set_path(run.state, target, value)
+            single_value = deepcopy(value)
+            if len(assignments) > 1:
+                self._set_path(patch, target, deepcopy(value))
+
+        run.node_outputs[node.id] = single_value if len(assignments) == 1 else patch
+
+    @staticmethod
+    def _resolve_set_state_assignments(node: Node) -> List[tuple[str, str]]:
+        config = node.config or {}
+        assignments_raw = config.get("assignments")
+        assignments: List[tuple[str, str]] = []
+
+        if isinstance(assignments_raw, list) and assignments_raw:
+            for idx, raw_assignment in enumerate(assignments_raw):
+                if not isinstance(raw_assignment, dict):
+                    raise RuntimeError(f"Set State assignments[{idx}] must be an object")
+                target = raw_assignment.get("target")
+                expression = raw_assignment.get("expression")
+                target_value = target.strip() if isinstance(target, str) else ""
+                expression_value = expression.strip() if isinstance(expression, str) else ""
+                if not target_value or not expression_value:
+                    raise RuntimeError(f"Set State assignments[{idx}] requires target and expression")
+                assignments.append((target_value, expression_value))
+            return assignments
+
+        target = config.get("target")
+        expression = config.get("expression")
+        target_value = target.strip() if isinstance(target, str) else ""
+        expression_value = expression.strip() if isinstance(expression, str) else ""
+        if not target_value or not expression_value:
+            raise RuntimeError("Set State requires target and expression or non-empty assignments")
+        return [(target_value, expression_value)]
 
     def _handle_interaction(self, run: Run, node: Node, emit) -> None:
         prompt = node.config.get("prompt", "")

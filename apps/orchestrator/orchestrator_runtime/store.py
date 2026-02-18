@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -42,9 +43,30 @@ def _parse_list(value: Any) -> List[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _derive_project_name(project_id: str) -> str:
+    normalized_id = str(project_id or "").strip()
+    if not normalized_id:
+        return ""
+    base = re.sub(r"^(proj|project)[_-]+", "", normalized_id, flags=re.IGNORECASE)
+    base = re.sub(r"[_-]+", " ", base)
+    base = re.sub(r"\s+", " ", base).strip()
+    candidate = base or normalized_id
+    return candidate.title()
+
+
+def _resolve_project_name(project_id: str, project_name: Optional[str]) -> str:
+    if isinstance(project_name, str):
+        normalized = project_name.strip()
+        if normalized:
+            return normalized
+    derived = _derive_project_name(project_id)
+    return derived or str(project_id or "").strip()
+
+
 @dataclass
 class ProjectRecord:
     project_id: str
+    project_name: str
     tenant_id: str
     default_orchestrator_id: Optional[str]
     settings: Dict[str, Any]
@@ -139,6 +161,7 @@ class OrchestrationStore(Protocol):
         self,
         project_id: str,
         tenant_id: str,
+        project_name: Optional[str] = None,
         default_orchestrator_id: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> ProjectRecord:
@@ -147,10 +170,14 @@ class OrchestrationStore(Protocol):
     async def get_project(self, project_id: str, tenant_id: str) -> Optional[ProjectRecord]:
         ...
 
+    async def list_projects(self, tenant_id: str, limit: int = 50) -> List[ProjectRecord]:
+        ...
+
     async def upsert_project(
         self,
         project_id: str,
         tenant_id: str,
+        project_name: Optional[str] = None,
         default_orchestrator_id: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> ProjectRecord:
@@ -271,6 +298,7 @@ class InMemoryOrchestrationStore:
         self,
         project_id: str,
         tenant_id: str,
+        project_name: Optional[str] = None,
         default_orchestrator_id: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> ProjectRecord:
@@ -280,6 +308,7 @@ class InMemoryOrchestrationStore:
         now = _now()
         record = ProjectRecord(
             project_id=project_id,
+            project_name=_resolve_project_name(project_id, project_name),
             tenant_id=tenant_id,
             default_orchestrator_id=default_orchestrator_id,
             settings=dict(settings or {}),
@@ -292,10 +321,17 @@ class InMemoryOrchestrationStore:
     async def get_project(self, project_id: str, tenant_id: str) -> Optional[ProjectRecord]:
         return self.projects.get((tenant_id, project_id))
 
+    async def list_projects(self, tenant_id: str, limit: int = 50) -> List[ProjectRecord]:
+        items = [item for item in self.projects.values() if item.tenant_id == tenant_id]
+        items.sort(key=lambda item: item.project_id)
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return items[:limit]
+
     async def upsert_project(
         self,
         project_id: str,
         tenant_id: str,
+        project_name: Optional[str] = None,
         default_orchestrator_id: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> ProjectRecord:
@@ -303,6 +339,7 @@ class InMemoryOrchestrationStore:
         existing = self.projects.get(key)
         now = _now()
         if existing:
+            existing.project_name = _resolve_project_name(project_id, project_name or existing.project_name)
             if default_orchestrator_id:
                 existing.default_orchestrator_id = default_orchestrator_id
             if settings is not None:
@@ -311,6 +348,7 @@ class InMemoryOrchestrationStore:
             return existing
         record = ProjectRecord(
             project_id=project_id,
+            project_name=_resolve_project_name(project_id, project_name),
             tenant_id=tenant_id,
             default_orchestrator_id=default_orchestrator_id,
             settings=dict(settings or {}),
@@ -533,17 +571,20 @@ class PostgresOrchestrationStore:
         self,
         project_id: str,
         tenant_id: str,
+        project_name: Optional[str] = None,
         default_orchestrator_id: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> ProjectRecord:
+        resolved_project_name = _resolve_project_name(project_id, project_name)
         row = await self.pool.fetchrow(
             """
-            insert into projects (project_id, tenant_id, default_orchestrator_id, settings)
-            values ($1, $2, $3, $4::jsonb)
+            insert into projects (project_id, project_name, tenant_id, default_orchestrator_id, settings)
+            values ($1, $2, $3, $4, $5::jsonb)
             on conflict (tenant_id, project_id) do nothing
-            returning project_id, tenant_id, default_orchestrator_id, settings, created_at, updated_at
+            returning project_id, project_name, tenant_id, default_orchestrator_id, settings, created_at, updated_at
             """,
             project_id,
+            resolved_project_name,
             tenant_id,
             default_orchestrator_id,
             _jsonb(settings or {}),
@@ -552,6 +593,7 @@ class PostgresOrchestrationStore:
             raise ProjectConflictError("project already exists")
         return ProjectRecord(
             project_id=row["project_id"],
+            project_name=_resolve_project_name(row["project_id"], row["project_name"]),
             tenant_id=row["tenant_id"],
             default_orchestrator_id=row["default_orchestrator_id"],
             settings=_parse_dict(row["settings"]),
@@ -562,7 +604,7 @@ class PostgresOrchestrationStore:
     async def get_project(self, project_id: str, tenant_id: str) -> Optional[ProjectRecord]:
         row = await self.pool.fetchrow(
             """
-            select project_id, tenant_id, default_orchestrator_id, settings, created_at, updated_at
+            select project_id, project_name, tenant_id, default_orchestrator_id, settings, created_at, updated_at
             from projects
             where project_id = $1 and tenant_id = $2
             """,
@@ -573,6 +615,7 @@ class PostgresOrchestrationStore:
             return None
         return ProjectRecord(
             project_id=row["project_id"],
+            project_name=_resolve_project_name(row["project_id"], row["project_name"]),
             tenant_id=row["tenant_id"],
             default_orchestrator_id=row["default_orchestrator_id"],
             settings=_parse_dict(row["settings"]),
@@ -580,23 +623,52 @@ class PostgresOrchestrationStore:
             updated_at=row["updated_at"],
         )
 
+    async def list_projects(self, tenant_id: str, limit: int = 50) -> List[ProjectRecord]:
+        rows = await self.pool.fetch(
+            """
+            select project_id, project_name, tenant_id, default_orchestrator_id, settings, created_at, updated_at
+            from projects
+            where tenant_id = $1
+            order by updated_at desc, project_name asc, project_id asc
+            limit $2
+            """,
+            tenant_id,
+            limit,
+        )
+        return [
+            ProjectRecord(
+                project_id=row["project_id"],
+                project_name=_resolve_project_name(row["project_id"], row["project_name"]),
+                tenant_id=row["tenant_id"],
+                default_orchestrator_id=row["default_orchestrator_id"],
+                settings=_parse_dict(row["settings"]),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
     async def upsert_project(
         self,
         project_id: str,
         tenant_id: str,
+        project_name: Optional[str] = None,
         default_orchestrator_id: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> ProjectRecord:
+        resolved_project_name = _resolve_project_name(project_id, project_name)
         await self.pool.execute(
             """
-            insert into projects (project_id, tenant_id, default_orchestrator_id, settings)
-            values ($1, $2, $3, $4::jsonb)
+            insert into projects (project_id, project_name, tenant_id, default_orchestrator_id, settings)
+            values ($1, $2, $3, $4, $5::jsonb)
             on conflict (tenant_id, project_id) do update
-              set default_orchestrator_id = coalesce(excluded.default_orchestrator_id, projects.default_orchestrator_id),
+              set project_name = coalesce(excluded.project_name, projects.project_name),
+                  default_orchestrator_id = coalesce(excluded.default_orchestrator_id, projects.default_orchestrator_id),
                   settings = coalesce(excluded.settings, projects.settings),
                   updated_at = now()
             """,
             project_id,
+            resolved_project_name,
             tenant_id,
             default_orchestrator_id,
             _jsonb(settings or {}),

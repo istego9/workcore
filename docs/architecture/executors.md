@@ -50,6 +50,9 @@ Status: Draft
   - empty `output_format` when `output_schema` is present (compatibility path).
 - If an Agent node omits `user_input`, runtime provides a default JSON payload:
   `{ "input": <run.inputs>, "state": <run.state>, "node_outputs": <run.node_outputs> }`.
+- For document inputs, metadata-first payloads are preferred by default:
+  - `doc_id`, `filename`, `mime_type`, `page_count`, optional preview metadata.
+  - full document/page bodies are fetched explicitly via artifact read operation (for example `read_artifact(ref)`), not automatically injected into prompts.
 - After validation, runtime can propagate Agent output into run state:
   - `state_target` writes full output to explicit path.
   - Structured JSON output auto-merges top-level object keys into state unless

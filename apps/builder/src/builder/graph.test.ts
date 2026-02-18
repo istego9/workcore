@@ -24,6 +24,34 @@ describe('validateGraph', () => {
     const issues = validateGraph([start, loop, end], edges);
     expect(issues.some((issue) => issue.message.includes('While'))).toBe(true);
   });
+
+  it('accepts set_state batch assignments without legacy target/expression', () => {
+    const start = { ...createNode('start', { x: 0, y: 0 }), id: 'start' };
+    const setter = {
+      ...createNode('set_state', { x: 120, y: 0 }),
+      id: 'set',
+      config: {
+        assignments: [{ target: 'budget.total', expression: "inputs['amount']" }]
+      }
+    };
+    const end = { ...createNode('end', { x: 240, y: 0 }), id: 'end' };
+    const issues = validateGraph([start, setter, end], [edge('start', 'set'), edge('set', 'end')]);
+    expect(issues.some((issue) => issue.nodeId === 'set' && issue.level === 'error')).toBe(false);
+  });
+
+  it('flags set_state when assignments contain incomplete items', () => {
+    const start = { ...createNode('start', { x: 0, y: 0 }), id: 'start' };
+    const setter = {
+      ...createNode('set_state', { x: 120, y: 0 }),
+      id: 'set',
+      config: {
+        assignments: [{ target: 'budget.total', expression: '' }]
+      }
+    };
+    const end = { ...createNode('end', { x: 240, y: 0 }), id: 'end' };
+    const issues = validateGraph([start, setter, end], [edge('start', 'set'), edge('set', 'end')]);
+    expect(issues.some((issue) => issue.message.includes('assignments'))).toBe(true);
+  });
 });
 
 describe('autoLayoutNodes', () => {

@@ -10,6 +10,7 @@ class ProjectRouterTests(unittest.IsolatedAsyncioTestCase):
         await self.store.upsert_project(
             project_id="proj_router",
             tenant_id="local",
+            project_name="Project Router",
             default_orchestrator_id="orc_default",
             settings={"orchestrator_enabled": True},
         )
