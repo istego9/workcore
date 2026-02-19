@@ -2965,6 +2965,17 @@ def create_app(
         )
         return _json(request, payload)
 
+    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        _integration_log(
+            request,
+            "api.unhandled_exception",
+            str(exc),
+            level="ERROR",
+            status_code=500,
+            context={"exception_type": exc.__class__.__name__},
+        )
+        return _error(request, "INTERNAL", "internal server error", 500)
+
     routes = [
         Route("/health", health),
         Route("/openapi.yaml", openapi_spec),
@@ -3015,7 +3026,11 @@ def create_app(
         Route("/webhooks/outbound/{subscription_id}", delete_outbound, methods=["DELETE"]),
     ]
 
-    app = Starlette(routes=routes, lifespan=lifespan)
+    app = Starlette(
+        routes=routes,
+        lifespan=lifespan,
+        exception_handlers={Exception: _unhandled_exception},
+    )
     app.state.api_context = ctx
     api_auth_token = get_env("WORKCORE_API_AUTH_TOKEN")
 

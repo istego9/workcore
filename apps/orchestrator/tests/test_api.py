@@ -1441,6 +1441,47 @@ class ApiTests(unittest.TestCase):
         self.assertIn("correlation_id", payload)
         self.assertEqual(payload["error"]["code"], "NOT_FOUND")
 
+    def test_start_run_unhandled_exception_returns_json_error_envelope(self):
+        workflow_store = InMemoryWorkflowStore()
+        artifact_store = InMemoryArtifactStore()
+        with TestClient(
+            create_app(workflow_store=workflow_store, artifact_store=artifact_store),
+            raise_server_exceptions=False,
+        ) as client:
+            headers = {"X-Project-Id": "proj_unhandled", "X-Correlation-Id": "corr_unhandled"}
+            draft = {
+                "nodes": [{"id": "start", "type": "start"}, {"id": "end", "type": "end"}],
+                "edges": [{"source": "start", "target": "end"}],
+                "variables_schema": {},
+            }
+            create_response = client.post("/workflows", json={"name": "Unhandled workflow", "draft": draft}, headers=headers)
+            self.assertEqual(create_response.status_code, 201)
+            workflow_id = create_response.json()["workflow_id"]
+            publish_response = client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+            self.assertEqual(publish_response.status_code, 200)
+
+            run_store = client.app.state.api_context.run_store
+            original_save = run_store.save
+
+            def _boom(*args, **kwargs):
+                raise RuntimeError("run store unavailable")
+
+            run_store.save = _boom
+            try:
+                response = client.post(
+                    f"/workflows/{workflow_id}/runs",
+                    json={"inputs": {}},
+                    headers=headers,
+                )
+            finally:
+                run_store.save = original_save
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.headers.get("content-type"), "application/json")
+        payload = response.json()
+        self.assertEqual(payload["error"]["code"], "INTERNAL")
+        self.assertEqual(payload["correlation_id"], "corr_unhandled")
+
     def test_openapi_and_reference_endpoints(self):
         openapi_response = self.client.get("/openapi.yaml")
         self.assertEqual(openapi_response.status_code, 200)
