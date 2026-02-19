@@ -1,10 +1,11 @@
+import json
 import os
 import unittest
 from pathlib import Path
 
 import asyncpg
 
-from apps.orchestrator.api.store import InMemoryRunStore, PostgresRunStore, create_run_store
+from apps.orchestrator.api.store import InMemoryRunStore, PostgresRunStore, _jsonb, create_run_store
 from apps.orchestrator.api.workflow_store import PostgresWorkflowStore
 from apps.orchestrator.runtime.models import Interrupt, NodeRun, Run
 
@@ -14,6 +15,18 @@ def _database_url() -> str | None:
 
 
 class InMemoryRunStoreTests(unittest.TestCase):
+    def test_jsonb_sanitizes_nul_bytes(self):
+        payload = {
+            "text": "ab\x00cd",
+            "nested": [{"k\x00ey": "v\x00alue"}, "x\x00y"],
+        }
+        encoded = _jsonb(payload)
+        self.assertNotIn("\\u0000", encoded)
+        decoded = json.loads(encoded)
+        self.assertEqual(decoded["text"], "abcd")
+        self.assertEqual(decoded["nested"][0], {"key": "value"})
+        self.assertEqual(decoded["nested"][1], "xy")
+
     def test_list_filters(self):
         store = InMemoryRunStore()
         run_a = Run(
@@ -281,6 +294,34 @@ class PostgresRunStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("run_pg_a", completed_ids)
         self.assertNotIn("run_pg_b", completed_ids)
         self.assertNotIn("run_pg_c", completed_ids)
+
+    async def test_save_strips_nul_bytes_from_jsonb_payloads(self):
+        run = Run(
+            id="run_pg_nul",
+            workflow_id=self.workflow_id,
+            version_id=self.version_id,
+            status="COMPLETED",
+            inputs={"submission_id": "sub\x00_71fc2d982d3b"},
+            state={"documents": [{"doc_id": "d1", "text": "hel\x00lo"}]},
+            outputs={"result": {"message": "ok\x00"}},
+            metadata={"tenant_id": "tenant_pg"},
+            node_runs={
+                "node_1": NodeRun(
+                    node_id="node_1",
+                    status="ERROR",
+                    last_error="bad\x00error",
+                )
+            },
+        )
+
+        await self.run_store.save(run, tenant_id="tenant_pg")
+        loaded = await self.run_store.get(run.id, tenant_id="tenant_pg")
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.inputs.get("submission_id"), "sub_71fc2d982d3b")
+        self.assertEqual(loaded.state.get("documents", [{}])[0].get("text"), "hello")
+        self.assertEqual(loaded.outputs, {"result": {"message": "ok"}})
+        self.assertEqual(loaded.node_runs["node_1"].last_error, "baderror")
 
     async def test_create_run_store_uses_postgres_when_pool_exists(self):
         store = await create_run_store(self.workflow_store)

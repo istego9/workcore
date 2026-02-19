@@ -35,6 +35,22 @@ class IdempotencyStore(Protocol):
         ...
 
 
+def _sanitize_for_jsonb(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_sanitize_for_jsonb(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_jsonb(item) for item in value]
+    if isinstance(value, dict):
+        sanitized: Dict[Any, Any] = {}
+        for key, item in value.items():
+            sanitized_key = key.replace("\x00", "") if isinstance(key, str) else key
+            sanitized[sanitized_key] = _sanitize_for_jsonb(item)
+        return sanitized
+    return value
+
+
 class InMemoryIdempotencyStore:
     def __init__(self, ttl_s: int = 300) -> None:
         self.ttl_s = ttl_s
@@ -138,7 +154,10 @@ class PostgresIdempotencyStore:
         now_ts = time.time()
         expires_at = now_ts + self.ttl_s
         request_hash = hashlib.sha256(f"{scope}:{key}".encode("utf-8")).hexdigest()
-        payload = json.dumps({"status_code": status_code, "body": body})
+        payload = json.dumps(
+            _sanitize_for_jsonb({"status_code": status_code, "body": body}),
+            ensure_ascii=False,
+        )
         await self.pool.execute(
             """
             insert into idempotency_keys (

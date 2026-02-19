@@ -732,7 +732,17 @@ def create_app(
                     payload = json.loads(body.decode("utf-8"))
                 except Exception:
                     payload = body.decode("utf-8", errors="ignore")
-            await ctx.idempotency.set(key, scope, response.status_code, payload, tenant_id=tenant)
+            try:
+                await ctx.idempotency.set(key, scope, response.status_code, payload, tenant_id=tenant)
+            except Exception as exc:
+                _integration_log(
+                    request,
+                    "idempotency.cache_write_failed",
+                    str(exc),
+                    level="WARNING",
+                    status_code=response.status_code,
+                    context={"scope": scope, "exception_type": exc.__class__.__name__},
+                )
         return response
 
     def _validate_draft(draft: Dict[str, Any]) -> list[str]:

@@ -78,8 +78,25 @@ class InMemoryRunStore:
         return None
 
 
+def _sanitize_for_jsonb(value: Any) -> Any:
+    # PostgreSQL jsonb rejects \u0000; strip NUL bytes from nested strings before serialization.
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_sanitize_for_jsonb(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_jsonb(item) for item in value]
+    if isinstance(value, dict):
+        sanitized: Dict[Any, Any] = {}
+        for key, item in value.items():
+            sanitized_key = key.replace("\x00", "") if isinstance(key, str) else key
+            sanitized[sanitized_key] = _sanitize_for_jsonb(item)
+        return sanitized
+    return value
+
+
 def _jsonb(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(_sanitize_for_jsonb(value), ensure_ascii=False)
 
 
 def _parse_json(value: Any) -> Any:

@@ -976,6 +976,35 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.json()["run_id"], second.json()["run_id"])
 
+    def test_start_run_succeeds_when_idempotency_cache_write_fails(self):
+        token = os.getenv("WORKCORE_API_AUTH_TOKEN")
+        auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
+        workflow_id, _ = self._create_workflow(headers=auth_headers)
+
+        class FailingIdempotencyStore:
+            async def get(self, key, scope, tenant_id=None):
+                return None
+
+            async def set(self, key, scope, status_code, body, tenant_id=None):
+                raise RuntimeError("idempotency write failed")
+
+            async def close(self):
+                return None
+
+        ctx = self.client.app.state.api_context
+        ctx.idempotency = FailingIdempotencyStore()
+        ctx._idempotency_owned = False
+
+        response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}},
+            headers=self._with_project({"Idempotency-Key": "idem_run_fail_open", **auth_headers}),
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertTrue(payload.get("run_id"))
+        self.assertEqual(payload.get("status"), "COMPLETED")
+
     def test_capability_registry_create_and_list_versions(self):
         create_response = self.client.post(
             "/capabilities",
@@ -1449,6 +1478,9 @@ class ApiTests(unittest.TestCase):
             raise_server_exceptions=False,
         ) as client:
             headers = {"X-Project-Id": "proj_unhandled", "X-Correlation-Id": "corr_unhandled"}
+            token = os.getenv("WORKCORE_API_AUTH_TOKEN")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             draft = {
                 "nodes": [{"id": "start", "type": "start"}, {"id": "end", "type": "end"}],
                 "edges": [{"source": "start", "target": "end"}],
