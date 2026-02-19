@@ -127,6 +127,7 @@ class PostgresRunLedgerStore:
                   $7, $8, $9, $10, $11::jsonb,
                   $12::jsonb, $13::jsonb, $14
                 )
+                on conflict (id) do nothing
                 """,
                 rows,
             )

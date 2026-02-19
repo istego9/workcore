@@ -13,6 +13,85 @@ from apps.orchestrator.api.workflow_store import InMemoryWorkflowStore
 from apps.orchestrator.streaming.sse import _event_stream
 
 
+def _run_ledger_fk_error_text(run_id: str) -> str:
+    return (
+        'insert or update on table "run_ledger" violates foreign key constraint '
+        f'"run_ledger_run_id_fkey"\nDETAIL:  Key (run_id)=({run_id}) is not present in table "runs".'
+    )
+
+
+class GuardRunVisibilityLedgerStore:
+    def __init__(self, run_store):
+        self.run_store = run_store
+        self.calls = 0
+        self.entries = []
+
+    async def append_entries(self, entries):
+        self.calls += 1
+        for entry in entries:
+            tenant = getattr(entry, "tenant_id", "local")
+            loaded = self.run_store.get(entry.run_id, tenant_id=tenant)
+            if asyncio.iscoroutine(loaded):
+                loaded = await loaded
+            if loaded is None:
+                raise RuntimeError(_run_ledger_fk_error_text(entry.run_id))
+        self.entries.extend(entries)
+
+    async def list_run(self, run_id: str, tenant_id: str | None = None, limit: int = 200):
+        resolved_tenant = tenant_id or "local"
+        items = [
+            item
+            for item in self.entries
+            if getattr(item, "run_id", "") == run_id and getattr(item, "tenant_id", "local") == resolved_tenant
+        ]
+        return items[:limit]
+
+    async def close(self) -> None:
+        return None
+
+
+class FlakyFkLedgerStore:
+    def __init__(self, failures_before_success: int):
+        self.failures_before_success = failures_before_success
+        self.calls = 0
+        self.entries = []
+
+    async def append_entries(self, entries):
+        self.calls += 1
+        if self.calls <= self.failures_before_success:
+            run_id = entries[0].run_id if entries else "run_unknown"
+            raise RuntimeError(_run_ledger_fk_error_text(run_id))
+        self.entries.extend(entries)
+
+    async def list_run(self, run_id: str, tenant_id: str | None = None, limit: int = 200):
+        resolved_tenant = tenant_id or "local"
+        items = [
+            item
+            for item in self.entries
+            if getattr(item, "run_id", "") == run_id and getattr(item, "tenant_id", "local") == resolved_tenant
+        ]
+        return items[:limit]
+
+    async def close(self) -> None:
+        return None
+
+
+class AlwaysFailFkLedgerStore:
+    def __init__(self):
+        self.calls = 0
+
+    async def append_entries(self, entries):
+        self.calls += 1
+        run_id = entries[0].run_id if entries else "run_unknown"
+        raise RuntimeError(_run_ledger_fk_error_text(run_id))
+
+    async def list_run(self, run_id: str, tenant_id: str | None = None, limit: int = 200):
+        return []
+
+    async def close(self) -> None:
+        return None
+
+
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.workflow_store = InMemoryWorkflowStore()
@@ -1025,6 +1104,77 @@ class ApiTests(unittest.TestCase):
                 for item in items
             )
         )
+
+    def test_start_run_persists_run_before_ledger_append(self):
+        workflow_id, _ = self._create_workflow()
+        self.client.get("/health")
+        ctx = self.client.app.state.api_context
+        asyncio.run(ctx.ensure_run_store())
+        guard_store = GuardRunVisibilityLedgerStore(ctx.run_store)
+        ctx.run_ledger_store = guard_store
+
+        run_response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}},
+            headers=self._with_project(),
+        )
+        self.assertEqual(run_response.status_code, 201)
+        self.assertGreaterEqual(guard_store.calls, 1)
+
+    def test_start_run_retries_ledger_write_on_fk_race(self):
+        workflow_id, _ = self._create_workflow()
+        self.client.get("/health")
+        ctx = self.client.app.state.api_context
+        asyncio.run(ctx.ensure_run_store())
+        flaky_store = FlakyFkLedgerStore(failures_before_success=2)
+        ctx.run_ledger_store = flaky_store
+
+        run_response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}},
+            headers=self._with_project(),
+        )
+        self.assertEqual(run_response.status_code, 201)
+        self.assertEqual(flaky_store.calls, 3)
+
+    def test_orchestrator_message_fk_race_error_includes_run_id_details(self):
+        project_id = "proj_fk_race"
+        headers = self._with_project(project_id=project_id)
+        workflow_id, _ = self._create_workflow(headers=headers)
+        self._bootstrap_project(
+            project_id=project_id,
+            workflow_defs=[
+                {
+                    "workflow_id": workflow_id,
+                    "name": "FK Race workflow",
+                    "description": "FK race repro",
+                    "tags": ["fk", "race"],
+                    "examples": ["start fk race"],
+                }
+            ],
+        )
+        self.client.get("/health")
+        ctx = self.client.app.state.api_context
+        ctx.run_ledger_store = AlwaysFailFkLedgerStore()
+
+        response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_fk_race",
+                "user_id": "u_fk_race",
+                "project_id": project_id,
+                "workflow_id": workflow_id,
+                "message": {"id": "m_fk_race_1", "text": "start"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(response.status_code, 503)
+        payload = response.json()
+        self.assertEqual(payload["error"]["code"], "ERR_WORKFLOW_ENGINE_UNAVAILABLE")
+        details = payload["error"].get("details") or {}
+        self.assertEqual(details.get("incident_code"), "RUN_LEDGER_RUN_NOT_VISIBLE")
+        self.assertTrue(details.get("run_id"))
+        self.assertNotIn("run_ledger_run_id_fkey", payload["error"]["message"])
 
     def test_handoff_package_create_and_deterministic_replay(self):
         workflow_id, version_id = self._create_workflow()

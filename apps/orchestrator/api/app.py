@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -78,6 +79,68 @@ _AGENT_INTEGRATION_LOGGER = logging.getLogger("workcore.agent_integration")
 _DEFAULT_AGENT_INTEGRATION_LOG_LIMIT = 100
 _MAX_AGENT_INTEGRATION_LOG_LIMIT = 500
 _DEFAULT_AGENT_INTEGRATION_LOG_CAPACITY = 1000
+_RUN_LEDGER_FK_CONSTRAINT = "run_ledger_run_id_fkey"
+_RUN_LEDGER_FK_MAX_ATTEMPTS = 4
+_RUN_LEDGER_FK_RETRY_BASE_DELAY_SECONDS = 0.02
+
+
+class RunLedgerWriteRaceError(RuntimeError):
+    incident_code = "RUN_LEDGER_RUN_NOT_VISIBLE"
+
+    def __init__(self, run_id: str, attempts: int) -> None:
+        super().__init__("run ledger write blocked: run row not visible after retry window")
+        self.run_id = run_id
+        self.attempts = attempts
+
+
+def _iter_exception_chain(exc: BaseException):
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        cause = current.__cause__
+        if isinstance(cause, BaseException):
+            current = cause
+            continue
+        context = current.__context__
+        if isinstance(context, BaseException):
+            current = context
+            continue
+        current = None
+
+
+def _is_run_ledger_fk_violation(exc: BaseException) -> bool:
+    for candidate in _iter_exception_chain(exc):
+        text = str(candidate)
+        normalized = text.lower()
+        if _RUN_LEDGER_FK_CONSTRAINT in normalized:
+            return True
+        if (
+            "foreign key constraint" in normalized
+            and "run_ledger" in normalized
+            and "(run_id)" in normalized
+            and 'table "runs"' in normalized
+        ):
+            return True
+        class_name = candidate.__class__.__name__.lower()
+        if "foreignkeyviolation" in class_name and "run_ledger" in normalized:
+            return True
+    return False
+
+
+def _workflow_engine_error_details(exc: BaseException) -> Optional[Dict[str, Any]]:
+    details: Dict[str, Any] = {}
+    incident_code = getattr(exc, "incident_code", None)
+    if isinstance(incident_code, str) and incident_code:
+        details["incident_code"] = incident_code
+    run_id = getattr(exc, "run_id", None)
+    if isinstance(run_id, str) and run_id:
+        details["run_id"] = run_id
+    attempts = getattr(exc, "attempts", None)
+    if isinstance(attempts, int) and attempts > 0:
+        details["attempts"] = attempts
+    return details or None
 
 
 def _is_truthy(value: Optional[str]) -> bool:
@@ -287,7 +350,43 @@ class ApiContext:
             **(record.contract or {}),
         }
 
+    @staticmethod
+    def _run_tenant_id(run: Any) -> str:
+        metadata = run.metadata if isinstance(getattr(run, "metadata", None), dict) else {}
+        tenant = metadata.get("tenant_id")
+        if isinstance(tenant, str) and tenant:
+            return tenant
+        return "local"
+
+    async def _persist_run(self, run: Any) -> None:
+        await self.ensure_run_store()
+        if self.run_store is None:
+            return
+        saved = self.run_store.save(run, tenant_id=self._run_tenant_id(run))
+        if isawaitable(saved):
+            await saved
+
+    async def _append_run_ledger_entries_with_retry(self, run: Any, entries: list[Any]) -> None:
+        if self.run_ledger_store is None or not entries:
+            return
+        run_id_raw = getattr(run, "id", None)
+        run_id = run_id_raw if isinstance(run_id_raw, str) and run_id_raw else "run_unknown"
+        for attempt in range(1, _RUN_LEDGER_FK_MAX_ATTEMPTS + 1):
+            try:
+                await self.run_ledger_store.append_entries(entries)
+                return
+            except Exception as exc:
+                fk_violation = _is_run_ledger_fk_violation(exc)
+                if fk_violation and attempt < _RUN_LEDGER_FK_MAX_ATTEMPTS:
+                    await self._persist_run(run)
+                    await asyncio.sleep(_RUN_LEDGER_FK_RETRY_BASE_DELAY_SECONDS * attempt)
+                    continue
+                if fk_violation:
+                    raise RunLedgerWriteRaceError(run_id=run_id, attempts=attempt) from exc
+                raise
+
     async def _handle_runtime_events(self, run, events) -> None:
+        await self._persist_run(run)
         await self.webhooks.handle_events(run, events)
         await self.ensure_run_ledger_store()
         if self.run_ledger_store is None:
@@ -295,7 +394,7 @@ class ApiContext:
         entries = runtime_events_to_ledger_entries(run, events)
         if not entries:
             return
-        await self.run_ledger_store.append_entries(entries)
+        await self._append_run_ledger_entries_with_retry(run, entries)
 
 
 def _workflow_from_content(workflow_id: str, version_id: str, content: Dict[str, Any]) -> Workflow:
@@ -503,10 +602,10 @@ def create_app(
         code: str,
         message: str,
         status_code: int,
-        details: Optional[list[str]] = None,
+        details: Optional[Any] = None,
     ) -> JSONResponse:
         error: Dict[str, Any] = {"code": code, "message": message}
-        if details:
+        if details is not None:
             error["details"] = details
         return JSONResponse(
             {"error": error, "correlation_id": _correlation_id(request)},
@@ -1403,6 +1502,14 @@ def create_app(
                     else "INVALID_ARGUMENT"
                 )
                 return _error(request, code, message, 400)
+            except RunLedgerWriteRaceError as exc:
+                return _error(
+                    request,
+                    "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
+                    str(exc),
+                    503,
+                    details=_workflow_engine_error_details(exc),
+                )
             await _run_store_save(run, tenant_id=tenant)
             return _json(request, run_to_dict(run), status_code=201)
 
@@ -1545,7 +1652,13 @@ def create_app(
                     run_id=None,
                     tenant_id=tenant,
                 )
-                return _error(request, "ERR_WORKFLOW_ENGINE_UNAVAILABLE", str(exc), 503)
+                return _error(
+                    request,
+                    "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
+                    str(exc),
+                    503,
+                    details=_workflow_engine_error_details(exc),
+                )
             await _run_store_save(run, tenant_id=tenant)
             handoff_record = await ctx.handoff_store.update_status(
                 handoff_record.handoff_id,
@@ -1632,7 +1745,13 @@ def create_app(
                 )
                 return _error(request, code, message, 400)
             except Exception as exc:
-                return _error(request, "ERR_WORKFLOW_ENGINE_UNAVAILABLE", str(exc), 503)
+                return _error(
+                    request,
+                    "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
+                    str(exc),
+                    503,
+                    details=_workflow_engine_error_details(exc),
+                )
 
             await _run_store_save(run, tenant_id=tenant)
             handoff_record = await ctx.handoff_store.update_status(
@@ -1743,7 +1862,7 @@ def create_app(
                 return _error(request, exc.code, exc.message, exc.status_code)
             except WorkflowEngineAdapterError as exc:
                 status = 503 if exc.retryable else 500
-                return _error(request, exc.code, exc.message, status)
+                return _error(request, exc.code, exc.message, status, details=exc.details)
             except Exception as exc:
                 return _error(request, "INTERNAL", str(exc), 500)
             return _json(request, payload)

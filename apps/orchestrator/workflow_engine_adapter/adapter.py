@@ -30,11 +30,18 @@ class WorkflowEngineResult:
 
 
 class WorkflowEngineAdapterError(RuntimeError):
-    def __init__(self, code: str, message: str, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        retryable: bool = False,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.details = details
 
 
 class WorkflowEngineAdapter:
@@ -76,6 +83,7 @@ class WorkflowEngineAdapter:
                 "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
                 str(exc),
                 retryable=True,
+                details=self._workflow_engine_error_details(exc),
             ) from exc
 
         run.metadata = dict(run.metadata or {})
@@ -127,6 +135,7 @@ class WorkflowEngineAdapter:
                         "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
                         str(exc),
                         retryable=True,
+                        details=self._workflow_engine_error_details(exc, run_id=run.id),
                     ) from exc
         await self._save_run(run, tenant_id=tenant_id)
         events = self._collect_events(run.id, after_id=before_event.id if before_event else None)
@@ -275,3 +284,24 @@ class WorkflowEngineAdapter:
                     }
                 )
         return normalized
+
+    @staticmethod
+    def _workflow_engine_error_details(
+        exc: BaseException,
+        run_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        details: Dict[str, Any] = {}
+        incident_code = getattr(exc, "incident_code", None)
+        if isinstance(incident_code, str) and incident_code:
+            details["incident_code"] = incident_code
+        resolved_run_id = run_id
+        if not resolved_run_id:
+            candidate = getattr(exc, "run_id", None)
+            if isinstance(candidate, str) and candidate:
+                resolved_run_id = candidate
+        if resolved_run_id:
+            details["run_id"] = resolved_run_id
+        attempts = getattr(exc, "attempts", None)
+        if isinstance(attempts, int) and attempts > 0:
+            details["attempts"] = attempts
+        return details or None
