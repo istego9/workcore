@@ -229,6 +229,15 @@ Session/thread context API:
 - `POST /orchestrator/context/unset` (`context.unset`)
 - Scopes: `session` and `thread`
 
+Offline routing replay/eval:
+- `POST /orchestrator/eval/replay`
+- Read-only evaluation mode (does not start/resume/cancel runs).
+- Input: labeled `cases[]` with `message_text` and optional expectations (`expected_action`, `expected_workflow_id`).
+- Output:
+  - per-case predicted action/workflow + decision trace
+  - action_error (when policy blocks a switch or fallback is unavailable)
+  - aggregate accuracy metrics (`action_accuracy`, `workflow_accuracy`, `exact_match_rate`)
+
 ## Agent integration kit URL
 - Markdown entrypoint: `/agent-integration-kit`
 - Machine-readable bundle: `/agent-integration-kit.json`
@@ -238,6 +247,7 @@ Session/thread context API:
 - Project orchestrator config endpoint: `POST /projects/{project_id}/orchestrators`
 - Project workflow definition endpoint: `POST /projects/{project_id}/workflow-definitions`
 - Orchestrator message endpoint: `POST /orchestrator/messages`
+- Orchestrator replay/eval endpoint: `POST /orchestrator/eval/replay`
 - Orchestrator stack diagnostics: `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
 - Integration test UI: `/agent-integration-test`
 - Integration test JSON report: `/agent-integration-test.json`
@@ -275,13 +285,14 @@ curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_
 6. `POST /projects/{project_id}/workflow-definitions` register workflow in project routing index
 7. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
 8. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
-9. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
-10. `GET /runs/{run_id}` read state
-11. `GET /runs/{run_id}/stream` consume SSE events
-12. `GET /runs/{run_id}/ledger` read immutable execution ledger
-13. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
-14. `POST /runs/{run_id}/cancel` cancel run
-15. `POST /runs/{run_id}/rerun-node` rerun node
+9. `POST /orchestrator/eval/replay` run offline routing replay/eval over labeled cases
+10. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
+11. `GET /runs/{run_id}` read state
+12. `GET /runs/{run_id}/stream` consume SSE events
+13. `GET /runs/{run_id}/ledger` read immutable execution ledger
+14. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
+15. `POST /runs/{run_id}/cancel` cancel run
+16. `POST /runs/{run_id}/rerun-node` rerun node
 
 ## Atomic handoff API
 - Create handoff package and start run atomically:

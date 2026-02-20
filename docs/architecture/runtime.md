@@ -15,6 +15,7 @@ Project-level orchestration adds an intent-routing layer in front of workflow ex
 - every inbound message produces one orchestration decision log
 - orchestrator response includes `decision_trace` with candidate scores, selected workflow/action, and selection/switch reason
 - orchestrator response includes standardized `action_error` contract (`code`, `message`, `retryable`, `category`, `action`) when route/action constraints block normal execution
+- orchestrator supports offline routing replay/eval (`POST /orchestrator/eval/replay`) to evaluate routing quality without mutating runs/session state
 - session context (when present) is injected into workflow inputs as `inputs.context`
 
 ## Run lifecycle

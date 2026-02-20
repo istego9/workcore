@@ -1,7 +1,7 @@
 # WorkCore Routing + Custom Actions Unification - Spec-First Action Items
 
 Date: 2026-02-20
-Status: IN PROGRESS (P0/P1 delivered, P2.1/P2.2 delivered, P2.3 pending)
+Status: IN PROGRESS (P0/P1/P2 delivered)
 Task classification: A (new subsystem pieces), B (API/schema contract), C (runtime/event semantics), D (DB migration), E (external integration behavior)
 
 ## Execution update (2026-02-20)
@@ -42,6 +42,10 @@ Task classification: A (new subsystem pieces), B (API/schema contract), C (runti
     - `cooldown_seconds`
     - `hysteresis_margin`
   - anti-flip behavior through cooldown + hysteresis-adjusted switch margin.
+- P2.3 implemented:
+  - offline routing replay/eval endpoint: `POST /orchestrator/eval/replay`
+  - per-case routing trace output + aggregate quality metrics (`action_accuracy`, `workflow_accuracy`, `exact_match_rate`)
+  - read-only evaluation (no run/session mutation)
 
 ## Current-state gap assessment (against request)
 - P0.1 `threads.custom_action`: partially implemented in ChatKit runtime, but only for a fixed action enum and without a canonical `action_type` contract + explicit alias map.
@@ -53,7 +57,7 @@ Task classification: A (new subsystem pieces), B (API/schema contract), C (runti
 - P1.3 standardized route/action error contract: implemented for orchestrator response-level route/action constraints via `action_error`.
 - P2.1 routing policy knobs: implemented (`sticky`, `allow_switch`, `explicit_switch_only`, `cooldown_seconds`).
 - P2.2 anti-flip/hysteresis: implemented via `hysteresis_margin` + cooldown policy.
-- P2.3 replay/eval mode for routing quality: not available for orchestrator routing decisions (handoff deterministic replay exists, but not routing replay/eval).
+- P2.3 replay/eval mode for routing quality: implemented via offline replay/eval endpoint with aggregate metrics and per-case decision trace.
 
 ## 1) Goal and scope
 - [ ] Unify routing/custom-action orchestration inside WorkCore so backend-specific routing/prefill logic can be removed.

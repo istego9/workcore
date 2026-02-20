@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.15.0
+  version: 0.16.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -319,6 +319,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrchestratorMessageResponse'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+
+  /orchestrator/eval/replay:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [orchestrator]
+      summary: Offline replay/eval for routing quality
+      description: >
+        Runs read-only routing replay against labeled message cases without starting/resuming/cancelling workflow runs.
+        Useful for offline evaluation of routing behavior and quality metrics.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorEvalReplayRequest'
+      responses:
+        '200':
+          description: Replay evaluation report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorEvalReplayResponse'
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }
         '409': { $ref: '#/components/responses/ErrorResponse' }
@@ -1781,6 +1811,137 @@ components:
             $ref: '#/components/schemas/WorkflowStackItem'
         correlation_id: { type: string }
       required: [decision_id, mode, chosen_action, message]
+
+    OrchestratorEvalReplayCase:
+      type: object
+      properties:
+        case_id:
+          type: string
+          nullable: true
+        message_text: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+        active_workflow_id:
+          type: string
+          nullable: true
+        expected_action:
+          type: string
+          nullable: true
+        expected_workflow_id:
+          type: string
+          nullable: true
+      required: [message_text]
+
+    OrchestratorEvalReplayRequest:
+      type: object
+      properties:
+        project_id: { type: string }
+        orchestrator_id:
+          type: string
+          nullable: true
+        session_id:
+          type: string
+          nullable: true
+        user_id:
+          type: string
+          nullable: true
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrchestratorEvalReplayCase'
+      required: [project_id, cases]
+
+    OrchestratorEvalReplayMetrics:
+      type: object
+      properties:
+        cases_with_expected_action: { type: integer }
+        cases_with_expected_workflow: { type: integer }
+        cases_with_exact_expectations: { type: integer }
+        matched_action: { type: integer }
+        matched_workflow_id: { type: integer }
+        matched_exact: { type: integer }
+        action_accuracy:
+          type: number
+          nullable: true
+        workflow_accuracy:
+          type: number
+          nullable: true
+        exact_match_rate:
+          type: number
+          nullable: true
+        average_confidence: { type: number }
+      required:
+        - cases_with_expected_action
+        - cases_with_expected_workflow
+        - cases_with_exact_expectations
+        - matched_action
+        - matched_workflow_id
+        - matched_exact
+        - average_confidence
+
+    OrchestratorEvalReplayCaseResult:
+      type: object
+      properties:
+        case_id: { type: string }
+        message_text: { type: string }
+        expected_action:
+          type: string
+          nullable: true
+        expected_workflow_id:
+          type: string
+          nullable: true
+        chosen_action: { type: string }
+        chosen_workflow_id:
+          type: string
+          nullable: true
+        confidence: { type: number }
+        decision:
+          $ref: '#/components/schemas/RoutingDecision'
+        decision_trace:
+          $ref: '#/components/schemas/OrchestratorDecisionTrace'
+        action_error:
+          allOf:
+            - $ref: '#/components/schemas/OrchestratorActionError'
+          nullable: true
+        matched_action:
+          type: boolean
+          nullable: true
+        matched_workflow_id:
+          type: boolean
+          nullable: true
+        matched_exact:
+          type: boolean
+          nullable: true
+        latency_ms: { type: integer }
+      required:
+        - case_id
+        - message_text
+        - chosen_action
+        - confidence
+        - decision
+        - decision_trace
+        - latency_ms
+
+    OrchestratorEvalReplayResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [offline_eval]
+        project_id: { type: string }
+        orchestrator_id: { type: string }
+        session_id: { type: string }
+        user_id: { type: string }
+        total_cases: { type: integer }
+        metrics:
+          $ref: '#/components/schemas/OrchestratorEvalReplayMetrics'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrchestratorEvalReplayCaseResult'
+        correlation_id: { type: string }
+      required: [mode, project_id, orchestrator_id, session_id, user_id, total_cases, metrics, items]
 
     WorkflowStackResponse:
       type: object

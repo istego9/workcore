@@ -7,6 +7,33 @@ The format follows a simple date-based log.
 ## 2026-02-20
 
 ### API diff vs previous version
+- Previous API version: `0.15.0`
+- Current API version: `0.16.0`
+- Compatibility: additive (new offline routing replay/eval endpoint and schemas)
+
+### Added
+- New endpoint:
+  - `POST /orchestrator/eval/replay`
+- New schemas:
+  - `OrchestratorEvalReplayCase`
+  - `OrchestratorEvalReplayRequest`
+  - `OrchestratorEvalReplayMetrics`
+  - `OrchestratorEvalReplayCaseResult`
+  - `OrchestratorEvalReplayResponse`
+
+### Changed
+- Agent integration kit now includes orchestrator replay/eval URL in required integration URLs.
+- Integration test openapi path checks now require `/orchestrator/eval/replay`.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
 - Previous API version: `0.14.0`
 - Current API version: `0.15.0`
 - Compatibility: additive (routing policy contract expanded with switch-control and anti-flip fields)
