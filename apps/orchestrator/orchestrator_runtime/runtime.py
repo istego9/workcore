@@ -320,6 +320,7 @@ class ProjectOrchestratorRuntime:
             chosen_workflow_id = None
         elif action == "CANCEL":
             if active_state is None:
+                error_code = "ERR_NO_ACTIVE_WORKFLOW"
                 message_payload = {
                     "type": "assistant_message",
                     "text": "Сейчас нет активного workflow для отмены.",
@@ -366,6 +367,7 @@ class ProjectOrchestratorRuntime:
                 )
                 if target_workflow is None:
                     action = "FALLBACK"
+                    error_code = "ERR_FALLBACK_NOT_AVAILABLE"
                     chosen_workflow_id = None
                     message_payload = {
                         "type": "assistant_message",
@@ -517,6 +519,7 @@ class ProjectOrchestratorRuntime:
         await self.store.save_decision(decision_record)
 
         stack = await self._stack_view(request.project_id, request.session_id, tenant_id=tenant_id)
+        action_error = self._action_error_payload(error_code, message_payload, action)
         return {
             "decision_id": decision_id,
             "mode": "orchestrated",
@@ -535,6 +538,7 @@ class ProjectOrchestratorRuntime:
                 reason_codes=decision.reason_codes,
                 active_workflow_id_before=active_state.workflow_id if active_state else None,
             ),
+            "action_error": action_error,
             "message": message_payload,
             "events": events,
             "stack": stack,
@@ -765,6 +769,26 @@ class ProjectOrchestratorRuntime:
             "switch_from_workflow_id": switch_from_workflow_id,
             "switch_to_workflow_id": switch_to_workflow_id,
             "switch_reason": switch_reason,
+        }
+
+    @staticmethod
+    def _action_error_payload(
+        error_code: Optional[str],
+        message_payload: Dict[str, Any],
+        action: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(error_code, str) or not error_code.strip():
+            return None
+        message = str(message_payload.get("text") or "").strip() or "Routing action error."
+        code = error_code.strip()
+        category = "route" if code in {"ERR_FALLBACK_NOT_AVAILABLE"} else "action"
+        retryable = code in {"ERR_NO_ACTIVE_WORKFLOW", "ERR_FALLBACK_NOT_AVAILABLE"}
+        return {
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+            "category": category,
+            "action": action,
         }
 
 

@@ -733,6 +733,59 @@ class ApiTests(unittest.TestCase):
         payload = cancel_response.json()
         self.assertEqual(payload["chosen_action"], "CANCEL")
         self.assertIn("Нельзя отменить", payload["message"]["text"])
+        action_error = payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_CANCEL_NOT_ALLOWED")
+        self.assertEqual(action_error.get("category"), "action")
+        self.assertFalse(action_error.get("retryable"))
+
+    def test_orchestrator_cancel_without_active_workflow_returns_action_error(self):
+        from apps.orchestrator.llm_adapter import ResponsesLLMRouter
+
+        workflow_id, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_cancel_no_active",
+            workflow_defs=[
+                {
+                    "workflow_id": workflow_id,
+                    "name": "Cancel fallback flow",
+                    "description": "Flow for cancel without active run",
+                    "tags": ["cancel"],
+                    "examples": ["start"],
+                }
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+            },
+        )
+        self.client.get("/health")
+        ctx = self.client.app.state.api_context
+
+        async def _set_heuristic_router():
+            await ctx.ensure_orchestration()
+            ctx.project_orchestrator.llm_router = ResponsesLLMRouter(force_heuristic=True)
+
+        asyncio.run(_set_heuristic_router())
+
+        response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_cancel_no_active",
+                "user_id": "u_cancel_no_active",
+                "project_id": "proj_cancel_no_active",
+                "message": {"id": "m_cancel_no_active_1", "text": "отмени"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["chosen_action"], "CANCEL")
+        action_error = payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_NO_ACTIVE_WORKFLOW")
+        self.assertEqual(action_error.get("category"), "action")
+        self.assertTrue(action_error.get("retryable"))
 
     def test_orchestrator_stack_endpoint(self):
         workflow_id, _ = self._create_workflow()
