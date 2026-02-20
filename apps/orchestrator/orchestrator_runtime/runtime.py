@@ -106,6 +106,12 @@ class ProjectOrchestratorRuntime:
         action = "START_WORKFLOW"
         run_result: Optional[WorkflowEngineResult] = None
         from_run_id = state.active_run_id
+        metadata_with_context = await self._metadata_with_session_context(
+            metadata=metadata,
+            project_id=request.project_id,
+            session_id=request.session_id,
+            tenant_id=tenant_id,
+        )
         if state.active_run_id:
             active = await self.workflow_adapter.get_state(state.active_run_id, tenant_id=tenant_id)
             if active and active.workflow_id == workflow.workflow_id and active.status == "WAITING_FOR_INPUT":
@@ -114,7 +120,7 @@ class ProjectOrchestratorRuntime:
                     state.active_run_id,
                     request.session_id,
                     request.message_text,
-                    metadata,
+                    metadata_with_context,
                     tenant_id=tenant_id,
                 )
 
@@ -124,7 +130,7 @@ class ProjectOrchestratorRuntime:
                 workflow.workflow_id,
                 request.session_id,
                 request.message_text,
-                metadata,
+                metadata_with_context,
                 tenant_id=tenant_id,
             )
             await self.store.append_stack_entry(
@@ -235,6 +241,12 @@ class ProjectOrchestratorRuntime:
             tenant_id=tenant_id,
             message_text=request.message_text,
             top_k=policy.top_k_candidates,
+        )
+        metadata_with_context = await self._metadata_with_session_context(
+            metadata=metadata,
+            project_id=request.project_id,
+            session_id=request.session_id,
+            tenant_id=tenant_id,
         )
         recent_decisions = await self.store.list_recent_decisions(
             request.project_id,
@@ -367,7 +379,7 @@ class ProjectOrchestratorRuntime:
                                 target_workflow,
                                 request.session_id,
                                 request.message_text,
-                                metadata,
+                                metadata_with_context,
                                 tenant_id=tenant_id,
                             )
                             action = "SWITCH_WORKFLOW"
@@ -392,7 +404,7 @@ class ProjectOrchestratorRuntime:
                             active_state.run_id,
                             request.session_id,
                             request.message_text,
-                            metadata,
+                            metadata_with_context,
                             tenant_id=tenant_id,
                         )
                         run_id = resumed.run_id
@@ -406,7 +418,7 @@ class ProjectOrchestratorRuntime:
                         active_state.run_id,
                         request.session_id,
                         request.message_text,
-                        metadata,
+                        metadata_with_context,
                         tenant_id=tenant_id,
                     )
                     run_id = resumed.run_id
@@ -420,7 +432,7 @@ class ProjectOrchestratorRuntime:
                         target_workflow,
                         request.session_id,
                         request.message_text,
-                        metadata,
+                        metadata_with_context,
                         tenant_id=tenant_id,
                     )
                     action = "FALLBACK" if decision.route_type == "FALLBACK" else "START_WORKFLOW"
@@ -463,6 +475,11 @@ class ProjectOrchestratorRuntime:
                 "recent_decisions": [item.decision_id for item in recent_decisions],
                 "candidate_count": len(candidates),
                 "pending_disambiguation": bool(state.pending_disambiguation),
+                "context_prefill_keys": len(
+                    metadata_with_context.get("context_prefill", {})
+                    if isinstance(metadata_with_context.get("context_prefill"), dict)
+                    else {}
+                ),
             },
             candidates=[
                 {
@@ -603,6 +620,25 @@ class ProjectOrchestratorRuntime:
         for item in decisions[:5]:
             parts.append(f"{item.message_id}:{item.chosen_action}:{item.chosen_workflow_id or '-'}")
         return " | ".join(parts)
+
+    async def _metadata_with_session_context(
+        self,
+        metadata: Dict[str, Any],
+        project_id: str,
+        session_id: str,
+        tenant_id: str,
+    ) -> Dict[str, Any]:
+        payload = dict(metadata or {})
+        context_prefill = await self.store.get_context_values(
+            "session",
+            session_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            keys=None,
+        )
+        if context_prefill:
+            payload["context_prefill"] = context_prefill
+        return payload
 
     async def _stack_view(self, project_id: str, session_id: str, tenant_id: str) -> List[Dict[str, Any]]:
         entries = await self.store.list_stack(project_id, session_id, tenant_id=tenant_id)

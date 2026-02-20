@@ -70,6 +70,9 @@ class WorkflowEngineAdapter:
             "session_id": session_id,
             "project_id": project_id,
         }
+        context_prefill = run_metadata.get("context_prefill")
+        if isinstance(context_prefill, dict) and context_prefill:
+            inputs["context"] = dict(context_prefill)
         try:
             run = await self.runtime.start_run(
                 workflow_id,

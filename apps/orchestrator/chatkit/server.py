@@ -23,6 +23,7 @@ from chatkit.types import (
 from apps.orchestrator.runtime.models import Interrupt, Run
 
 from .context import ChatKitContext
+from .custom_actions import resolve_canonical_action_type
 from .widgets import (
     APPROVE_ACTION,
     CANCEL_ACTION,
@@ -96,6 +97,12 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         context: ChatKitContext,
     ) -> AsyncIterator[ThreadStreamEvent]:
         payload = action.payload or {}
+        canonical_action_type = resolve_canonical_action_type(action.type, payload)
+        if not canonical_action_type:
+            yield ErrorEvent(message="unsupported action", allow_retry=False)
+            return
+        payload = dict(payload)
+        payload.setdefault("action_type", canonical_action_type)
         run_id = payload.get("run_id") or thread.metadata.get("run_id")
         interrupt_id = payload.get("interrupt_id")
 
@@ -125,20 +132,20 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         scope = "chatkit_action"
         idempotency_key = payload.get("idempotency_key") or payload.get("action_id")
         if not idempotency_key:
-            idempotency_key = f"{run_id}:{interrupt_id}:{action.type}"
+            idempotency_key = f"{run_id}:{interrupt_id}:{canonical_action_type}"
         if idempotency:
             started = await idempotency.start(idempotency_key, scope, tenant_id=context.tenant_id)
             if not started:
                 yield NoticeEvent(level="info", message="Action already processed")
                 return
 
-        if action.type == APPROVE_ACTION:
+        if canonical_action_type == APPROVE_ACTION:
             input_data = {"approved": True}
-        elif action.type == REJECT_ACTION:
+        elif canonical_action_type == REJECT_ACTION:
             input_data = {"approved": False}
-        elif action.type == SUBMIT_ACTION:
+        elif canonical_action_type == SUBMIT_ACTION:
             input_data = self._input_from_payload(payload)
-        elif action.type == CANCEL_ACTION:
+        elif canonical_action_type == CANCEL_ACTION:
             yield ErrorEvent(message="interrupt cancel is not supported", allow_retry=False)
             return
         else:
