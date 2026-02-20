@@ -106,6 +106,7 @@ class ProjectOrchestratorRuntime:
         action = "START_WORKFLOW"
         run_result: Optional[WorkflowEngineResult] = None
         from_run_id = state.active_run_id
+        active_workflow_id_before: Optional[str] = None
         metadata_with_context = await self._metadata_with_session_context(
             metadata=metadata,
             project_id=request.project_id,
@@ -114,6 +115,8 @@ class ProjectOrchestratorRuntime:
         )
         if state.active_run_id:
             active = await self.workflow_adapter.get_state(state.active_run_id, tenant_id=tenant_id)
+            if active:
+                active_workflow_id_before = active.workflow_id
             if active and active.workflow_id == workflow.workflow_id and active.status == "WAITING_FOR_INPUT":
                 action = "RESUME_CURRENT"
                 run_result = await self.workflow_adapter.resume(
@@ -161,6 +164,13 @@ class ProjectOrchestratorRuntime:
             clarifying_options=[],
             model_id="direct",
         )
+        direct_candidates = [
+            {
+                "workflow_id": workflow.workflow_id,
+                "score": 1.0,
+                "reason_codes": ["DIRECT_HINT"],
+            }
+        ]
         decision_id = _new_id("dec")
         await self.store.save_decision(
             OrchestrationDecisionRecord(
@@ -173,7 +183,7 @@ class ProjectOrchestratorRuntime:
                 mode="direct",
                 active_run_id=from_run_id,
                 context_ref={"source": "direct_workflow_mode"},
-                candidates=[{"workflow_id": workflow.workflow_id, "score": 1.0, "reason_codes": ["DIRECT_HINT"]}],
+                candidates=direct_candidates,
                 chosen_action=action,
                 chosen_workflow_id=workflow.workflow_id,
                 confidence=1.0,
@@ -194,6 +204,14 @@ class ProjectOrchestratorRuntime:
             "active_run_id": state.active_run_id,
             "confidence": decision.confidence,
             "decision": decision.to_payload(),
+            "decision_trace": self._build_decision_trace(
+                mode="direct",
+                action=action,
+                chosen_workflow_id=workflow.workflow_id,
+                candidates=direct_candidates,
+                reason_codes=decision.reason_codes,
+                active_workflow_id_before=active_workflow_id_before,
+            ),
             "message": self._response_message_from_events(run_result.events),
             "events": run_result.events,
             "stack": stack,
@@ -509,6 +527,14 @@ class ProjectOrchestratorRuntime:
             "active_run_id": state.active_run_id,
             "confidence": float(decision.confidence),
             "decision": decision.to_payload(),
+            "decision_trace": self._build_decision_trace(
+                mode="orchestrated",
+                action=action,
+                chosen_workflow_id=chosen_workflow_id,
+                candidates=candidates,
+                reason_codes=decision.reason_codes,
+                active_workflow_id_before=active_state.workflow_id if active_state else None,
+            ),
             "message": message_payload,
             "events": events,
             "stack": stack,
@@ -676,6 +702,70 @@ class ProjectOrchestratorRuntime:
             if event.get("type") == "failed":
                 return {"type": "assistant_message", "text": "Workflow завершился с ошибкой.", "options": []}
         return {"type": "assistant_message", "text": "Запрос обработан.", "options": []}
+
+    def _build_decision_trace(
+        self,
+        mode: str,
+        action: str,
+        chosen_workflow_id: Optional[str],
+        candidates: Sequence[Dict[str, Any]],
+        reason_codes: Sequence[Any],
+        active_workflow_id_before: Optional[str],
+    ) -> Dict[str, Any]:
+        normalized_candidates: List[Dict[str, Any]] = []
+        for candidate in candidates:
+            workflow_id_raw = candidate.get("workflow_id")
+            if not isinstance(workflow_id_raw, str) or not workflow_id_raw.strip():
+                continue
+            score_value: Optional[float] = None
+            score_raw = candidate.get("score")
+            if score_raw is not None:
+                try:
+                    score_value = float(score_raw)
+                except (TypeError, ValueError):
+                    score_value = None
+            raw_reason_codes = candidate.get("reason_codes")
+            normalized_reason_codes: List[str] = []
+            if isinstance(raw_reason_codes, list):
+                normalized_reason_codes = [
+                    str(item).strip()
+                    for item in raw_reason_codes
+                    if isinstance(item, str) and item.strip()
+                ]
+            normalized_candidates.append(
+                {
+                    "workflow_id": workflow_id_raw.strip(),
+                    "score": score_value,
+                    "reason_codes": normalized_reason_codes,
+                }
+            )
+
+        normalized_reason_codes = [
+            str(item).strip()
+            for item in reason_codes
+            if isinstance(item, str) and item.strip()
+        ]
+        selection_reason = normalized_reason_codes[0] if normalized_reason_codes else action
+
+        switch_from_workflow_id: Optional[str] = None
+        switch_to_workflow_id: Optional[str] = None
+        switch_reason: Optional[str] = None
+        if action == "SWITCH_WORKFLOW":
+            switch_from_workflow_id = active_workflow_id_before
+            switch_to_workflow_id = chosen_workflow_id
+            switch_reason = selection_reason
+
+        return {
+            "mode": mode,
+            "candidates": normalized_candidates,
+            "selected_action": action,
+            "selected_workflow_id": chosen_workflow_id,
+            "reason_codes": normalized_reason_codes,
+            "selection_reason": selection_reason,
+            "switch_from_workflow_id": switch_from_workflow_id,
+            "switch_to_workflow_id": switch_to_workflow_id,
+            "switch_reason": switch_reason,
+        }
 
 
 def _safe_float(value: Any, default: float) -> float:

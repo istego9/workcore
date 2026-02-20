@@ -420,6 +420,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "direct")
         self.assertEqual(payload["chosen_workflow_id"], workflow_id)
         self.assertIn(payload["chosen_action"], {"START_WORKFLOW", "RESUME_CURRENT"})
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("mode"), "direct")
+        self.assertEqual(trace.get("selected_workflow_id"), workflow_id)
+        self.assertEqual(trace.get("selected_action"), payload["chosen_action"])
+        self.assertTrue(isinstance(trace.get("candidates"), list) and trace["candidates"])
 
     def test_upsert_project_workflow_definition_validates_scope(self):
         project_id = "proj_registry_scope"
@@ -546,6 +551,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "direct")
         self.assertEqual(payload["chosen_workflow_id"], workflow_id)
         self.assertIn(payload["chosen_action"], {"START_WORKFLOW", "RESUME_CURRENT"})
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("mode"), "direct")
+        self.assertEqual(trace.get("selected_workflow_id"), workflow_id)
+        self.assertEqual(trace.get("selected_action"), payload["chosen_action"])
+        self.assertIn("selection_reason", trace)
         self.assertTrue(payload.get("run_id"))
 
         run_response = self.client.get(f"/runs/{payload['run_id']}")
@@ -599,6 +609,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "orchestrated")
         self.assertEqual(payload["chosen_action"], "DISAMBIGUATE")
         self.assertEqual(payload["message"]["type"], "clarification")
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("mode"), "orchestrated")
+        self.assertEqual(trace.get("selected_action"), "DISAMBIGUATE")
+        self.assertTrue(isinstance(trace.get("candidates"), list))
 
     def test_orchestrator_switches_active_workflow(self):
         wf_active, _ = self._create_interaction_workflow()
@@ -658,6 +672,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "orchestrated")
         self.assertEqual(payload["chosen_action"], "SWITCH_WORKFLOW")
         self.assertEqual(payload["chosen_workflow_id"], wf_target)
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("selected_action"), "SWITCH_WORKFLOW")
+        self.assertEqual(trace.get("selected_workflow_id"), wf_target)
+        self.assertEqual(trace.get("switch_from_workflow_id"), wf_active)
+        self.assertEqual(trace.get("switch_to_workflow_id"), wf_target)
+        self.assertTrue(trace.get("switch_reason"))
         self.assertTrue(payload.get("run_id"))
 
     def test_orchestrator_cancel_not_allowed(self):
