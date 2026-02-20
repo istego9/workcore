@@ -936,6 +936,139 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(action_error.get("category"), "action")
         self.assertTrue(action_error.get("retryable"))
 
+    def test_orchestrator_eval_replay_reports_metrics(self):
+        wf_card, _ = self._create_workflow()
+        wf_loan, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_eval_replay",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_card,
+                    "name": "Card flow",
+                    "description": "Card routing workflow",
+                    "tags": ["card-route"],
+                    "examples": ["start card-route"],
+                },
+                {
+                    "workflow_id": wf_loan,
+                    "name": "Loan flow",
+                    "description": "Loan routing workflow",
+                    "tags": ["loan-route"],
+                    "examples": ["switch to loan-route"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": True,
+            },
+        )
+        self._set_heuristic_router()
+        response = self.client.post(
+            "/orchestrator/eval/replay",
+            json={
+                "project_id": "proj_eval_replay",
+                "session_id": "s_eval_replay",
+                "user_id": "u_eval_replay",
+                "cases": [
+                    {
+                        "case_id": "c1",
+                        "message_text": "start card-route",
+                        "expected_action": "START_WORKFLOW",
+                        "expected_workflow_id": wf_card,
+                    },
+                    {
+                        "case_id": "c2",
+                        "message_text": "switch to loan-route",
+                        "expected_action": "SWITCH_WORKFLOW",
+                        "expected_workflow_id": wf_loan,
+                    },
+                    {
+                        "case_id": "c3",
+                        "message_text": "отмени",
+                        "expected_action": "CANCEL",
+                        "expected_workflow_id": wf_loan,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["mode"], "offline_eval")
+        self.assertEqual(payload["project_id"], "proj_eval_replay")
+        self.assertEqual(payload["orchestrator_id"], "orc_default")
+        self.assertEqual(payload["total_cases"], 3)
+        self.assertEqual(len(payload["items"]), 3)
+        metrics = payload.get("metrics") or {}
+        self.assertEqual(metrics.get("cases_with_expected_action"), 3)
+        self.assertEqual(metrics.get("cases_with_expected_workflow"), 3)
+        self.assertEqual(metrics.get("cases_with_exact_expectations"), 3)
+        self.assertEqual(metrics.get("matched_action"), 3)
+        self.assertEqual(metrics.get("matched_workflow_id"), 3)
+        self.assertEqual(metrics.get("matched_exact"), 3)
+        self.assertEqual(metrics.get("action_accuracy"), 1.0)
+        self.assertEqual(metrics.get("workflow_accuracy"), 1.0)
+        self.assertEqual(metrics.get("exact_match_rate"), 1.0)
+        self.assertIsNotNone(metrics.get("average_confidence"))
+
+    def test_orchestrator_eval_replay_respects_switch_cooldown(self):
+        wf_card, _ = self._create_workflow()
+        wf_loan, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_eval_cooldown",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_card,
+                    "name": "Card flow",
+                    "description": "Card routing workflow",
+                    "tags": ["card-route"],
+                    "examples": ["start card-route"],
+                },
+                {
+                    "workflow_id": wf_loan,
+                    "name": "Loan flow",
+                    "description": "Loan routing workflow",
+                    "tags": ["loan-route"],
+                    "examples": ["switch to loan-route"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": True,
+                "cooldown_seconds": 3600,
+            },
+        )
+        self._set_heuristic_router()
+        response = self.client.post(
+            "/orchestrator/eval/replay",
+            json={
+                "project_id": "proj_eval_cooldown",
+                "session_id": "s_eval_cooldown",
+                "user_id": "u_eval_cooldown",
+                "cases": [
+                    {"case_id": "c1", "message_text": "start card-route"},
+                    {"case_id": "c2", "message_text": "switch to loan-route"},
+                    {"case_id": "c3", "message_text": "switch to card-route"},
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_cases"], 3)
+        items = payload.get("items") or []
+        self.assertEqual(items[1]["chosen_action"], "SWITCH_WORKFLOW")
+        self.assertEqual(items[1]["chosen_workflow_id"], wf_loan)
+        self.assertEqual(items[2]["chosen_action"], "RESUME_CURRENT")
+        self.assertEqual(items[2]["chosen_workflow_id"], wf_loan)
+        action_error = items[2].get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_SWITCH_COOLDOWN_ACTIVE")
+        self.assertEqual(action_error.get("category"), "action")
+
     def test_orchestrator_stack_endpoint(self):
         workflow_id, _ = self._create_workflow()
         self._bootstrap_project(

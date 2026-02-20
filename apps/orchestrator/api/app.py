@@ -1992,6 +1992,113 @@ def create_app(
             return _error(request, "INTERNAL", str(exc), 500)
         return _json(request, payload)
 
+    async def orchestrator_eval_replay(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception:
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+        if not isinstance(payload, dict):
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+
+        project_id_raw = payload.get("project_id")
+        if not isinstance(project_id_raw, str) or not project_id_raw.strip():
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+        project_id = project_id_raw.strip()
+
+        orchestrator_id_raw = payload.get("orchestrator_id")
+        if orchestrator_id_raw is not None and (
+            not isinstance(orchestrator_id_raw, str) or not orchestrator_id_raw.strip()
+        ):
+            return _error(
+                request,
+                "INVALID_ARGUMENT",
+                "orchestrator_id must be a non-empty string or null",
+                400,
+            )
+        orchestrator_id = orchestrator_id_raw.strip() if isinstance(orchestrator_id_raw, str) else None
+
+        session_id_raw = payload.get("session_id")
+        if session_id_raw is None:
+            session_id = "eval_session"
+        elif isinstance(session_id_raw, str) and session_id_raw.strip():
+            session_id = session_id_raw.strip()
+        else:
+            return _error(request, "INVALID_ARGUMENT", "session_id must be a non-empty string", 400)
+
+        user_id_raw = payload.get("user_id")
+        if user_id_raw is None:
+            user_id = "eval_user"
+        elif isinstance(user_id_raw, str) and user_id_raw.strip():
+            user_id = user_id_raw.strip()
+        else:
+            return _error(request, "INVALID_ARGUMENT", "user_id must be a non-empty string", 400)
+
+        cases_raw = payload.get("cases")
+        if not isinstance(cases_raw, list) or not cases_raw:
+            return _error(request, "INVALID_ARGUMENT", "cases must be a non-empty array", 400)
+        if len(cases_raw) > 1000:
+            return _error(request, "INVALID_ARGUMENT", "cases must contain at most 1000 items", 400)
+
+        cases: list[dict[str, Any]] = []
+        for index, raw_case in enumerate(cases_raw):
+            if not isinstance(raw_case, dict):
+                return _error(request, "INVALID_ARGUMENT", f"cases[{index}] must be an object", 400)
+
+            message_text = raw_case.get("message_text")
+            if not isinstance(message_text, str) or not message_text.strip():
+                return _error(
+                    request,
+                    "INVALID_ARGUMENT",
+                    f"cases[{index}].message_text must be a non-empty string",
+                    400,
+                )
+            normalized_case: dict[str, Any] = {
+                "case_id": raw_case.get("case_id"),
+                "message_text": message_text.strip(),
+            }
+
+            metadata_raw = raw_case.get("metadata")
+            if metadata_raw is not None:
+                if not isinstance(metadata_raw, dict):
+                    return _error(request, "INVALID_ARGUMENT", f"cases[{index}].metadata must be an object", 400)
+                normalized_case["metadata"] = dict(metadata_raw)
+
+            for optional_field in ("active_workflow_id", "expected_action", "expected_workflow_id"):
+                if optional_field not in raw_case:
+                    continue
+                value = raw_case.get(optional_field)
+                if value is None:
+                    normalized_case[optional_field] = None
+                    continue
+                if not isinstance(value, str) or not value.strip():
+                    return _error(
+                        request,
+                        "INVALID_ARGUMENT",
+                        f"cases[{index}].{optional_field} must be a non-empty string or null",
+                        400,
+                    )
+                normalized_case[optional_field] = value.strip()
+
+            cases.append(normalized_case)
+
+        tenant = _tenant_id(request)
+        try:
+            runtime = await _require_orchestration()
+            result = await runtime.evaluate_routing_replay(
+                project_id=project_id,
+                orchestrator_id=orchestrator_id,
+                session_id=session_id,
+                user_id=user_id,
+                cases=cases,
+                tenant_id=tenant,
+            )
+        except OrchestratorRuntimeError as exc:
+            return _error(request, exc.code, exc.message, exc.status_code)
+        except Exception as exc:
+            return _error(request, "INTERNAL", str(exc), 500)
+
+        return _json(request, result)
+
     async def orchestrator_context_get(request: Request) -> JSONResponse:
         try:
             payload = await request.json()
@@ -2403,6 +2510,7 @@ def create_app(
                 f"{base_url}/projects/{{project_id}}/workflow-definitions"
             ),
             "orchestrator_message": f"{base_url}/orchestrator/messages",
+            "orchestrator_eval_replay": f"{base_url}/orchestrator/eval/replay",
             "orchestrator_stack_template": f"{base_url}/orchestrator/sessions/{{session_id}}/stack?project_id={{project_id}}",
             "orchestrator_context_get": f"{base_url}/orchestrator/context/get",
             "orchestrator_context_set": f"{base_url}/orchestrator/context/set",
@@ -2532,6 +2640,7 @@ def create_app(
             "/capabilities",
             "/capabilities/{capability_id}/versions",
             "/orchestrator/messages",
+            "/orchestrator/eval/replay",
             "/orchestrator/sessions/{session_id}/stack",
             "/orchestrator/context/get",
             "/orchestrator/context/set",
@@ -2781,6 +2890,7 @@ def create_app(
             f"- Project orchestrator upsert endpoint template: {urls['project_orchestrator_upsert_template']}",
             f"- Project workflow-definition upsert endpoint template: {urls['project_workflow_definition_upsert_template']}",
             f"- Orchestrator message endpoint: {urls['orchestrator_message']}",
+            f"- Orchestrator eval replay endpoint: {urls['orchestrator_eval_replay']}",
             f"- Orchestrator stack endpoint template: {urls['orchestrator_stack_template']}",
             f"- Orchestrator context.get endpoint: {urls['orchestrator_context_get']}",
             f"- Orchestrator context.set endpoint: {urls['orchestrator_context_set']}",
@@ -2819,11 +2929,12 @@ def create_app(
             "8. Configure project orchestrator via `POST /projects/{project_id}/orchestrators`.",
             "9. Run integration checks and ensure status=PASS.",
             "10. For project routing, call `POST /orchestrator/messages` with `project_id`, `session_id`, `user_id`, and `message`.",
-            "11. Use context API (`/orchestrator/context/get|set|unset`) for thread/session context hydration.",
-            "12. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
-            "13. For deterministic package transfer, use `POST /handoff/packages` and replay via `/handoff/packages/{handoff_id}/replay`.",
-            "14. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...` and `GET /runs/{run_id}/ledger`.",
-            "15. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
+            "11. For offline routing quality checks, call `POST /orchestrator/eval/replay` with labeled cases.",
+            "12. Use context API (`/orchestrator/context/get|set|unset`) for thread/session context hydration.",
+            "13. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
+            "14. For deterministic package transfer, use `POST /handoff/packages` and replay via `/handoff/packages/{handoff_id}/replay`.",
+            "15. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...` and `GET /runs/{run_id}/ledger`.",
+            "16. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
             "",
             "## Special instructions and examples",
             "- Keep tenant scope consistent: use the same `X-Tenant-Id` for `/projects`, project-registry bootstrap, and `/orchestrator/messages`.",
@@ -3269,6 +3380,7 @@ def create_app(
         Route("/workflows/{workflow_id}/versions", list_workflow_versions, methods=["GET"]),
         Route("/workflows/{workflow_id}/runs", start_run, methods=["POST"]),
         Route("/orchestrator/messages", orchestrator_message, methods=["POST"]),
+        Route("/orchestrator/eval/replay", orchestrator_eval_replay, methods=["POST"]),
         Route("/orchestrator/sessions/{session_id}/stack", orchestrator_stack, methods=["GET"]),
         Route("/orchestrator/context/get", orchestrator_context_get, methods=["POST"]),
         Route("/orchestrator/context/set", orchestrator_context_set, methods=["POST"]),
