@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.9.0
+  version: 0.11.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -263,7 +263,7 @@ paths:
                     thread_id: thr_01
                     item_id: null
                     action:
-                      type: interrupt.approve
+                      action_type: interrupt.approve
                       payload:
                         run_id: run_01
                         interrupt_id: intr_01
@@ -344,6 +344,85 @@ paths:
                 $ref: '#/components/schemas/WorkflowStackResponse'
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }
+  /orchestrator/context/get:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [orchestrator]
+      summary: context.get for thread/session scope
+      description: >
+        Reads persisted context values for `session` or `thread` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorContextGetRequest'
+      responses:
+        '200':
+          description: Context payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResponse'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+
+  /orchestrator/context/set:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [orchestrator]
+      summary: context.set for thread/session scope
+      description: >
+        Writes or updates persisted context values for `session` or `thread` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorContextSetRequest'
+      responses:
+        '200':
+          description: Context payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResponse'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+
+  /orchestrator/context/unset:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [orchestrator]
+      summary: context.unset for thread/session scope
+      description: >
+        Deletes selected persisted context keys for `session` or `thread` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorContextUnsetRequest'
+      responses:
+        '200':
+          description: Context payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResponse'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /projects:
     parameters:
       - $ref: '#/components/parameters/TenantId'
@@ -385,6 +464,41 @@ paths:
               schema:
                 $ref: '#/components/schemas/Project'
         '400': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+  /projects/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdPath'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    patch:
+      tags: [projects]
+      summary: Update project metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdateRequest'
+            example:
+              project_name: HQ21 Production
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      tags: [projects]
+      summary: Delete project
+      description: Deletes a tenant-scoped project if it has no workflows.
+      responses:
+        '204':
+          description: Deleted
+        '404': { $ref: '#/components/responses/ErrorResponse' }
         '409': { $ref: '#/components/responses/ErrorResponse' }
   /projects/{project_id}/orchestrators:
     parameters:
@@ -1384,23 +1498,32 @@ components:
     ChatKitAction:
       type: object
       description: >
-        `interrupt.cancel` is accepted by protocol but currently returns an explicit
-        error event in runtime.
+        Canonical custom action contract for `threads.custom_action`.
+        Prefer `action_type` with canonical values. Backward-compatible aliases are accepted via `type`.
+        `interrupt.cancel` is accepted by protocol but currently returns an explicit error event in runtime.
       properties:
-        type:
+        action_type:
           type: string
           enum:
             - interrupt.approve
             - interrupt.reject
             - interrupt.submit
             - interrupt.cancel
+        type:
+          type: string
+          description: Backward-compatible alias field mapped to canonical `action_type`.
         payload:
           $ref: '#/components/schemas/ChatKitActionPayload'
-      required: [type]
+      anyOf:
+        - required: [action_type]
+        - required: [type]
 
     ChatKitActionPayload:
       type: object
       properties:
+        action_type:
+          type: string
+          description: Optional canonical action type override when top-level alias `type` is used.
         run_id: { type: string }
         interrupt_id: { type: string }
         idempotency_key: { type: string }
@@ -1591,6 +1714,70 @@ components:
         correlation_id: { type: string }
       required: [project_id, session_id, items]
 
+    OrchestratorContextScope:
+      type: string
+      enum: [session, thread]
+
+    OrchestratorContextGetRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        keys:
+          type: array
+          items: { type: string }
+      required: [scope, scope_id]
+
+    OrchestratorContextSetRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        values:
+          type: object
+          additionalProperties: true
+      required: [scope, scope_id, values]
+
+    OrchestratorContextUnsetRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        keys:
+          type: array
+          items: { type: string }
+      required: [scope, scope_id, keys]
+
+    OrchestratorContextResponse:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        context:
+          type: object
+          additionalProperties: true
+        removed_keys:
+          type: array
+          items: { type: string }
+        correlation_id: { type: string }
+      required: [scope, scope_id, context]
+
     ProjectCreateRequest:
       type: object
       properties:
@@ -1604,6 +1791,14 @@ components:
         settings:
           type: object
       required: [project_id, project_name]
+
+    ProjectUpdateRequest:
+      type: object
+      properties:
+        project_name:
+          type: string
+          description: Human-readable project display name.
+      required: [project_name]
 
     Project:
       type: object
@@ -1834,7 +2029,8 @@ components:
           description: >
             Node-specific config object. For `set_state` nodes, use either legacy
             single assignment fields (`target`, `expression`) or batch
-            assignments via `assignments[]`.
+            assignments via `assignments[]`. For `integration_http` nodes configure
+            external API call settings and response mapping.
           properties:
             target:
               type: string
@@ -1853,6 +2049,49 @@ components:
             capability_version:
               type: string
               description: Optional capability contract version pinned for this node execution.
+            url:
+              type: string
+              description: integration_http endpoint URL.
+            method:
+              type: string
+              enum: [GET, POST, PUT, PATCH, DELETE]
+            headers:
+              type: object
+              additionalProperties: { type: string }
+            auth:
+              type: object
+              properties:
+                type: { type: string, enum: [none, bearer, basic] }
+                token: { type: string }
+                token_env: { type: string }
+                username: { type: string }
+                password: { type: string }
+                username_env: { type: string }
+                password_env: { type: string }
+              additionalProperties: true
+            timeout_s:
+              type: number
+              minimum: 0.1
+            retry_attempts:
+              type: integer
+              minimum: 0
+            retry_backoff_s:
+              type: number
+              minimum: 0
+            request_body_expression:
+              type: string
+            response_state_target:
+              type: string
+            response_body_state_target:
+              type: string
+            fail_on_status:
+              type: boolean
+            allowed_statuses:
+              type: array
+              items:
+                type: integer
+                minimum: 100
+                maximum: 599
       required: [id, type]
 
     WorkflowEdge:
@@ -2254,6 +2493,9 @@ components:
             project_workflow_definition_upsert_template: { type: string }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
+            orchestrator_context_get: { type: string, format: uri }
+            orchestrator_context_set: { type: string, format: uri }
+            orchestrator_context_unset: { type: string, format: uri }
             handoff_create: { type: string, format: uri }
             handoff_replay_template: { type: string }
             run_ledger_template: { type: string }
@@ -2309,6 +2551,9 @@ components:
             project_workflow_definition_upsert_template: { type: string }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
+            orchestrator_context_get: { type: string, format: uri }
+            orchestrator_context_set: { type: string, format: uri }
+            orchestrator_context_unset: { type: string, format: uri }
             handoff_create: { type: string, format: uri }
             handoff_replay_template: { type: string }
             run_ledger_template: { type: string }

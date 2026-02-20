@@ -40,6 +40,15 @@ Status: Draft
 - Emits `tool_called` events for observability.
 - If no MCP executor is wired into runtime, MCP nodes fail with `MCP executor not configured`.
 
+## Integration HTTP executor
+- Executes direct HTTP requests for `integration_http` nodes.
+- Supports:
+  - `headers` and auth header injection
+  - timeout (`timeout_s`)
+  - retry attempts (`retry_attempts`) with backoff (`retry_backoff_s`)
+  - response mapping into node output and optional state targets
+- If no integration HTTP executor is wired, `integration_http` nodes fail with `integration_http executor not configured`.
+
 ## Output validation
 - Structured outputs are validated with JSON Schema when `output_schema` is provided.
 - When `output_schema` is present for JSON outputs, the schema is also passed to the model as

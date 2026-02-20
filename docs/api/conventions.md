@@ -59,6 +59,8 @@ Common error codes:
 - Keys are scoped by `(tenant_id, idempotency_key, operation)`.
 
 For ChatKit custom actions (`type=threads.custom_action`):
+- Preferred canonical action field: `action.action_type`.
+- Backward-compatible alias field: `action.type` (resolved to canonical action type by runtime).
 - Preferred payload key: `idempotency_key`.
 - Backward-compatible alias: `action_id`.
 - If neither key is provided, runtime derives a deterministic key from `run_id`, `interrupt_id`, and action type.

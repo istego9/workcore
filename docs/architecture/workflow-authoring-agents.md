@@ -79,6 +79,7 @@ For machine validation, use:
 - `start`
 - `agent`
 - `mcp`
+- `integration_http`
 - `if_else`
 - `while`
 - `set_state`
@@ -111,6 +112,10 @@ Do not introduce custom node types.
 - `mcp`
   - `server` and `tool` should be set (warning otherwise).
   - Optional: `arguments`, `timeout_s`, `allowed_tools`.
+- `integration_http`
+  - Required: `url`.
+  - Optional: `method`, `headers`, `auth`, `timeout_s`, `retry_attempts`, `retry_backoff_s`.
+  - Optional mapping fields: `request_body_expression`, `response_state_target`, `response_body_state_target`.
 - `if_else`
   - `branches` must contain at least one `{ condition, target }`.
   - `else_target` is optional but recommended for deterministic routing.

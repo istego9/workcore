@@ -59,6 +59,7 @@ Ordering guarantees:
 - Capability Registry Service: /capabilities, /capabilities/{capability_id}/versions
 - Handoff Service: /handoff/packages, /handoff/packages/{handoff_id}/replay
 - Project Router / Orchestrator entry: /orchestrator/messages, /orchestrator/sessions/{session_id}/stack
+- Context API: /orchestrator/context/get, /orchestrator/context/set, /orchestrator/context/unset
 - Streaming Service: /runs/{run_id}/stream (SSE)
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*
 - ChatKit Server: chat sessions/threads, widget/actions endpoints

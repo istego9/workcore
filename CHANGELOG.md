@@ -4,6 +4,60 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.10.0`
+- Current API version: `0.11.0`
+- Compatibility: additive (new context endpoints and workflow node contract extension; existing routes remain supported)
+
+### Added
+- Orchestrator context endpoints:
+  - `POST /orchestrator/context/get`
+  - `POST /orchestrator/context/set`
+  - `POST /orchestrator/context/unset`
+- New API schemas:
+  - `OrchestratorContextScope`
+  - `OrchestratorContextGetRequest`
+  - `OrchestratorContextSetRequest`
+  - `OrchestratorContextUnsetRequest`
+  - `OrchestratorContextResponse`
+- Workflow node contract extension for `integration_http` configuration fields.
+
+### Changed
+- `ChatKitAction` now supports canonical action field `action_type` with backward-compatible alias field `type`.
+- ChatKit custom action examples now use canonical `action_type`.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-19
+
+### API diff vs previous version
+- Previous API version: `0.9.0`
+- Current API version: `0.10.0`
+- Compatibility: additive (project management endpoints extended without breaking existing contracts)
+
+### Added
+- Project management endpoints:
+  - `PATCH /projects/{project_id}` updates project metadata (`project_name`).
+  - `DELETE /projects/{project_id}` deletes a project when it has no workflows.
+- New API schema:
+  - `ProjectUpdateRequest`
+
+### Changed
+- API reference now documents project update/delete flows for admin Explore UX.
+- `DELETE /projects/{project_id}` now returns `409` when a project still contains workflows.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-02-18
 
 ### API diff vs previous version

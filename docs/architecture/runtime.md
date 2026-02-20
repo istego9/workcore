@@ -13,6 +13,7 @@ Project-level orchestration adds an intent-routing layer in front of workflow ex
 - mode is selected: direct workflow (`workflow_id` provided) or orchestrated
 - orchestrator evaluates intent and policy, then issues workflow adapter action (start/resume/cancel)
 - every inbound message produces one orchestration decision log
+- session context (when present) is injected into workflow inputs as `inputs.context`
 
 ## Run lifecycle
 Statuses:
@@ -84,6 +85,29 @@ Low-confidence handling:
 - Ask one clarifying question (`DISAMBIGUATE`) and persist pending disambiguation state.
 - Retry intent routing after user reply.
 - Move to fallback after max disambiguation turns.
+
+## Unified context API (thread/session)
+- Runtime exposes context operations:
+  - `context.get`
+  - `context.set`
+  - `context.unset`
+- Supported scopes:
+  - `session` (typically keyed by orchestrator `session_id`)
+  - `thread` (typically keyed by ChatKit `thread_id`)
+- Context values are tenant-scoped persisted key/value records.
+- Orchestrator routing can prefill workflow inputs from `session` scope (`inputs.context`).
+
+## Integration HTTP node (non-MCP)
+- Node type: `integration_http`
+- Purpose: call external HTTP APIs from workflow runtime without MCP indirection.
+- Core behavior:
+  - configurable method/url/headers/auth
+  - timeout + retry policy
+  - optional request body expression evaluated from runtime context
+  - response mapped to node output and optionally to configured state targets
+- Error behavior:
+  - `fail_on_status=true` fails node on unexpected HTTP status (after retries)
+  - `allowed_statuses` can override status acceptance
 
 ## Cancel and commit-point semantics
 - Engine adapter exposes per-run state with `cancellable` and optional `commit_point_reached`.

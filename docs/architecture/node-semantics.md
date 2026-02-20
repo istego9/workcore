@@ -52,6 +52,13 @@ Status: Draft
 - Tool allowlist and auth via secrets manager.
 - Output is normalized to JSON and stored in node_runs.output.
 
+## Integration HTTP
+- Executes direct HTTP request from runtime (non-MCP).
+- Supports config for URL/method/headers/auth, timeout, and retries.
+- Optional request body can be produced from expression context (`inputs`, `state`, `node_outputs`).
+- Response envelope is stored in `node_runs.output` / `node_outputs[node_id]`.
+- Optional config paths can write response envelope/body into run state.
+
 ## Output
 - Produces final run output (text or JSON).
 - Output can reference state and previous node outputs.

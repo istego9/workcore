@@ -71,6 +71,25 @@ All API errors use:
 
 Runtime applies `assignments[]` in order when present. If `assignments[]` is missing, runtime falls back to legacy `target` + `expression`.
 
+## Integration HTTP node (`integration_http`)
+Use `integration_http` for non-MCP external API calls directly in workflow runtime.
+
+Supported config fields:
+- `url` (required)
+- `method` (`GET|POST|PUT|PATCH|DELETE`, default `GET`)
+- `headers` (optional object)
+- `auth` (optional object):
+  - `type`: `none|bearer|basic`
+  - `token` or `token_env` (for bearer)
+  - `username/password` or `username_env/password_env` (for basic)
+- `timeout_s` (optional, default runtime value)
+- `retry_attempts` and `retry_backoff_s` (optional)
+- `request_body_expression` (optional expression evaluated against `inputs/state/node_outputs`)
+- `response_state_target` (optional state path for full response envelope)
+- `response_body_state_target` (optional state path for response body)
+- `fail_on_status` (optional bool, default `true`)
+- `allowed_statuses` (optional list of HTTP status codes)
+
 ## Artifact references and run projections
 For document-heavy workflows, prefer artifact references over inline binary payloads.
 
@@ -175,6 +194,8 @@ Common validation/error behavior:
   - `workflow_id` present -> direct workflow mode.
   - `workflow_id` absent -> orchestrator mode (`orchestrator_id` or project default).
 - Every inbound message creates one orchestration decision log.
+- Session context prefill:
+  - Runtime injects persisted `session` context into workflow inputs as `inputs.context` (when available).
 
 Validation errors:
 - `ERR_PROJECT_ID_REQUIRED`
@@ -184,6 +205,12 @@ Validation errors:
 
 Session stack diagnostics:
 - `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
+
+Session/thread context API:
+- `POST /orchestrator/context/get` (`context.get`)
+- `POST /orchestrator/context/set` (`context.set`)
+- `POST /orchestrator/context/unset` (`context.unset`)
+- Scopes: `session` and `thread`
 
 ## Agent integration kit URL
 - Markdown entrypoint: `/agent-integration-kit`
@@ -261,6 +288,10 @@ For full user interaction (approval/forms/files) integrate `POST /chatkit` in ad
   - `threads.create`
   - `threads.add_user_message`
   - `threads.custom_action`
+- For `threads.custom_action`:
+  - Preferred canonical field: `action.action_type`
+  - Backward-compatible alias field: `action.type`
+  - Runtime resolves aliases to canonical action type before execution/idempotency.
 - For `threads.create` pass `metadata.workflow_id` (and optional `metadata.workflow_version_id`).
 - Recommended metadata keys for reconciliation:
   - `external_user_id`
@@ -304,7 +335,7 @@ curl -N -X POST "https://api.workcore.build/chatkit" \
     "params": {
       "thread_id": "thr_01",
       "action": {
-        "type": "interrupt.approve",
+        "action_type": "interrupt.approve",
         "payload": {
           "run_id": "run_01",
           "interrupt_id": "intr_01",

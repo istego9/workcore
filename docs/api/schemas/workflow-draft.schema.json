@@ -31,6 +31,7 @@
         "start",
         "agent",
         "mcp",
+        "integration_http",
         "if_else",
         "while",
         "set_state",
@@ -109,6 +110,48 @@
       "anyOf": [{ "required": ["target", "expression"] }, { "required": ["assignments"] }],
       "additionalProperties": true
     },
+    "integrationHttpConfig": {
+      "type": "object",
+      "required": ["url"],
+      "properties": {
+        "ui": { "$ref": "#/$defs/ui" },
+        "url": { "type": "string", "minLength": 1 },
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          "default": "GET"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["none", "bearer", "basic"], "default": "none" },
+            "token": { "type": "string" },
+            "token_env": { "type": "string" },
+            "username": { "type": "string" },
+            "password": { "type": "string" },
+            "username_env": { "type": "string" },
+            "password_env": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "timeout_s": { "type": "number", "minimum": 0.1 },
+        "retry_attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "retry_backoff_s": { "type": "number", "minimum": 0, "default": 0 },
+        "request_body_expression": { "type": "string" },
+        "response_state_target": { "type": "string" },
+        "response_body_state_target": { "type": "string" },
+        "fail_on_status": { "type": "boolean", "default": true },
+        "allowed_statuses": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+        }
+      },
+      "additionalProperties": true
+    },
     "nodeConfig": {
       "type": "object",
       "properties": {
@@ -155,6 +198,16 @@
           },
           "then": {
             "properties": { "config": { "$ref": "#/$defs/setStateConfig" } },
+            "required": ["config"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "integration_http" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": { "config": { "$ref": "#/$defs/integrationHttpConfig" } },
             "required": ["config"]
           }
         }

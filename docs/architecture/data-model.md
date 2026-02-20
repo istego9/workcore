@@ -308,6 +308,18 @@ Current orchestration state per project/session.
 
 PK: (tenant_id, project_id, session_id)
 
+### orchestrator_context
+Unified persisted context key/value store for orchestrator/chat scopes.
+- tenant_id (text)
+- project_id (text, not null) // project scope; use empty string when scope is not project-bound
+- scope_type (text) // `session` | `thread`
+- scope_id (text) // `session_id` or `thread_id`
+- key (text)
+- value (jsonb)
+- created_at, updated_at (timestamptz)
+
+PK: (tenant_id, project_id, scope_type, scope_id, key)
+
 ### workflow_stack_entries
 Session run stack history for diagnostics and switching trace.
 - id (text, pk)
@@ -395,6 +407,7 @@ Atomic handoff package intake records with replay metadata.
 - runs: index by (tenant_id, workflow_id, status, created_at).
 - node_runs: index by (run_id, status).
 - events: index by (tenant_id, run_id, created_at).
+- orchestrator_context: index by (tenant_id, project_id, scope_type, scope_id, updated_at).
 - capabilities: index by (tenant_id, capability_id, created_at).
 - run_ledger: index by (tenant_id, run_id, created_at).
 - workflow_handoffs: index by (tenant_id, workflow_id, created_at).
