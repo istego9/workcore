@@ -14,6 +14,7 @@ Project-level orchestration adds an intent-routing layer in front of workflow ex
 - orchestrator evaluates intent and policy, then issues workflow adapter action (start/resume/cancel)
 - every inbound message produces one orchestration decision log
 - orchestrator response includes `decision_trace` with candidate scores, selected workflow/action, and selection/switch reason
+- orchestrator response includes standardized `action_error` contract (`code`, `message`, `retryable`, `category`, `action`) when route/action constraints block normal execution
 - session context (when present) is injected into workflow inputs as `inputs.context`
 
 ## Run lifecycle

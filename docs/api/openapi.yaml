@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.13.0
+  version: 0.14.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -1719,6 +1719,18 @@ components:
           nullable: true
       required: [mode, candidates, selected_action, reason_codes, selection_reason]
 
+    OrchestratorActionError:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+        category:
+          type: string
+          enum: [route, action]
+        action: { type: string }
+      required: [code, message, retryable, category, action]
+
     OrchestratorMessageResponse:
       type: object
       properties:
@@ -1748,6 +1760,10 @@ components:
           $ref: '#/components/schemas/RoutingDecision'
         decision_trace:
           $ref: '#/components/schemas/OrchestratorDecisionTrace'
+        action_error:
+          allOf:
+            - $ref: '#/components/schemas/OrchestratorActionError'
+          nullable: true
         message:
           $ref: '#/components/schemas/OrchestratorResponseMessage'
         events:

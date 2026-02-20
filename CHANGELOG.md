@@ -7,6 +7,31 @@ The format follows a simple date-based log.
 ## 2026-02-20
 
 ### API diff vs previous version
+- Previous API version: `0.13.0`
+- Current API version: `0.14.0`
+- Compatibility: additive (orchestrator response now includes standardized route/action error contract)
+
+### Added
+- New schema: `OrchestratorActionError`
+- New response field: `OrchestratorMessageResponse.action_error`
+
+### Changed
+- Orchestrator route/action failures that do not raise transport-level HTTP errors now expose normalized error metadata:
+  - `code`
+  - `message`
+  - `retryable`
+  - `category`
+  - `action`
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
 - Previous API version: `0.12.0`
 - Current API version: `0.13.0`
 - Compatibility: additive (`/orchestrator/messages` response extended with decision trace fields)

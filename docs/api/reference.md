@@ -199,6 +199,9 @@ Common validation/error behavior:
   - selected action + selected workflow
   - explicit `selection_reason`
   - switch details (`switch_from_workflow_id`, `switch_to_workflow_id`, `switch_reason`) when switching happens
+- Route/action error contract in orchestrator response:
+  - `action_error` is present when router selected an action but execution is restricted/failed by policy.
+  - structure: `code`, `message`, `retryable`, `category` (`route` or `action`), `action`.
 - Session context prefill:
   - Runtime injects persisted `session` context into workflow inputs as `inputs.context` (when available).
 
