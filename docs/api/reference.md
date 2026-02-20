@@ -194,6 +194,11 @@ Common validation/error behavior:
   - `workflow_id` present -> direct workflow mode.
   - `workflow_id` absent -> orchestrator mode (`orchestrator_id` or project default).
 - Every inbound message creates one orchestration decision log.
+- `POST /orchestrator/messages` response now includes `decision_trace` for routing transparency:
+  - candidate workflows with `score` and `reason_codes`
+  - selected action + selected workflow
+  - explicit `selection_reason`
+  - switch details (`switch_from_workflow_id`, `switch_to_workflow_id`, `switch_reason`) when switching happens
 - Session context prefill:
   - Runtime injects persisted `session` context into workflow inputs as `inputs.context` (when available).
 

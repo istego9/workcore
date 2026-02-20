@@ -1,7 +1,7 @@
 # WorkCore Routing + Custom Actions Unification - Spec-First Action Items
 
 Date: 2026-02-20
-Status: IN PROGRESS (P0 delivered, P1.1 delivered, P1.2+ pending)
+Status: IN PROGRESS (P0 delivered, P1.1/P1.2 delivered, P1.3+ pending)
 Task classification: A (new subsystem pieces), B (API/schema contract), C (runtime/event semantics), D (DB migration), E (external integration behavior)
 
 ## Execution update (2026-02-20)
@@ -22,6 +22,11 @@ Task classification: A (new subsystem pieces), B (API/schema contract), C (runti
     - scalar typing for safe primitive literals
     - `documents` passthrough
     - projection path validation for `state_exclude_paths` / `output_include_paths`
+- P1.2 implemented:
+  - `POST /orchestrator/messages` now returns `decision_trace` with:
+    - candidates + scores
+    - selected action/workflow
+    - selection reason and switch reason details
 
 ## Current-state gap assessment (against request)
 - P0.1 `threads.custom_action`: partially implemented in ChatKit runtime, but only for a fixed action enum and without a canonical `action_type` contract + explicit alias map.
@@ -29,7 +34,7 @@ Task classification: A (new subsystem pieces), B (API/schema contract), C (runti
 - P0.3 integration HTTP node (non-MCP): not implemented in runtime engine/executors.
 - P0.4 profile-like flow pattern (`context + integration + prefill`): no standard first-class workflow pattern yet; behavior is still distributed.
 - P1.1 custom action payload normalization: implemented natively in ChatKit runtime + documented in OpenAPI/reference.
-- P1.2 decision trace in response: partial persistence exists (`orchestration_decisions.candidates/context_ref`), but response payload does not expose a standardized trace object for debug.
+- P1.2 decision trace in response: implemented as standardized `decision_trace` object in orchestrator message response.
 - P1.3 standardized route/action error contract: partial (`error.code/error.message/correlation_id` exists), but route/action-specific catalog is not standardized end-to-end.
 - P2.1 routing policy knobs: current policy supports `confidence_threshold`, `switch_margin`, `max_disambiguation_turns`, `top_k_candidates`; no `sticky`, `allow_switch`, `explicit_switch_only`, `cooldown`.
 - P2.2 anti-flip/hysteresis: partially approximated via `switch_margin`; no explicit hysteresis/cooldown policy model.

@@ -7,6 +7,31 @@ The format follows a simple date-based log.
 ## 2026-02-20
 
 ### API diff vs previous version
+- Previous API version: `0.12.0`
+- Current API version: `0.13.0`
+- Compatibility: additive (`/orchestrator/messages` response extended with decision trace fields)
+
+### Added
+- New response schema: `OrchestratorDecisionTraceCandidate`
+- New response schema: `OrchestratorDecisionTrace`
+- `OrchestratorMessageResponse.decision_trace` with:
+  - workflow candidates and scores
+  - selected action/workflow
+  - reason codes and selection reason
+  - switch details (`switch_from_workflow_id`, `switch_to_workflow_id`, `switch_reason`)
+
+### Changed
+- API reference now documents decision-trace payload for orchestrator routing transparency.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
 - Previous API version: `0.11.0`
 - Current API version: `0.12.0`
 - Compatibility: additive (ChatKit custom action payload contract clarified and validated; existing payload keys remain supported)

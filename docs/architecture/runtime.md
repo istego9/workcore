@@ -13,6 +13,7 @@ Project-level orchestration adds an intent-routing layer in front of workflow ex
 - mode is selected: direct workflow (`workflow_id` provided) or orchestrated
 - orchestrator evaluates intent and policy, then issues workflow adapter action (start/resume/cancel)
 - every inbound message produces one orchestration decision log
+- orchestrator response includes `decision_trace` with candidate scores, selected workflow/action, and selection/switch reason
 - session context (when present) is injected into workflow inputs as `inputs.context`
 
 ## Run lifecycle
