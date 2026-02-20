@@ -221,6 +221,18 @@ class ApiTests(unittest.TestCase):
 
         asyncio.run(_setup())
 
+    def _set_heuristic_router(self):
+        from apps.orchestrator.llm_adapter import ResponsesLLMRouter
+
+        self.client.get("/health")
+        ctx = self.client.app.state.api_context
+
+        async def _set_router():
+            await ctx.ensure_orchestration()
+            ctx.project_orchestrator.llm_router = ResponsesLLMRouter(force_heuristic=True)
+
+        asyncio.run(_set_router())
+
     def test_create_project(self):
         response = self.client.post(
             "/projects",
@@ -680,6 +692,152 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(trace.get("switch_reason"))
         self.assertTrue(payload.get("run_id"))
 
+    def test_orchestrator_policy_disables_switching(self):
+        wf_active, _ = self._create_interaction_workflow()
+        wf_target, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_switch_disabled",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_active,
+                    "name": "Current flow",
+                    "description": "Currently running",
+                    "tags": ["current"],
+                    "examples": ["continue current"],
+                },
+                {
+                    "workflow_id": wf_target,
+                    "name": "Card opening",
+                    "description": "Open a card",
+                    "tags": ["карта", "card"],
+                    "examples": ["открыть карту"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": False,
+            },
+        )
+        self._set_heuristic_router()
+        start_active = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_disabled",
+                "user_id": "u_switch_disabled",
+                "project_id": "proj_switch_disabled",
+                "workflow_id": wf_active,
+                "message": {"id": "m_switch_disabled_1", "text": "start active"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(start_active.status_code, 200)
+
+        switch_response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_disabled",
+                "user_id": "u_switch_disabled",
+                "project_id": "proj_switch_disabled",
+                "message": {"id": "m_switch_disabled_2", "text": "переключи на карту"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(switch_response.status_code, 200)
+        payload = switch_response.json()
+        self.assertEqual(payload["chosen_action"], "RESUME_CURRENT")
+        self.assertEqual(payload["chosen_workflow_id"], wf_active)
+        action_error = payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_SWITCH_DISABLED")
+        self.assertEqual(action_error.get("category"), "action")
+
+    def test_orchestrator_switch_cooldown_blocks_rapid_switches(self):
+        wf_active, _ = self._create_interaction_workflow()
+        wf_target_a, _ = self._create_interaction_workflow()
+        wf_target_b, _ = self._create_interaction_workflow()
+        self._bootstrap_project(
+            project_id="proj_switch_cooldown",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_active,
+                    "name": "Current flow",
+                    "description": "Current process",
+                    "tags": ["active-flow"],
+                    "examples": ["start active flow"],
+                },
+                {
+                    "workflow_id": wf_target_a,
+                    "name": "Card flow",
+                    "description": "Card scenario",
+                    "tags": ["card-a"],
+                    "examples": ["switch to card a"],
+                },
+                {
+                    "workflow_id": wf_target_b,
+                    "name": "Loan flow",
+                    "description": "Loan scenario",
+                    "tags": ["loan-b"],
+                    "examples": ["switch to loan b"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": True,
+                "cooldown_seconds": 3600,
+            },
+        )
+        self._set_heuristic_router()
+        start_active = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_cooldown",
+                "user_id": "u_switch_cooldown",
+                "project_id": "proj_switch_cooldown",
+                "workflow_id": wf_active,
+                "message": {"id": "m_switch_cooldown_1", "text": "start active"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(start_active.status_code, 200)
+
+        first_switch = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_cooldown",
+                "user_id": "u_switch_cooldown",
+                "project_id": "proj_switch_cooldown",
+                "message": {"id": "m_switch_cooldown_2", "text": "switch to card-a"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(first_switch.status_code, 200)
+        first_payload = first_switch.json()
+        self.assertEqual(first_payload["chosen_action"], "SWITCH_WORKFLOW")
+        self.assertEqual(first_payload["chosen_workflow_id"], wf_target_a)
+
+        second_switch = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_cooldown",
+                "user_id": "u_switch_cooldown",
+                "project_id": "proj_switch_cooldown",
+                "message": {"id": "m_switch_cooldown_3", "text": "switch to loan-b"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(second_switch.status_code, 200)
+        second_payload = second_switch.json()
+        self.assertEqual(second_payload["chosen_action"], "RESUME_CURRENT")
+        self.assertEqual(second_payload["chosen_workflow_id"], wf_target_a)
+        action_error = second_payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_SWITCH_COOLDOWN_ACTIVE")
+        self.assertTrue(action_error.get("retryable"))
+
     def test_orchestrator_cancel_not_allowed(self):
         wf_active, _ = self._create_interaction_workflow()
         self._bootstrap_project(
@@ -739,8 +897,6 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(action_error.get("retryable"))
 
     def test_orchestrator_cancel_without_active_workflow_returns_action_error(self):
-        from apps.orchestrator.llm_adapter import ResponsesLLMRouter
-
         workflow_id, _ = self._create_workflow()
         self._bootstrap_project(
             project_id="proj_cancel_no_active",
@@ -760,14 +916,7 @@ class ApiTests(unittest.TestCase):
                 "top_k_candidates": 10,
             },
         )
-        self.client.get("/health")
-        ctx = self.client.app.state.api_context
-
-        async def _set_heuristic_router():
-            await ctx.ensure_orchestration()
-            ctx.project_orchestrator.llm_router = ResponsesLLMRouter(force_heuristic=True)
-
-        asyncio.run(_set_heuristic_router())
+        self._set_heuristic_router()
 
         response = self.client.post(
             "/orchestrator/messages",

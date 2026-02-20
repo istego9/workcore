@@ -29,6 +29,11 @@ class RoutingPolicy:
     switch_margin: float = 0.2
     max_disambiguation_turns: int = 2
     top_k_candidates: int = 20
+    sticky: bool = False
+    allow_switch: bool = True
+    explicit_switch_only: bool = False
+    cooldown_seconds: int = 0
+    hysteresis_margin: float = 0.0
 
     @classmethod
     def from_dict(cls, payload: Optional[Dict[str, Any]]) -> "RoutingPolicy":
@@ -37,11 +42,21 @@ class RoutingPolicy:
         switch_margin = _safe_float(value.get("switch_margin"), 0.2)
         max_turns = _safe_int(value.get("max_disambiguation_turns"), 2)
         top_k = _safe_int(value.get("top_k_candidates"), 20)
+        sticky = _safe_bool(value.get("sticky"), False)
+        allow_switch = _safe_bool(value.get("allow_switch"), True)
+        explicit_switch_only = _safe_bool(value.get("explicit_switch_only"), False)
+        cooldown_seconds = _safe_int(value.get("cooldown_seconds"), 0)
+        hysteresis_margin = _safe_float(value.get("hysteresis_margin"), 0.0)
         return cls(
             confidence_threshold=max(0.0, min(confidence_threshold, 1.0)),
             switch_margin=max(0.0, min(switch_margin, 1.0)),
             max_disambiguation_turns=max(0, max_turns),
             top_k_candidates=max(1, min(100, top_k)),
+            sticky=sticky,
+            allow_switch=allow_switch,
+            explicit_switch_only=explicit_switch_only,
+            cooldown_seconds=max(0, cooldown_seconds),
+            hysteresis_margin=max(0.0, min(hysteresis_margin, 1.0)),
         )
 
 
@@ -375,9 +390,17 @@ class ProjectOrchestratorRuntime:
                         "options": [],
                     }
                 elif active_state and target_workflow != active_state.workflow_id:
+                    explicit_switch_requested = self._is_explicit_switch_request(request.message_text)
+                    switch_policy_error = self._switch_policy_error_code(
+                        policy=policy,
+                        recent_decisions=recent_decisions,
+                        explicit_switch_requested=explicit_switch_requested,
+                    )
+                    required_switch_margin = min(1.0, policy.switch_margin + policy.hysteresis_margin)
                     if (
-                        decision.confidence >= policy.confidence_threshold
-                        and decision.switch_margin >= policy.switch_margin
+                        switch_policy_error is None
+                        and decision.confidence >= policy.confidence_threshold
+                        and decision.switch_margin >= required_switch_margin
                     ):
                         if not active_state.cancellable:
                             action = "RESUME_CURRENT"
@@ -420,6 +443,8 @@ class ProjectOrchestratorRuntime:
                             )
                     else:
                         action = "RESUME_CURRENT"
+                        if switch_policy_error:
+                            error_code = switch_policy_error
                         resumed = await self.workflow_adapter.resume(
                             active_state.run_id,
                             request.session_id,
@@ -430,7 +455,10 @@ class ProjectOrchestratorRuntime:
                         run_id = resumed.run_id
                         events = resumed.events
                         chosen_workflow_id = active_state.workflow_id
-                        message_payload = self._response_message_from_events(events)
+                        if switch_policy_error:
+                            message_payload = self._switch_policy_message(switch_policy_error)
+                        else:
+                            message_payload = self._response_message_from_events(events)
                         state.active_run_id = None if resumed.state_snapshot.status in TERMINAL_STATUSES else resumed.run_id
                 elif active_state and target_workflow == active_state.workflow_id:
                     action = "RESUME_CURRENT"
@@ -643,6 +671,60 @@ class ProjectOrchestratorRuntime:
             return items[:top_k]
         return items
 
+    def _switch_policy_error_code(
+        self,
+        policy: RoutingPolicy,
+        recent_decisions: Sequence[OrchestrationDecisionRecord],
+        explicit_switch_requested: bool,
+    ) -> Optional[str]:
+        if not policy.allow_switch:
+            return "ERR_SWITCH_DISABLED"
+        if policy.cooldown_seconds > 0:
+            now = _now()
+            for decision in recent_decisions:
+                if decision.chosen_action != "SWITCH_WORKFLOW":
+                    continue
+                elapsed_seconds = (now - decision.created_at).total_seconds()
+                if elapsed_seconds < policy.cooldown_seconds:
+                    return "ERR_SWITCH_COOLDOWN_ACTIVE"
+                break
+        if policy.explicit_switch_only and not explicit_switch_requested:
+            return "ERR_SWITCH_EXPLICIT_REQUIRED"
+        if policy.sticky and not explicit_switch_requested:
+            return "ERR_STICKY_POLICY_ACTIVE"
+        return None
+
+    @staticmethod
+    def _is_explicit_switch_request(message_text: str) -> bool:
+        text = (message_text or "").strip().lower()
+        if not text:
+            return False
+        tokens = (
+            "переключ",
+            "смени",
+            "смени ",
+            "другой процесс",
+            "другой workflow",
+            "switch",
+            "change workflow",
+            "use another flow",
+        )
+        return any(token in text for token in tokens)
+
+    @staticmethod
+    def _switch_policy_message(error_code: str) -> Dict[str, Any]:
+        if error_code == "ERR_SWITCH_DISABLED":
+            text = "Переключение workflow отключено политикой маршрутизации."
+        elif error_code == "ERR_SWITCH_COOLDOWN_ACTIVE":
+            text = "Переключение временно недоступно: действует cooldown после предыдущего переключения."
+        elif error_code == "ERR_SWITCH_EXPLICIT_REQUIRED":
+            text = "Для переключения workflow укажите явную команду на смену сценария."
+        elif error_code == "ERR_STICKY_POLICY_ACTIVE":
+            text = "Сохраняем текущий workflow по sticky-политике."
+        else:
+            text = "Переключение workflow недоступно из-за политики маршрутизации."
+        return {"type": "assistant_message", "text": text, "options": []}
+
     def _context_summary(self, decisions: Sequence[OrchestrationDecisionRecord]) -> str:
         if not decisions:
             return ""
@@ -782,7 +864,13 @@ class ProjectOrchestratorRuntime:
         message = str(message_payload.get("text") or "").strip() or "Routing action error."
         code = error_code.strip()
         category = "route" if code in {"ERR_FALLBACK_NOT_AVAILABLE"} else "action"
-        retryable = code in {"ERR_NO_ACTIVE_WORKFLOW", "ERR_FALLBACK_NOT_AVAILABLE"}
+        retryable = code in {
+            "ERR_NO_ACTIVE_WORKFLOW",
+            "ERR_FALLBACK_NOT_AVAILABLE",
+            "ERR_SWITCH_COOLDOWN_ACTIVE",
+            "ERR_SWITCH_EXPLICIT_REQUIRED",
+            "ERR_STICKY_POLICY_ACTIVE",
+        }
         return {
             "code": code,
             "message": message,
@@ -804,6 +892,23 @@ def _safe_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _safe_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return default
 
 
 def _new_id(prefix: str) -> str:
