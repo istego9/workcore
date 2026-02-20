@@ -1,3 +1,4 @@
+import os
 import json
 import time
 import unittest
@@ -11,6 +12,8 @@ from apps.orchestrator.webhooks.signing import sign_payload
 
 class WebhooksTests(unittest.TestCase):
     def setUp(self):
+        self._previous_api_token = os.environ.get("WORKCORE_API_AUTH_TOKEN")
+        os.environ.pop("WORKCORE_API_AUTH_TOKEN", None)
         self.workflow_store = InMemoryWorkflowStore()
         self.project_headers = {"X-Project-Id": "proj_webhooks"}
         self.client = TestClient(
@@ -33,6 +36,12 @@ class WebhooksTests(unittest.TestCase):
         workflow_id = response.json()["workflow_id"]
         publish_response = self.client.post(f"/workflows/{workflow_id}/publish", headers=self.project_headers)
         self.workflow_id = publish_response.json()["workflow_id"]
+
+    def tearDown(self):
+        if self._previous_api_token is None:
+            os.environ.pop("WORKCORE_API_AUTH_TOKEN", None)
+        else:
+            os.environ["WORKCORE_API_AUTH_TOKEN"] = self._previous_api_token
 
     def test_inbound_webhook_start_run(self):
         payload = {"action": "start_run", "workflow_id": self.workflow_id, "inputs": {}}

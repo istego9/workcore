@@ -583,6 +583,55 @@ class RuntimeEngineTests(unittest.TestCase):
         self.assertEqual(run.status, "FAILED")
         self.assertTrue(any(evt.type == "node_failed" for evt in events))
 
+    def test_integration_http_maps_response_to_state(self):
+        nodes = [
+            Node("start", "start"),
+            Node(
+                "http",
+                "integration_http",
+                {
+                    "url": "https://api.example.local/profiles/{{inputs['profile_id']}}",
+                    "method": "POST",
+                    "request_body_expression": "{'customer_id': inputs['customer_id']}",
+                    "response_state_target": "integration.profile",
+                    "response_body_state_target": "profile_data",
+                },
+            ),
+            Node("out", "output", {"expression": "state['profile_data']['full_name']"}),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "http"),
+            Edge("http", "out"),
+            Edge("out", "end"),
+        ]
+        captured = {"url": None, "request_body": None}
+
+        def fake_http_executor(run, node, emit):
+            captured["url"] = node.config.get("url")
+            captured["request_body"] = node.config.get("request_body")
+            emit("integration_http_called", {"status_code": 200})
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(
+                output={
+                    "status_code": 200,
+                    "headers": {"content-type": "application/json"},
+                    "body": {"full_name": "Alice Doe"},
+                }
+            )
+
+        engine = self._engine(nodes, edges, executors={"integration_http": fake_http_executor})
+        run = engine.start_run({"profile_id": "p_123", "customer_id": "c_456"})
+        engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(captured["url"], "https://api.example.local/profiles/p_123")
+        self.assertEqual(captured["request_body"], {"customer_id": "c_456"})
+        self.assertEqual(run.state["integration"]["profile"]["status_code"], 200)
+        self.assertEqual(run.state["profile_data"], {"full_name": "Alice Doe"})
+        self.assertEqual(run.outputs, {"result": "Alice Doe"})
+
 
 if __name__ == "__main__":
     unittest.main()

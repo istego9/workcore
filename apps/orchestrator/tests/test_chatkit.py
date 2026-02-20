@@ -133,6 +133,47 @@ class ChatKitTests(unittest.TestCase):
         self.assertTrue(completed)
         self.assertEqual(self.run_store.get(run.id, tenant_id="tenant_test").status, "COMPLETED")
 
+    def test_action_alias_resolves_to_canonical_action_type(self):
+        create_req = ThreadsCreateReq(
+            metadata={"workflow_id": self.workflow_id, "workflow_version_id": self.workflow_version_id},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            )
+        )
+        create_events = asyncio.run(self._collect_events(create_req))
+        thread_id = next(
+            event["thread"]["id"]
+            for event in create_events
+            if event.get("type") == "thread.created"
+        )
+
+        run = next(iter(self.run_store.runs.values()))
+        interrupt = next(iter(run.interrupts.values()))
+
+        action_req = ThreadsCustomActionReq(
+            params=ThreadCustomActionParams(
+                thread_id=thread_id,
+                item_id=None,
+                action=Action(
+                    type="approve",
+                    payload={"run_id": run.id, "interrupt_id": interrupt.id},
+                ),
+            )
+        )
+
+        events = asyncio.run(self._collect_events(action_req))
+        completed = any(
+            event.get("type") == "progress_update"
+            and "completed" in event.get("text", "").lower()
+            for event in events
+        )
+        self.assertTrue(completed)
+        self.assertEqual(self.run_store.get(run.id, tenant_id="tenant_test").status, "COMPLETED")
+
     def test_agent_executor_is_used(self):
         nodes = [
             Node("start", "start"),

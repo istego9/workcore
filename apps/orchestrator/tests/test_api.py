@@ -94,10 +94,18 @@ class AlwaysFailFkLedgerStore:
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        self._previous_api_token = os.environ.get("WORKCORE_API_AUTH_TOKEN")
+        os.environ.pop("WORKCORE_API_AUTH_TOKEN", None)
         self.workflow_store = InMemoryWorkflowStore()
         self.artifact_store = InMemoryArtifactStore()
         self.default_project_id = "proj_test"
         self.client = TestClient(create_app(workflow_store=self.workflow_store, artifact_store=self.artifact_store))
+
+    def tearDown(self):
+        if self._previous_api_token is None:
+            os.environ.pop("WORKCORE_API_AUTH_TOKEN", None)
+        else:
+            os.environ["WORKCORE_API_AUTH_TOKEN"] = self._previous_api_token
 
     def _with_project(self, headers=None, project_id: str | None = None):
         merged = dict(headers or {})
@@ -298,6 +306,71 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/projects", params={"limit": "not_an_int"})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"]["code"], "INVALID_ARGUMENT")
+
+    def test_update_project(self):
+        project_id = "proj_update_me"
+        create_response = self.client.post(
+            "/projects",
+            json={"project_id": project_id, "project_name": "Before Name"},
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        response = self.client.patch(
+            f"/projects/{project_id}",
+            json={"project_name": "After Name"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["project_id"], project_id)
+        self.assertEqual(payload["project_name"], "After Name")
+        self.assertEqual(payload["tenant_id"], "local")
+
+    def test_update_project_validates_payload_and_scope(self):
+        missing_name = self.client.patch("/projects/proj_any", json={})
+        self.assertEqual(missing_name.status_code, 400)
+        self.assertEqual(missing_name.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        not_found = self.client.patch("/projects/proj_missing", json={"project_name": "Updated"})
+        self.assertEqual(not_found.status_code, 404)
+        self.assertEqual(not_found.json()["error"]["code"], "ERR_PROJECT_NOT_FOUND")
+
+    def test_delete_project(self):
+        project_id = "proj_delete_me"
+        create_response = self.client.post(
+            "/projects",
+            json={"project_id": project_id, "project_name": "Delete Me"},
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        delete_response = self.client.delete(f"/projects/{project_id}")
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertEqual(delete_response.text, "")
+
+        list_response = self.client.get("/projects")
+        self.assertEqual(list_response.status_code, 200)
+        project_ids = [item["project_id"] for item in list_response.json()["items"]]
+        self.assertNotIn(project_id, project_ids)
+
+    def test_delete_project_requires_empty_scope(self):
+        project_id = "proj_delete_blocked"
+        create_project_response = self.client.post(
+            "/projects",
+            json={"project_id": project_id, "project_name": "Delete Blocked"},
+        )
+        self.assertEqual(create_project_response.status_code, 201)
+
+        headers = self._with_project(project_id=project_id)
+        workflow_id, _ = self._create_workflow(headers=headers)
+        self.assertTrue(workflow_id.startswith("wf_"))
+
+        delete_response = self.client.delete(f"/projects/{project_id}")
+        self.assertEqual(delete_response.status_code, 409)
+        self.assertEqual(delete_response.json()["error"]["code"], "ERR_PROJECT_NOT_EMPTY")
+
+    def test_delete_project_returns_not_found_when_missing(self):
+        response = self.client.delete("/projects/proj_missing")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "ERR_PROJECT_NOT_FOUND")
 
     def test_upsert_project_workflow_definition_enables_direct_orchestrator_mode(self):
         project_id = "proj_registry_direct"
@@ -674,6 +747,114 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(stack_payload["project_id"], "proj_stack")
         self.assertEqual(stack_payload["session_id"], "s_stack")
         self.assertGreaterEqual(len(stack_payload["items"]), 1)
+
+    def test_orchestrator_context_set_get_unset(self):
+        set_response = self.client.post(
+            "/orchestrator/context/set",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_1",
+                "project_id": "proj_ctx",
+                "values": {"profile_id": "prof_1", "tier": "gold"},
+            },
+        )
+        self.assertEqual(set_response.status_code, 200)
+        set_payload = set_response.json()
+        self.assertEqual(set_payload["context"]["profile_id"], "prof_1")
+        self.assertEqual(set_payload["context"]["tier"], "gold")
+
+        get_response = self.client.post(
+            "/orchestrator/context/get",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_1",
+                "project_id": "proj_ctx",
+                "keys": ["profile_id"],
+            },
+        )
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.json()
+        self.assertEqual(get_payload["context"], {"profile_id": "prof_1"})
+
+        unset_response = self.client.post(
+            "/orchestrator/context/unset",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_1",
+                "project_id": "proj_ctx",
+                "keys": ["tier"],
+            },
+        )
+        self.assertEqual(unset_response.status_code, 200)
+        unset_payload = unset_response.json()
+        self.assertEqual(unset_payload["removed_keys"], ["tier"])
+        self.assertEqual(unset_payload["context"], {"profile_id": "prof_1"})
+
+    def test_orchestrator_direct_mode_prefills_session_context_into_inputs(self):
+        project_id = "proj_ctx_prefill"
+        headers = self._with_project(project_id=project_id)
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {"id": "out", "type": "output", "config": {"expression": "inputs['context']['profile_id']"}},
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [{"source": "start", "target": "out"}, {"source": "out", "target": "end"}],
+            "variables_schema": {},
+        }
+        workflow_create = self.client.post(
+            "/workflows",
+            json={"name": "Context prefill workflow", "draft": draft},
+            headers=headers,
+        )
+        self.assertEqual(workflow_create.status_code, 201)
+        workflow_id = workflow_create.json()["workflow_id"]
+        workflow_publish = self.client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+        self.assertEqual(workflow_publish.status_code, 200)
+
+        self._bootstrap_project(
+            project_id=project_id,
+            workflow_defs=[
+                {
+                    "workflow_id": workflow_id,
+                    "name": "Context prefill workflow",
+                    "description": "Uses inputs.context",
+                    "tags": ["context"],
+                    "examples": ["start"],
+                }
+            ],
+        )
+
+        set_response = self.client.post(
+            "/orchestrator/context/set",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_prefill",
+                "project_id": project_id,
+                "values": {"profile_id": "prof_ctx_42"},
+            },
+        )
+        self.assertEqual(set_response.status_code, 200)
+
+        route_response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_ctx_prefill",
+                "user_id": "u_ctx_prefill",
+                "project_id": project_id,
+                "workflow_id": workflow_id,
+                "message": {"id": "m_ctx_prefill_1", "text": "start"},
+            },
+        )
+        self.assertEqual(route_response.status_code, 200)
+        run_id = route_response.json().get("run_id")
+        self.assertTrue(run_id)
+
+        run_response = self.client.get(f"/runs/{run_id}")
+        self.assertEqual(run_response.status_code, 200)
+        run_payload = run_response.json()
+        self.assertEqual(run_payload.get("inputs", {}).get("context", {}).get("profile_id"), "prof_ctx_42")
+        self.assertEqual(run_payload.get("outputs"), {"result": "prof_ctx_42"})
 
     def test_start_and_get_run(self):
         workflow_id, _ = self._create_workflow()
@@ -1565,6 +1746,7 @@ class ApiTests(unittest.TestCase):
         draft_schema_payload = draft_schema_response.json()
         self.assertEqual(draft_schema_payload["title"], "WorkCore Workflow Draft")
         self.assertIn("assignments", draft_schema_payload["$defs"]["setStateConfig"]["properties"])
+        self.assertIn("integration_http", draft_schema_payload["$defs"]["nodeType"]["enum"])
 
         export_schema_response = self.client.get("/schemas/workflow-export-v1.schema.json")
         self.assertEqual(export_schema_response.status_code, 200)
