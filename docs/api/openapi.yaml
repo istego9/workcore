@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.14.0
+  version: 0.15.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -523,6 +523,11 @@ paths:
                 switch_margin: 0.2
                 max_disambiguation_turns: 2
                 top_k_candidates: 10
+                sticky: false
+                allow_switch: true
+                explicit_switch_only: false
+                cooldown_seconds: 0
+                hysteresis_margin: 0.05
               fallback_workflow_id: wf_fallback
               prompt_profile: default
               set_as_default: true
@@ -1957,7 +1962,7 @@ components:
         orchestrator_id: { type: string }
         name: { type: string }
         routing_policy:
-          type: object
+          $ref: '#/components/schemas/RoutingPolicy'
         fallback_workflow_id:
           type: string
           nullable: true
@@ -1975,7 +1980,7 @@ components:
         orchestrator_id: { type: string }
         name: { type: string }
         routing_policy:
-          type: object
+          $ref: '#/components/schemas/RoutingPolicy'
         fallback_workflow_id:
           type: string
           nullable: true
@@ -1985,6 +1990,44 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [project_id, orchestrator_id, name, routing_policy, created_at, updated_at]
+
+    RoutingPolicy:
+      type: object
+      properties:
+        confidence_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        switch_margin:
+          type: number
+          minimum: 0
+          maximum: 1
+        max_disambiguation_turns:
+          type: integer
+          minimum: 0
+        top_k_candidates:
+          type: integer
+          minimum: 1
+          maximum: 100
+        sticky:
+          type: boolean
+          description: Keep active workflow unless explicit switch intent is detected.
+        allow_switch:
+          type: boolean
+          description: Global switch gate; when false, orchestrator will continue active workflow.
+        explicit_switch_only:
+          type: boolean
+          description: Switch is allowed only when user message explicitly requests switching.
+        cooldown_seconds:
+          type: integer
+          minimum: 0
+          description: Minimum seconds between successful workflow switches.
+        hysteresis_margin:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Additional margin added to `switch_margin` to reduce route flipping.
+      additionalProperties: true
 
     WorkflowDefinitionUpsertRequest:
       type: object

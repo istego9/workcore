@@ -1,7 +1,7 @@
 # WorkCore Routing + Custom Actions Unification - Spec-First Action Items
 
 Date: 2026-02-20
-Status: IN PROGRESS (P0 delivered, P1 delivered, P2 pending)
+Status: IN PROGRESS (P0/P1 delivered, P2.1/P2.2 delivered, P2.3 pending)
 Task classification: A (new subsystem pieces), B (API/schema contract), C (runtime/event semantics), D (DB migration), E (external integration behavior)
 
 ## Execution update (2026-02-20)
@@ -34,6 +34,14 @@ Task classification: A (new subsystem pieces), B (API/schema contract), C (runti
     - `action_error.retryable`
     - `action_error.category`
     - `action_error.action`
+- P2.1/P2.2 implemented:
+  - routing policy extensions in orchestrator:
+    - `sticky`
+    - `allow_switch`
+    - `explicit_switch_only`
+    - `cooldown_seconds`
+    - `hysteresis_margin`
+  - anti-flip behavior through cooldown + hysteresis-adjusted switch margin.
 
 ## Current-state gap assessment (against request)
 - P0.1 `threads.custom_action`: partially implemented in ChatKit runtime, but only for a fixed action enum and without a canonical `action_type` contract + explicit alias map.
@@ -43,8 +51,8 @@ Task classification: A (new subsystem pieces), B (API/schema contract), C (runti
 - P1.1 custom action payload normalization: implemented natively in ChatKit runtime + documented in OpenAPI/reference.
 - P1.2 decision trace in response: implemented as standardized `decision_trace` object in orchestrator message response.
 - P1.3 standardized route/action error contract: implemented for orchestrator response-level route/action constraints via `action_error`.
-- P2.1 routing policy knobs: current policy supports `confidence_threshold`, `switch_margin`, `max_disambiguation_turns`, `top_k_candidates`; no `sticky`, `allow_switch`, `explicit_switch_only`, `cooldown`.
-- P2.2 anti-flip/hysteresis: partially approximated via `switch_margin`; no explicit hysteresis/cooldown policy model.
+- P2.1 routing policy knobs: implemented (`sticky`, `allow_switch`, `explicit_switch_only`, `cooldown_seconds`).
+- P2.2 anti-flip/hysteresis: implemented via `hysteresis_margin` + cooldown policy.
 - P2.3 replay/eval mode for routing quality: not available for orchestrator routing decisions (handoff deterministic replay exists, but not routing replay/eval).
 
 ## 1) Goal and scope

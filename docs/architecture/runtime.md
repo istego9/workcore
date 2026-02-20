@@ -77,10 +77,17 @@ Transitions:
 - `workflow_id` absent => orchestrator mode (explicit `orchestrator_id` or project default).
 - Candidate workflows are shortlisted from `workflow_definitions` by tags/examples and bounded by `top_k_candidates`.
 - The LLM router returns a strict structured decision.
+- Routing policy fields:
+  - `sticky`
+  - `allow_switch`
+  - `explicit_switch_only`
+  - `cooldown_seconds`
+  - `hysteresis_margin`
 
 Anti-flapping policy with active run:
 - STOP/OPERATOR intent has highest priority.
-- SWITCH requires high confidence and `switch_margin` above configured threshold.
+- SWITCH requires high confidence and `switch_margin + hysteresis_margin` threshold.
+- Sticky/explicit/cooldown policies can block switching and keep current workflow active.
 - Otherwise continue current run (`RESUME_CURRENT`).
 
 Low-confidence handling:

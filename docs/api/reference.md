@@ -165,7 +165,16 @@ Public project-registry bootstrap no longer requires DB-side seeding.
   - Request body:
     - `orchestrator_id` (required)
     - `name` (required)
-    - `routing_policy` (optional object)
+    - `routing_policy` (optional object):
+      - `confidence_threshold`
+      - `switch_margin`
+      - `max_disambiguation_turns`
+      - `top_k_candidates`
+      - `sticky`
+      - `allow_switch`
+      - `explicit_switch_only`
+      - `cooldown_seconds`
+      - `hysteresis_margin`
     - `fallback_workflow_id` (optional)
     - `prompt_profile` (optional)
     - `set_as_default` (optional bool, default `false`)

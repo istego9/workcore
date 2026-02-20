@@ -7,6 +7,33 @@ The format follows a simple date-based log.
 ## 2026-02-20
 
 ### API diff vs previous version
+- Previous API version: `0.14.0`
+- Current API version: `0.15.0`
+- Compatibility: additive (routing policy contract expanded with switch-control and anti-flip fields)
+
+### Added
+- New schema: `RoutingPolicy`
+- `OrchestratorConfigUpsertRequest.routing_policy` now references `RoutingPolicy`.
+- `OrchestratorConfig.routing_policy` now references `RoutingPolicy`.
+- New routing policy fields:
+  - `sticky`
+  - `allow_switch`
+  - `explicit_switch_only`
+  - `cooldown_seconds`
+  - `hysteresis_margin`
+
+### Changed
+- Orchestrator policy documentation now explicitly describes anti-flip/hysteresis behavior.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
 - Previous API version: `0.13.0`
 - Current API version: `0.14.0`
 - Compatibility: additive (orchestrator response now includes standardized route/action error contract)
