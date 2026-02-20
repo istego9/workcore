@@ -1,7 +1,7 @@
 # WorkCore Routing + Custom Actions Unification - Spec-First Action Items
 
 Date: 2026-02-20
-Status: IN PROGRESS (P0 delivered, P1/P2 pending)
+Status: IN PROGRESS (P0 delivered, P1.1 delivered, P1.2+ pending)
 Task classification: A (new subsystem pieces), B (API/schema contract), C (runtime/event semantics), D (DB migration), E (external integration behavior)
 
 ## Execution update (2026-02-20)
@@ -16,13 +16,19 @@ Task classification: A (new subsystem pieces), B (API/schema contract), C (runti
   - `./scripts/archctl_validate.sh`
   - `./.venv/bin/python -m pytest apps/orchestrator/tests`
   - `./scripts/dev_check.sh`
+- P1.1 implemented:
+  - Native submit payload normalization in ChatKit custom actions:
+    - flatten wrapper maps (`input`/`form`/`form_data`/`fields`)
+    - scalar typing for safe primitive literals
+    - `documents` passthrough
+    - projection path validation for `state_exclude_paths` / `output_include_paths`
 
 ## Current-state gap assessment (against request)
 - P0.1 `threads.custom_action`: partially implemented in ChatKit runtime, but only for a fixed action enum and without a canonical `action_type` contract + explicit alias map.
 - P0.2 thread/session context API: not implemented; only orchestrator session routing state exists (`active_run_id`, disambiguation fields), no generic `context.set/get/unset` API.
 - P0.3 integration HTTP node (non-MCP): not implemented in runtime engine/executors.
 - P0.4 profile-like flow pattern (`context + integration + prefill`): no standard first-class workflow pattern yet; behavior is still distributed.
-- P1.1 custom action payload normalization: partial (`input/form/form_data/fields` fallback), but no strict flattening/scalar typing/documents passthrough contract with projection-path validation.
+- P1.1 custom action payload normalization: implemented natively in ChatKit runtime + documented in OpenAPI/reference.
 - P1.2 decision trace in response: partial persistence exists (`orchestration_decisions.candidates/context_ref`), but response payload does not expose a standardized trace object for debug.
 - P1.3 standardized route/action error contract: partial (`error.code/error.message/correlation_id` exists), but route/action-specific catalog is not standardized end-to-end.
 - P2.1 routing policy knobs: current policy supports `confidence_threshold`, `switch_margin`, `max_disambiguation_turns`, `top_k_candidates`; no `sticky`, `allow_switch`, `explicit_switch_only`, `cooldown`.

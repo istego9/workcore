@@ -292,6 +292,12 @@ For full user interaction (approval/forms/files) integrate `POST /chatkit` in ad
   - Preferred canonical field: `action.action_type`
   - Backward-compatible alias field: `action.type`
   - Runtime resolves aliases to canonical action type before execution/idempotency.
+  - For `interrupt.submit`, runtime normalizes payload natively:
+    - source priority: `payload.input` -> `payload.form` -> `payload.form_data` -> `payload.fields` -> fallback top-level keys
+    - nested wrapper keys are flattened into a single input object
+    - scalar strings are typed when safe (`true/false`, numeric literals, `null`)
+    - `documents` payload passes through unchanged
+    - `state_exclude_paths` / `output_include_paths` are validated using run projection path rules
 - For `threads.create` pass `metadata.workflow_id` (and optional `metadata.workflow_version_id`).
 - Recommended metadata keys for reconciliation:
   - `external_user_id`

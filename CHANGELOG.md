@@ -7,6 +7,32 @@ The format follows a simple date-based log.
 ## 2026-02-20
 
 ### API diff vs previous version
+- Previous API version: `0.11.0`
+- Current API version: `0.12.0`
+- Compatibility: additive (ChatKit custom action payload contract clarified and validated; existing payload keys remain supported)
+
+### Added
+- `ChatKitActionPayload` now documents optional projection control fields:
+  - `state_exclude_paths`
+  - `output_include_paths`
+
+### Changed
+- `threads.custom_action` submit payload normalization is now explicit in API contract:
+  - extraction priority across `input` / `form` / `form_data` / `fields`
+  - flattening of wrapper keys into a single runtime input object
+  - scalar string typing (`true/false`, numeric literals, `null`)
+  - `documents` passthrough behavior
+- Projection controls in action payload are validated with the same path rules as run start payload.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
 - Previous API version: `0.10.0`
 - Current API version: `0.11.0`
 - Compatibility: additive (new context endpoints and workflow node contract extension; existing routes remain supported)

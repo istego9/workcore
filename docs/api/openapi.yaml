@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.11.0
+  version: 0.12.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -1520,6 +1520,11 @@ components:
 
     ChatKitActionPayload:
       type: object
+      description: >
+        Submit payload is normalized by WorkCore runtime.
+        Extraction order: `input` -> `form` -> `form_data` -> `fields` -> fallback top-level keys.
+        Wrapper keys are flattened, scalar strings are coerced to native types when safe
+        (`true`/`false`, numeric literals, `null`), and `documents` payload passes through unchanged.
       properties:
         action_type:
           type: string
@@ -1532,6 +1537,16 @@ components:
         form: { type: object }
         form_data: { type: object }
         fields: { type: object }
+        state_exclude_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
+        output_include_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
         files:
           type: array
           items: { type: object }

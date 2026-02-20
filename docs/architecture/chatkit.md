@@ -68,6 +68,12 @@ Action payload fields consumed by runtime:
 - `input` / `form` / `form_data` / `fields` (for submit data)
 - `files` (uploaded file refs)
 - `idempotency_key` or `action_id` (optional client-supplied dedupe key)
+- Submit payload normalization (WorkCore-native):
+  - extraction order: `input` -> `form` -> `form_data` -> `fields` -> fallback top-level keys
+  - wrapper keys are flattened into one input map
+  - scalar strings are coerced to native types where safe (`true/false`, integer, float, `null`)
+  - `documents` payload is passed through as-is
+  - `state_exclude_paths` and `output_include_paths` are validated with projection path rules
 
 ## Streaming behavior
 - Run events are mapped to ChatKit stream events:
