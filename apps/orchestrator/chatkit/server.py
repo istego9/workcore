@@ -23,7 +23,7 @@ from chatkit.types import (
 from apps.orchestrator.runtime.models import Interrupt, Run
 
 from .context import ChatKitContext
-from .custom_actions import resolve_canonical_action_type
+from .custom_actions import normalize_custom_action_payload, resolve_canonical_action_type
 from .widgets import (
     APPROVE_ACTION,
     CANCEL_ACTION,
@@ -144,7 +144,11 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         elif canonical_action_type == REJECT_ACTION:
             input_data = {"approved": False}
         elif canonical_action_type == SUBMIT_ACTION:
-            input_data = self._input_from_payload(payload)
+            try:
+                input_data = self._input_from_payload(payload)
+            except ValueError as exc:
+                yield ErrorEvent(message=str(exc), allow_retry=False)
+                return
         elif canonical_action_type == CANCEL_ACTION:
             yield ErrorEvent(message="interrupt cancel is not supported", allow_retry=False)
             return
@@ -347,19 +351,7 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
 
     @staticmethod
     def _input_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-        if isinstance(payload.get("input"), dict):
-            return payload["input"]
-        if isinstance(payload.get("form"), dict):
-            return payload["form"]
-        if isinstance(payload.get("form_data"), dict):
-            return payload["form_data"]
-        if isinstance(payload.get("fields"), dict):
-            return payload["fields"]
-        return {
-            key: value
-            for key, value in payload.items()
-            if key not in {"run_id", "interrupt_id", "files"}
-        }
+        return normalize_custom_action_payload(payload)
 
     @staticmethod
     def _files_from_message(message: UserMessageItem) -> List[Dict[str, Any]]:
