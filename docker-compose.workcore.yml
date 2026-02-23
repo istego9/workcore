@@ -56,6 +56,7 @@ services:
       WEBHOOK_DEFAULT_INBOUND_SECRET: ${WEBHOOK_DEFAULT_INBOUND_SECRET:-}
       WORKCORE_API_AUTH_TOKEN: ${WORKCORE_API_AUTH_TOKEN:-}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://workcore.build,https://workcore.build,http://workcore.build:8080,https://workcore.build:8443,http://hq21.build,https://hq21.build}
+      INTEGRATION_HTTP_ALLOWED_HOSTS: ${INTEGRATION_HTTP_ALLOWED_HOSTS:-}
     depends_on:
       postgres:
         condition: service_healthy
