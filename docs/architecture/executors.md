@@ -47,7 +47,18 @@ Status: Draft
   - timeout (`timeout_s`)
   - retry attempts (`retry_attempts`) with backoff (`retry_backoff_s`)
   - response mapping into node output and optional state targets
+- Egress policy (security hardening):
+  - deny-by-default host policy driven by `INTEGRATION_HTTP_ALLOWED_HOSTS`
+  - allowed schemes controlled by `INTEGRATION_HTTP_ALLOWED_SCHEMES` (default: `https`)
+  - private/link-local/loopback targets blocked unless `INTEGRATION_HTTP_ALLOW_PRIVATE_NETWORKS=true`
+  - hostname targets are resolved and all resolved IPs are validated against private/local checks
+  - optional explicit CIDR deny overlay via `INTEGRATION_HTTP_DENY_CIDRS`
+  - host rules support exact host and wildcard subdomain patterns (`*.example.com`)
 - If no integration HTTP executor is wired, `integration_http` nodes fail with `integration_http executor not configured`.
+
+## Runtime execution isolation
+- Runtime service entrypoints execute blocking engine loops in a worker thread to avoid stalling the main asyncio event loop.
+- This isolates synchronous executors (including HTTP retries/backoff) from API request-loop responsiveness.
 
 ## Output validation
 - Structured outputs are validated with JSON Schema when `output_schema` is provided.

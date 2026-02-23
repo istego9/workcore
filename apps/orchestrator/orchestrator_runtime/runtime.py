@@ -438,6 +438,8 @@ class ProjectOrchestratorRuntime:
                     request.message_text,
                     metadata_with_context,
                     tenant_id=tenant_id,
+                    action_type=request.action_type,
+                    action_payload=request.action_payload,
                 )
 
         if run_result is None:
@@ -448,6 +450,8 @@ class ProjectOrchestratorRuntime:
                 request.message_text,
                 metadata_with_context,
                 tenant_id=tenant_id,
+                action_type=request.action_type,
+                action_payload=request.action_payload,
             )
             await self.store.append_stack_entry(
                 request.project_id,
@@ -722,6 +726,8 @@ class ProjectOrchestratorRuntime:
                                 request.message_text,
                                 metadata_with_context,
                                 tenant_id=tenant_id,
+                                action_type=request.action_type,
+                                action_payload=request.action_payload,
                             )
                             action = "SWITCH_WORKFLOW"
                             chosen_workflow_id = target_workflow
@@ -749,6 +755,8 @@ class ProjectOrchestratorRuntime:
                             request.message_text,
                             metadata_with_context,
                             tenant_id=tenant_id,
+                            action_type=request.action_type,
+                            action_payload=request.action_payload,
                         )
                         run_id = resumed.run_id
                         events = resumed.events
@@ -766,6 +774,8 @@ class ProjectOrchestratorRuntime:
                         request.message_text,
                         metadata_with_context,
                         tenant_id=tenant_id,
+                        action_type=request.action_type,
+                        action_payload=request.action_payload,
                     )
                     run_id = resumed.run_id
                     events = resumed.events
@@ -780,6 +790,8 @@ class ProjectOrchestratorRuntime:
                         request.message_text,
                         metadata_with_context,
                         tenant_id=tenant_id,
+                        action_type=request.action_type,
+                        action_payload=request.action_payload,
                     )
                     action = "FALLBACK" if decision.route_type == "FALLBACK" else "START_WORKFLOW"
                     chosen_workflow_id = target_workflow

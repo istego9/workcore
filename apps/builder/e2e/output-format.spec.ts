@@ -10,6 +10,7 @@ import {
 test('agent output format shows json and widget controls', async ({ page, request }) => {
   let workflowId: string | null = null;
   const projectId = `proj_output_${Date.now()}`;
+  const projectName = `Output Project ${Date.now()}`;
   const workflowName = `E2E Output ${Date.now()}`;
   const draft = {
     nodes: [
@@ -39,6 +40,12 @@ test('agent output format shows json and widget controls', async ({ page, reques
   };
 
   try {
+    const createProjectResponse = await request.post(`${apiBaseUrl}/projects`, {
+      data: { project_id: projectId, project_name: projectName, settings: { orchestrator_enabled: true } },
+      headers: apiAuthHeaders()
+    });
+    expect(createProjectResponse.ok()).toBeTruthy();
+
     const createResponse = await request.post(`${apiBaseUrl}/workflows`, {
       data: { name: workflowName, draft },
       headers: apiAuthHeaders(projectId)
@@ -62,18 +69,11 @@ test('agent output format shows json and widget controls', async ({ page, reques
       { token: e2eApiAuthToken, tenant: e2eTenantId }
     );
     await page.goto('/?e2e=1');
-    await page.getByTestId('project-selector').fill(projectId);
+    await page.getByRole('button', { name: 'Back to projects' }).click();
+    await page.getByText(projectName).first().click();
+    await page.getByText(workflowName).first().click();
 
-    await page.getByRole('button', { name: 'Browse' }).click();
-    const modal = page.getByRole('dialog', { name: 'Workflows' });
-    const refresh = modal.getByRole('button', { name: 'Refresh' });
-    await expect(refresh).toBeEnabled({ timeout: 10000 });
-    await refresh.click();
-    await modal.getByPlaceholder('Search by name or id').fill(workflowName);
-    await modal.getByText(`${workflowName}`).waitFor({ timeout: 10000 });
-    await modal.getByText(`${workflowName}`).click();
-
-    await expect(page.getByText(`Workflow ${workflowId}`)).toBeVisible();
+    await expect(page.getByText(`Workflow ${workflowId}`).first()).toBeVisible();
 
     const agentNode = page.locator('[data-node-id="agent"]');
     await expect(agentNode).toBeVisible({ timeout: 10000 });

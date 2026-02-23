@@ -7,6 +7,54 @@ The format follows a simple date-based log.
 ## 2026-02-20
 
 ### API diff vs previous version
+- Previous API version: `0.17.0`
+- Current API version: `0.18.0`
+- Compatibility: additive (`/orchestrator/messages` now documents optional custom-action envelope fields)
+
+### Added
+- `OrchestratorUserMessage` now documents optional `type`:
+  - `threads.add_user_message`
+  - `threads.custom_action`
+- `OrchestratorUserMessage` now documents optional `payload` for custom-action messages.
+- New schema: `OrchestratorCustomActionPayload`.
+- New OpenAPI request examples for `POST /orchestrator/messages`:
+  - standard user message
+  - `threads.custom_action` with structured payload
+
+### Changed
+- `POST /orchestrator/messages` contract now explicitly documents how custom-action fields are materialized for runtime input mapping:
+  - `message.text` -> `inputs.action_type`
+  - normalized payload fields -> flattened `inputs.*`
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.16.0`
+- Current API version: `0.17.0`
+- Compatibility: changed (context API validation status normalized to 422)
+
+### Added
+- None.
+
+### Changed
+- Context API (`POST /orchestrator/context/get|set|unset`) now documents validation errors consistently as HTTP `422`.
+- Removed ambiguous `400` validation response entries for context endpoints from OpenAPI.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
 - Previous API version: `0.15.0`
 - Current API version: `0.16.0`
 - Compatibility: additive (new offline routing replay/eval endpoint and schemas)

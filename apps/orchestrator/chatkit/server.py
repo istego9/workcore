@@ -128,17 +128,6 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
             yield NoticeEvent(level="info", message="Interrupt already resolved")
             return
 
-        idempotency = context.idempotency
-        scope = "chatkit_action"
-        idempotency_key = payload.get("idempotency_key") or payload.get("action_id")
-        if not idempotency_key:
-            idempotency_key = f"{run_id}:{interrupt_id}:{canonical_action_type}"
-        if idempotency:
-            started = await idempotency.start(idempotency_key, scope, tenant_id=context.tenant_id)
-            if not started:
-                yield NoticeEvent(level="info", message="Action already processed")
-                return
-
         if canonical_action_type == APPROVE_ACTION:
             input_data = {"approved": True}
         elif canonical_action_type == REJECT_ACTION:
@@ -155,6 +144,17 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         else:
             yield ErrorEvent(message="unsupported action", allow_retry=False)
             return
+
+        idempotency = context.idempotency
+        scope = "chatkit_action"
+        idempotency_key = payload.get("idempotency_key") or payload.get("action_id")
+        if not idempotency_key:
+            idempotency_key = f"{run_id}:{interrupt_id}:{canonical_action_type}"
+        if idempotency:
+            started = await idempotency.start(idempotency_key, scope, tenant_id=context.tenant_id)
+            if not started:
+                yield NoticeEvent(level="info", message="Action already processed")
+                return
 
         files = payload.get("files")
         try:

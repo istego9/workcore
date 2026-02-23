@@ -160,7 +160,22 @@ export const listWorkflows = async (
   limit = 50,
   projectId?: string
 ): Promise<ApiResult<{ items: WorkflowSummary[]; next_cursor?: string | null }>> => {
-  return request(`/workflows?limit=${limit}`, { headers: projectHeaders(projectId) });
+  return listWorkflowsPage({ limit }, projectId);
+};
+
+export const listWorkflowsPage = async (
+  params?: { limit?: number; cursor?: string },
+  projectId?: string
+): Promise<ApiResult<{ items: WorkflowSummary[]; next_cursor?: string | null }>> => {
+  const query = new URLSearchParams();
+  if (typeof params?.limit === 'number') {
+    query.set('limit', String(params.limit));
+  }
+  if (params?.cursor) {
+    query.set('cursor', params.cursor);
+  }
+  const suffix = query.toString();
+  return request(`/workflows${suffix ? `?${suffix}` : ''}`, { headers: projectHeaders(projectId) });
 };
 
 export const updateWorkflowMeta = async (
@@ -265,4 +280,20 @@ export const listProjects = async (params?: {
   }
   const suffix = query.toString();
   return request(`/projects${suffix ? `?${suffix}` : ''}`);
+};
+
+export const updateProject = async (
+  projectId: string,
+  payload: { project_name: string }
+): Promise<ApiResult<ProjectRecord>> => {
+  return request(`/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const deleteProject = async (projectId: string): Promise<ApiResult<null>> => {
+  return request(`/projects/${projectId}`, {
+    method: 'DELETE'
+  });
 };

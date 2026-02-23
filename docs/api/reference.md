@@ -90,6 +90,16 @@ Supported config fields:
 - `fail_on_status` (optional bool, default `true`)
 - `allowed_statuses` (optional list of HTTP status codes)
 
+Runtime egress policy:
+- `INTEGRATION_HTTP_ALLOWED_HOSTS` (required allowlist for executor traffic, comma-separated).
+- `INTEGRATION_HTTP_ALLOWED_SCHEMES` (optional, default `https`).
+- `INTEGRATION_HTTP_ALLOW_PRIVATE_NETWORKS` (optional, default `false`).
+- `INTEGRATION_HTTP_DENY_CIDRS` (optional CIDR deny overlay for resolved target IPs, comma-separated).
+
+Resolution behavior:
+- For hostname targets, runtime resolves DNS and validates each resolved IP against private/local restrictions.
+- When `INTEGRATION_HTTP_DENY_CIDRS` is configured, resolved IPs matching any listed CIDR are always blocked.
+
 ## Artifact references and run projections
 For document-heavy workflows, prefer artifact references over inline binary payloads.
 
@@ -213,6 +223,14 @@ Common validation/error behavior:
   - structure: `code`, `message`, `retryable`, `category` (`route` or `action`), `action`.
 - Session context prefill:
   - Runtime injects persisted `session` context into workflow inputs as `inputs.context` (when available).
+- Custom action envelope on orchestrator entrypoint:
+  - `message.type` is optional:
+    - omitted or `threads.add_user_message` -> standard text routing
+    - `threads.custom_action` -> `message.text` is treated as `action_type`
+  - For `threads.custom_action`, normalized `message.payload` fields are materialized into workflow inputs:
+    - `inputs.action_type = message.text`
+    - payload fields -> flattened into `inputs.*`
+  - Existing `message.id` + `message.text` behavior remains backward compatible.
 
 Validation errors:
 - `ERR_PROJECT_ID_REQUIRED`
@@ -228,6 +246,7 @@ Session/thread context API:
 - `POST /orchestrator/context/set` (`context.set`)
 - `POST /orchestrator/context/unset` (`context.unset`)
 - Scopes: `session` and `thread`
+- Validation errors for context API return HTTP `422`.
 
 Offline routing replay/eval:
 - `POST /orchestrator/eval/replay`

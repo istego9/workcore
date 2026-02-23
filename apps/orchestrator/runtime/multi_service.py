@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from inspect import Parameter, signature
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -102,7 +103,7 @@ class MultiWorkflowRuntimeService:
             run_metadata["capability_bindings"] = capability_bindings
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
         run = engine.start_run(inputs, mode=mode, metadata=run_metadata)
-        events = engine.execute_until_blocked(run)
+        events = await asyncio.to_thread(engine.execute_until_blocked, run)
         await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
         return run
@@ -124,7 +125,7 @@ class MultiWorkflowRuntimeService:
             run.metadata = dict(run.metadata or {})
             run.metadata.setdefault("capability_bindings", capability_bindings)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
-        events = engine.resume_interrupt(run, interrupt_id, input_data, files)
+        events = await asyncio.to_thread(engine.resume_interrupt, run, interrupt_id, input_data, files)
         await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
         return run
@@ -140,8 +141,8 @@ class MultiWorkflowRuntimeService:
             run.metadata = dict(run.metadata or {})
             run.metadata.setdefault("capability_bindings", capability_bindings)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
-        engine.rerun_node(run, node_id, scope)
-        events = engine.execute_until_blocked(run)
+        await asyncio.to_thread(engine.rerun_node, run, node_id, scope)
+        events = await asyncio.to_thread(engine.execute_until_blocked, run)
         await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
         return run

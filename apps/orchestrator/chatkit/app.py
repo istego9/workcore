@@ -14,7 +14,8 @@ from apps.orchestrator.chatkit.context import ChatKitContext
 from apps.orchestrator.chatkit.runtime_service import ChatKitRuntimeService
 from apps.orchestrator.chatkit.server import WorkflowChatKitServer
 from apps.orchestrator.chatkit.store import InMemoryAttachmentStore, InMemoryChatKitStore
-from apps.orchestrator.executors import IntegrationHTTPExecutor
+from apps.orchestrator.executors import IntegrationHTTPEgressPolicy, IntegrationHTTPExecutor
+from apps.orchestrator.runtime.env import get_env
 from apps.orchestrator.runtime import SimpleEvaluator
 from apps.orchestrator.streaming import EventPublisher, InMemoryEventBus, InMemoryEventStore
 
@@ -40,13 +41,14 @@ def create_app(
             raise RuntimeError("Unknown workflow_id")
         return workflow
 
+    integration_http_policy = IntegrationHTTPEgressPolicy.from_env(get_env)
     runtime = ChatKitRuntimeService(
         publisher=publisher,
         store=event_store,
         bus=event_bus,
         evaluator=SimpleEvaluator(),
         workflow_loader=loader,
-        executors={"integration_http": IntegrationHTTPExecutor()},
+        executors={"integration_http": IntegrationHTTPExecutor(egress_policy=integration_http_policy)},
     )
 
     base_run_store = run_store or InMemoryRunStore()

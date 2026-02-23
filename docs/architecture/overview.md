@@ -99,6 +99,7 @@ Ordering guarantees:
 
 ## Operational docs
 - Development workflow and merge gates: docs/DEV_WORKFLOW.md
+- Agent autonomy harness: docs/architecture/agent-autonomy-harness.md
 - Runbooks: docs/runbooks/README.md
 - Postmortem template: docs/postmortems/template.md
 

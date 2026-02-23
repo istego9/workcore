@@ -103,6 +103,7 @@ Action payload fields consumed by runtime:
 - Actions are deduped via `idempotency_keys` (scope `chatkit_action`).
 - Default key: `{run_id}:{interrupt_id}:{canonical_action_type}` unless the payload includes `idempotency_key`.
 - TTL configurable via `CHATKIT_IDEMPOTENCY_TTL_SECONDS`.
+- Idempotency reservation starts after action payload validation succeeds, so invalid submit payloads do not lock retries.
 
 ## Delivery and fallback strategy for third-party clients
 - Primary: consume ChatKit SSE response stream from `POST /chatkit`.

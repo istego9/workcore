@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import uuid
@@ -51,6 +52,7 @@ from apps.orchestrator.api.workflow_store import (
 from apps.orchestrator.executors import (
     AGENTS_AVAILABLE,
     AgentExecutor,
+    IntegrationHTTPEgressPolicy,
     IntegrationHTTPExecutor,
     MockAgentExecutor,
 )
@@ -160,6 +162,7 @@ def validate_runtime_security_env() -> None:
         "WORKCORE_API_AUTH_TOKEN",
         "WEBHOOK_DEFAULT_INBOUND_SECRET",
         "CORS_ALLOW_ORIGINS",
+        "INTEGRATION_HTTP_ALLOWED_HOSTS",
     )
     for name in required:
         if not (get_env(name) or "").strip():
@@ -174,6 +177,26 @@ def validate_runtime_security_env() -> None:
             "CORS_ALLOW_ORIGINS must not contain '*' for secure startup; "
             "set explicit origins or use WORKCORE_ALLOW_INSECURE_DEV=1 temporarily"
         )
+
+    allowed_hosts = get_env("INTEGRATION_HTTP_ALLOWED_HOSTS", "") or ""
+    host_rules = [item.strip() for item in allowed_hosts.split(",") if item.strip()]
+    if any(rule == "*" for rule in host_rules):
+        raise RuntimeError(
+            "INTEGRATION_HTTP_ALLOWED_HOSTS must not contain bare '*' for secure startup; "
+            "use explicit hostnames or wildcard subdomains (for example '*.example.com')"
+        )
+
+    deny_cidrs_raw = get_env("INTEGRATION_HTTP_DENY_CIDRS", "") or ""
+    for raw_item in deny_cidrs_raw.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        try:
+            ipaddress.ip_network(item, strict=False)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"INTEGRATION_HTTP_DENY_CIDRS contains invalid CIDR value '{item}'"
+            ) from exc
 
 
 class ApiContext:
@@ -271,9 +294,10 @@ class ApiContext:
                 )
 
             executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").strip().lower()
+            integration_http_policy = IntegrationHTTPEgressPolicy.from_env(get_env)
             executors: Dict[str, Any] = {
                 "agent_mock": MockAgentExecutor(),
-                "integration_http": IntegrationHTTPExecutor(),
+                "integration_http": IntegrationHTTPExecutor(egress_policy=integration_http_policy),
             }
             if AGENTS_AVAILABLE:
                 executors["agent_live"] = AgentExecutor()
@@ -1951,6 +1975,9 @@ def create_app(
             metadata["project_id"] = routed_request.project_id
             metadata["session_id"] = routed_request.session_id
             metadata["user_id"] = routed_request.user_id
+            metadata["message_type"] = routed_request.message_type
+            if routed_request.action_type:
+                metadata["action_type"] = routed_request.action_type
 
             tenant = _tenant_id(request)
             try:
@@ -2109,7 +2136,7 @@ def create_app(
                 keys = None
             else:
                 if not isinstance(keys_raw, list):
-                    return _error(request, "INVALID_ARGUMENT", "keys must be an array", 400)
+                    return _error(request, "INVALID_ARGUMENT", "keys must be an array", 422)
                 keys = []
                 for idx, key_raw in enumerate(keys_raw):
                     if not isinstance(key_raw, str) or not key_raw.strip():
@@ -2117,7 +2144,7 @@ def create_app(
                             request,
                             "INVALID_ARGUMENT",
                             f"keys[{idx}] must be a non-empty string",
-                            400,
+                            422,
                         )
                     keys.append(key_raw.strip())
             await ctx.ensure_orchestration()
@@ -2132,7 +2159,7 @@ def create_app(
                 keys=keys,
             )
         except ValueError as exc:
-            return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+            return _error(request, "INVALID_ARGUMENT", str(exc), 422)
         except Exception as exc:
             return _error(request, "INTERNAL", str(exc), 500)
         return _json(
@@ -2153,7 +2180,7 @@ def create_app(
                 scope, scope_id, project_id = _parse_context_scope_payload(payload)
                 values_raw = payload.get("values")
                 if not isinstance(values_raw, dict):
-                    return _error(request, "INVALID_ARGUMENT", "values must be an object", 400)
+                    return _error(request, "INVALID_ARGUMENT", "values must be an object", 422)
                 values = {
                     str(key): value
                     for key, value in values_raw.items()
@@ -2171,7 +2198,7 @@ def create_app(
                     project_id=project_id,
                 )
             except ValueError as exc:
-                return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+                return _error(request, "INVALID_ARGUMENT", str(exc), 422)
             except Exception as exc:
                 return _error(request, "INTERNAL", str(exc), 500)
             return _json(
@@ -2194,7 +2221,7 @@ def create_app(
                 scope, scope_id, project_id = _parse_context_scope_payload(payload)
                 keys_raw = payload.get("keys")
                 if not isinstance(keys_raw, list) or not keys_raw:
-                    return _error(request, "INVALID_ARGUMENT", "keys must be a non-empty array", 400)
+                    return _error(request, "INVALID_ARGUMENT", "keys must be a non-empty array", 422)
                 keys: list[str] = []
                 for idx, key_raw in enumerate(keys_raw):
                     if not isinstance(key_raw, str) or not key_raw.strip():
@@ -2202,7 +2229,7 @@ def create_app(
                             request,
                             "INVALID_ARGUMENT",
                             f"keys[{idx}] must be a non-empty string",
-                            400,
+                            422,
                         )
                     keys.append(key_raw.strip())
                 await ctx.ensure_orchestration()
@@ -2224,7 +2251,7 @@ def create_app(
                     keys=None,
                 )
             except ValueError as exc:
-                return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+                return _error(request, "INVALID_ARGUMENT", str(exc), 422)
             except Exception as exc:
                 return _error(request, "INTERNAL", str(exc), 500)
             return _json(

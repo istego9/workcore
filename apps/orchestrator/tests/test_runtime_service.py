@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from apps.orchestrator.runtime import (
     Edge,
@@ -11,6 +12,39 @@ from apps.orchestrator.runtime import (
 
 
 class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_service_start_run_offloads_engine_execution_to_worker_thread(self):
+        nodes = [
+            Node("start", "start", {"defaults": {"count": 0}}),
+            Node("out", "output", {"expression": "state['count']"}),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "out"),
+            Edge("out", "end"),
+        ]
+        workflow = Workflow(
+            id="wf_thread_offload",
+            version_id="v1",
+            nodes={node.id: node for node in nodes},
+            edges=edges,
+        )
+        engine = OrchestratorEngine(workflow, SimpleEvaluator())
+        service = OrchestratorService.create(engine)
+
+        async def _to_thread_passthrough(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with mock.patch(
+            "apps.orchestrator.runtime.service.asyncio.to_thread",
+            new=mock.AsyncMock(side_effect=_to_thread_passthrough),
+        ) as to_thread_mock:
+            run = await service.start_run({})
+
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertGreaterEqual(to_thread_mock.await_count, 1)
+        first_fn = to_thread_mock.await_args_list[0].args[0]
+        self.assertEqual(getattr(first_fn, "__name__", ""), "execute_until_blocked")
+
     async def test_service_publishes_events_and_snapshot(self):
         nodes = [
             Node("start", "start", {"defaults": {"count": 0}}),

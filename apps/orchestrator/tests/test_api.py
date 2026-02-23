@@ -578,6 +578,57 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(metadata.get("agent_mock"), False)
         self.assertEqual(metadata.get("llm_enabled"), True)
 
+    def test_orchestrator_direct_mode_materializes_custom_action_payload_into_inputs(self):
+        workflow_id, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_custom_action_inputs",
+            workflow_defs=[
+                {
+                    "workflow_id": workflow_id,
+                    "name": "Custom action flow",
+                    "description": "Maps action payload into run inputs",
+                    "tags": ["budget"],
+                    "examples": ["submit budget"],
+                }
+            ],
+        )
+        response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_custom_action",
+                "user_id": "u_custom_action",
+                "project_id": "proj_custom_action_inputs",
+                "workflow_id": workflow_id,
+                "message": {
+                    "id": "m_custom_action_1",
+                    "type": "threads.custom_action",
+                    "text": "fm_budget_submit_basics",
+                    "payload": {
+                        "form": {"income_aed": "26600", "fixed_costs_aed": "9000"},
+                        "currency": "AED",
+                        "has_savings": "true",
+                    },
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get("run_id"))
+
+        run_response = self.client.get(f"/runs/{payload['run_id']}")
+        self.assertEqual(run_response.status_code, 200)
+        run_payload = run_response.json()
+        inputs = run_payload.get("inputs", {})
+        self.assertEqual(inputs.get("user_message"), "fm_budget_submit_basics")
+        self.assertEqual(inputs.get("action_type"), "fm_budget_submit_basics")
+        self.assertEqual(inputs.get("income_aed"), 26600)
+        self.assertEqual(inputs.get("fixed_costs_aed"), 9000)
+        self.assertEqual(inputs.get("currency"), "AED")
+        self.assertEqual(inputs.get("has_savings"), True)
+        state = run_payload.get("state", {})
+        self.assertEqual(state.get("action_type"), "fm_budget_submit_basics")
+        self.assertEqual(state.get("income_aed"), 26600)
+
     def test_orchestrator_mode_disambiguates_on_low_confidence(self):
         wf_a, _ = self._create_workflow()
         wf_b, _ = self._create_workflow()
@@ -1144,6 +1195,43 @@ class ApiTests(unittest.TestCase):
         unset_payload = unset_response.json()
         self.assertEqual(unset_payload["removed_keys"], ["tier"])
         self.assertEqual(unset_payload["context"], {"profile_id": "prof_1"})
+
+    def test_orchestrator_context_validation_errors_return_422(self):
+        bad_get = self.client.post(
+            "/orchestrator/context/get",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_bad",
+                "project_id": "proj_ctx",
+                "keys": "not_array",
+            },
+        )
+        self.assertEqual(bad_get.status_code, 422)
+        self.assertEqual(bad_get.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_set = self.client.post(
+            "/orchestrator/context/set",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_bad",
+                "project_id": "proj_ctx",
+                "values": [],
+            },
+        )
+        self.assertEqual(bad_set.status_code, 422)
+        self.assertEqual(bad_set.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_unset = self.client.post(
+            "/orchestrator/context/unset",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_bad",
+                "project_id": "proj_ctx",
+                "keys": [],
+            },
+        )
+        self.assertEqual(bad_unset.status_code, 422)
+        self.assertEqual(bad_unset.json()["error"]["code"], "INVALID_ARGUMENT")
 
     def test_orchestrator_direct_mode_prefills_session_context_into_inputs(self):
         project_id = "proj_ctx_prefill"
@@ -2395,6 +2483,7 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
             "WORKCORE_ALLOW_INSECURE_DEV": "0",
             "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
             "CORS_ALLOW_ORIGINS": "http://workcore.build:8080",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
         }
 
         def getter(name: str, default=None):
@@ -2409,6 +2498,7 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
             "WORKCORE_ALLOW_INSECURE_DEV": "0",
             "WORKCORE_API_AUTH_TOKEN": "token_ok",
             "CORS_ALLOW_ORIGINS": "http://workcore.build:8080",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
         }
 
         def getter(name: str, default=None):
@@ -2424,6 +2514,7 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
             "WORKCORE_API_AUTH_TOKEN": "token_ok",
             "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
             "CORS_ALLOW_ORIGINS": "https://workcore.build,*",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
         }
 
         def getter(name: str, default=None):
@@ -2441,6 +2532,39 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
 
         with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
             validate_runtime_security_env()
+
+    def test_validate_runtime_security_env_rejects_bare_wildcard_http_egress_hosts(self):
+        env = {
+            "WORKCORE_ALLOW_INSECURE_DEV": "0",
+            "WORKCORE_API_AUTH_TOKEN": "token_ok",
+            "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
+            "CORS_ALLOW_ORIGINS": "https://workcore.build",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "*,api.example.com",
+        }
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with self.assertRaises(RuntimeError):
+            with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+                validate_runtime_security_env()
+
+    def test_validate_runtime_security_env_rejects_invalid_http_egress_deny_cidrs(self):
+        env = {
+            "WORKCORE_ALLOW_INSECURE_DEV": "0",
+            "WORKCORE_API_AUTH_TOKEN": "token_ok",
+            "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
+            "CORS_ALLOW_ORIGINS": "https://workcore.build",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
+            "INTEGRATION_HTTP_DENY_CIDRS": "not_a_cidr",
+        }
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with self.assertRaises(RuntimeError):
+            with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+                validate_runtime_security_env()
 
 
 if __name__ == "__main__":

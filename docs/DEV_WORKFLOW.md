@@ -36,6 +36,7 @@ When applicable:
 - `./scripts/e2e_suite.sh` (full local E2E: backend + chatkit + builder)
 - `./scripts/dev_check.sh`
 - `USE_PROXY=1 RUN_E2E=1 ./scripts/dev_check.sh` (domain mode + full E2E)
+- `./.venv/bin/python -m pytest apps/orchestrator/tests/test_routing_harness.py` (required when routing policy/eval behavior changes)
 
 ## Acceptance package artifacts
 Use this helper to run the acceptance screenshot Playwright test (desktop + mobile) and build a ZIP package:

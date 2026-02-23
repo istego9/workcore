@@ -22,7 +22,13 @@ from apps.orchestrator.chatkit.runtime_service import ChatKitRuntimeService
 from apps.orchestrator.chatkit.object_store import MinioAttachmentStore
 from apps.orchestrator.chatkit.pg_store import PostgresChatKitStore
 from apps.orchestrator.chatkit.server import WorkflowChatKitServer
-from apps.orchestrator.executors import AGENTS_AVAILABLE, AgentExecutor, IntegrationHTTPExecutor, MockAgentExecutor
+from apps.orchestrator.executors import (
+    AGENTS_AVAILABLE,
+    AgentExecutor,
+    IntegrationHTTPEgressPolicy,
+    IntegrationHTTPExecutor,
+    MockAgentExecutor,
+)
 from apps.orchestrator.runtime import Edge, Node, SimpleEvaluator, Workflow, CelEvaluator
 from apps.orchestrator.streaming import EventPublisher, InMemoryEventBus, InMemoryEventStore
 from apps.orchestrator.runtime.env import get_env
@@ -141,9 +147,10 @@ def create_service_app() -> Starlette:
             return await load_workflow_from_db(pool, workflow_id, version_id, tenant_id=tenant_id)
 
         executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").strip().lower()
+        integration_http_policy = IntegrationHTTPEgressPolicy.from_env(get_env)
         executors: dict[str, Any] = {
             "agent_mock": MockAgentExecutor(),
-            "integration_http": IntegrationHTTPExecutor(),
+            "integration_http": IntegrationHTTPExecutor(egress_policy=integration_http_policy),
         }
         if AGENTS_AVAILABLE:
             executors["agent_live"] = AgentExecutor()

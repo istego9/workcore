@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -59,7 +60,7 @@ class OrchestratorService:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Run:
         run = self.engine.start_run(inputs, mode=mode, metadata=metadata)
-        events = self.engine.execute_until_blocked(run)
+        events = await asyncio.to_thread(self.engine.execute_until_blocked, run)
         await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
         return run
@@ -71,14 +72,14 @@ class OrchestratorService:
         input_data: Optional[Dict[str, Any]] = None,
         files: Optional[list] = None,
     ) -> Run:
-        events = self.engine.resume_interrupt(run, interrupt_id, input_data, files)
+        events = await asyncio.to_thread(self.engine.resume_interrupt, run, interrupt_id, input_data, files)
         await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
         return run
 
     async def rerun_node(self, run: Run, node_id: str, scope: str) -> Run:
-        self.engine.rerun_node(run, node_id, scope)
-        events = self.engine.execute_until_blocked(run)
+        await asyncio.to_thread(self.engine.rerun_node, run, node_id, scope)
+        events = await asyncio.to_thread(self.engine.execute_until_blocked, run)
         await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
         return run

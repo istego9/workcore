@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.16.0
+  version: 0.18.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -312,6 +312,30 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/OrchestratorMessageRequest'
+            examples:
+              user_message:
+                summary: Standard user message routing
+                value:
+                  session_id: sess_01
+                  user_id: user_01
+                  project_id: proj_01
+                  message:
+                    id: msg_01
+                    text: open account
+              custom_action:
+                summary: Custom action routing with payload materialization
+                value:
+                  session_id: sess_01
+                  user_id: user_01
+                  project_id: proj_01
+                  message:
+                    id: msg_02
+                    type: threads.custom_action
+                    text: fm_budget_submit_basics
+                    payload:
+                      income_aed: 26600
+                      fixed_costs_aed: 9000
+                      currency: AED
       responses:
         '200':
           description: Routed successfully
@@ -397,7 +421,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrchestratorContextResponse'
-        '400': { $ref: '#/components/responses/ErrorResponse' }
         '422': { $ref: '#/components/responses/ErrorResponse' }
 
   /orchestrator/context/set:
@@ -424,7 +447,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrchestratorContextResponse'
-        '400': { $ref: '#/components/responses/ErrorResponse' }
         '422': { $ref: '#/components/responses/ErrorResponse' }
 
   /orchestrator/context/unset:
@@ -451,7 +473,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrchestratorContextResponse'
-        '400': { $ref: '#/components/responses/ErrorResponse' }
         '422': { $ref: '#/components/responses/ErrorResponse' }
   /projects:
     parameters:
@@ -1602,13 +1623,55 @@ components:
 
     OrchestratorUserMessage:
       type: object
+      description: >
+        Inbound message envelope for `POST /orchestrator/messages`.
+        If `type=threads.custom_action`, runtime writes `text` to `inputs.action_type`
+        and flattens normalized `payload` fields into `inputs.*`.
       properties:
         id: { type: string }
-        text: { type: string }
+        type:
+          type: string
+          enum: [threads.add_user_message, threads.custom_action]
+          description: Optional message type. Default behavior is `threads.add_user_message`.
+        text:
+          type: string
+          description: >
+            User text for `threads.add_user_message`.
+            For `threads.custom_action`, this value is treated as `action_type`.
+        payload:
+          $ref: '#/components/schemas/OrchestratorCustomActionPayload'
       required: [id, text]
+
+    OrchestratorCustomActionPayload:
+      type: object
+      description: >
+        Optional payload for `message.type=threads.custom_action`.
+        Extraction order: `input` -> `form` -> `form_data` -> `fields` -> fallback top-level keys.
+        Wrapper keys are flattened, scalar strings are coerced to native types when safe
+        (`true`/`false`, numeric literals, `null`), and `documents` payload passes through unchanged.
+        Normalized fields are materialized into workflow inputs as `inputs.*`.
+      properties:
+        input: { type: object }
+        form: { type: object }
+        form_data: { type: object }
+        fields: { type: object }
+        state_exclude_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
+        output_include_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
+      additionalProperties: true
 
     OrchestratorMessageRequest:
       type: object
+      description: >
+        Unified routing request for direct or orchestrated mode.
+        `message.type=threads.custom_action` is additive and optional.
       properties:
         session_id: { type: string }
         user_id: { type: string }
@@ -2309,7 +2372,9 @@ components:
             Node-specific config object. For `set_state` nodes, use either legacy
             single assignment fields (`target`, `expression`) or batch
             assignments via `assignments[]`. For `integration_http` nodes configure
-            external API call settings and response mapping.
+            external API call settings and response mapping. Runtime egress policy
+            (allowed hosts/schemes/private-network guardrails) is controlled via
+            server environment (`INTEGRATION_HTTP_ALLOWED_*`).
           properties:
             target:
               type: string

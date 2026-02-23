@@ -1,5 +1,4 @@
 import {
-  Autocomplete,
   Anchor,
   AppShell,
   ActionIcon,
@@ -35,12 +34,14 @@ import {
   getWorkflow,
   listProjects,
   listRuns,
-  listWorkflows,
+  listWorkflowsPage,
   publishWorkflow,
   rollbackWorkflow,
   startRun,
+  deleteProject,
   deleteWorkflow,
   updateDraft,
+  updateProject,
   updateWorkflowMeta
 } from './api';
 import type { ProjectRecord, RunRecord } from './api';
@@ -64,6 +65,7 @@ import type {
   NodeType,
   ValidationIssue,
   WorkflowExport,
+  WorkflowRecord,
   WorkflowSummary
 } from './builder/types';
 import {
@@ -72,12 +74,7 @@ import {
   clampCanvasScale,
   computeZoomedOffset
 } from './builder/viewport';
-import {
-  RECENT_PROJECT_IDS_STORAGE_KEY,
-  mergeRecentProjectIds,
-  normalizeProjectId,
-  parseRecentProjectIds
-} from './project-switcher';
+import { normalizeProjectId } from './project-switcher';
 import { shouldAutoCreateWorkflow } from './workflow-auto-create';
 import './styles.css';
 
@@ -202,6 +199,7 @@ type HistorySummary = {
 };
 type HistoryWorkflowScope = 'selected' | 'all';
 type HistoryProjectScope = 'active' | 'all';
+type ViewMode = 'builder' | 'scope';
 type RunInputDocumentPreview = {
   docId: string;
   filename: string;
@@ -213,6 +211,15 @@ type RunInputDocumentPreview = {
 };
 
 const TOKENS_IN_MILLION = 1_000_000;
+const PROJECT_LIST_PAGE_LIMIT = 200;
+const PROJECT_LIST_MAX_PAGES = 100;
+const WORKFLOW_LIST_PAGE_LIMIT = 200;
+const WORKFLOW_LIST_MAX_PAGES = 100;
+
+const normalizeTenantId = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+};
 
 const asUsageNumber = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -800,39 +807,43 @@ function TemplateTextarea({
 }
 
 export default function App() {
-  const [listOpen, { open: openList, close: closeList }] = useDisclosure(false);
   const [integrationOpen, { open: openIntegration, close: closeIntegration }] = useDisclosure(false);
   const [runHistoryOpen, { open: openRunHistory, close: closeRunHistory }] = useDisclosure(false);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window === 'undefined') return 'builder';
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('e2e') === '1') return 'builder';
+    const queryValue = normalizeTenantId(params.get('view'));
+    if (queryValue === 'builder' || queryValue === 'scope') {
+      return queryValue;
+    }
+    if (window.location.pathname.startsWith('/scope')) {
+      return 'scope';
+    }
+    if (window.location.pathname.startsWith('/studio')) {
+      return 'builder';
+    }
+    return 'scope';
+  });
+  const [tenantId, setTenantId] = useState(() => {
+    if (typeof window === 'undefined') return 'local';
+    const fromQuery = normalizeTenantId(new URLSearchParams(window.location.search).get('tenant_id'));
+    return fromQuery || 'local';
+  });
+  const [tenantInput, setTenantInput] = useState(() => {
+    if (typeof window === 'undefined') return 'local';
+    const fromQuery = normalizeTenantId(new URLSearchParams(window.location.search).get('tenant_id'));
+    return fromQuery || 'local';
+  });
+  const [tenantSessionOptions, setTenantSessionOptions] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return ['local'];
+    const fromQuery = normalizeTenantId(new URLSearchParams(window.location.search).get('tenant_id'));
+    return fromQuery ? [fromQuery] : ['local'];
+  });
   const [workflowId, setWorkflowId] = useState('');
-  const [workflowInput, setWorkflowInput] = useState('');
   const [projectId, setProjectId] = useState(() => {
     if (typeof window === 'undefined') return '';
-    const fromQuery = normalizeProjectId(
-      new URLSearchParams(window.location.search).get('project_id')
-    );
-    if (fromQuery) return fromQuery;
-    try {
-      const stored = parseRecentProjectIds(
-        window.localStorage.getItem(RECENT_PROJECT_IDS_STORAGE_KEY)
-      );
-      return stored[0] || '';
-    } catch {
-      return '';
-    }
-  });
-  const [recentProjectIds, setRecentProjectIds] = useState<string[]>(() => {
-    if (typeof window === 'undefined') return [];
-    try {
-      const stored = parseRecentProjectIds(
-        window.localStorage.getItem(RECENT_PROJECT_IDS_STORAGE_KEY)
-      );
-      const fromQuery = normalizeProjectId(
-        new URLSearchParams(window.location.search).get('project_id')
-      );
-      return mergeRecentProjectIds(stored, [fromQuery || stored[0]]);
-    } catch {
-      return [];
-    }
+    return normalizeProjectId(new URLSearchParams(window.location.search).get('project_id'));
   });
   const [workflowName, setWorkflowName] = useState('');
   const [workflowDescription, setWorkflowDescription] = useState('');
@@ -861,8 +872,12 @@ export default function App() {
   const [panStart, setPanStart] = useState({ x: 0, y: 0, ox: 0, oy: 0 });
   const [projectList, setProjectList] = useState<ProjectRecord[]>([]);
   const [projectListLoading, setProjectListLoading] = useState(false);
+  const [projectEditTarget, setProjectEditTarget] = useState<ProjectRecord | null>(null);
+  const [projectEditName, setProjectEditName] = useState('');
+  const [projectEditLoading, setProjectEditLoading] = useState(false);
+  const [projectDeleteTarget, setProjectDeleteTarget] = useState<ProjectRecord | null>(null);
+  const [projectDeleteLoading, setProjectDeleteLoading] = useState(false);
   const [workflowList, setWorkflowList] = useState<WorkflowSummary[]>([]);
-  const [workflowQuery, setWorkflowQuery] = useState('');
   const [workflowListLoading, setWorkflowListLoading] = useState(false);
   const [runHistoryRaw, setRunHistoryRaw] = useState<RunRecord[]>([]);
   const [runHistoryLoading, setRunHistoryLoading] = useState(false);
@@ -899,16 +914,6 @@ export default function App() {
 
   const issues = useMemo<ValidationIssue[]>(() => validateGraph(nodes, edges), [nodes, edges]);
   const integrationLinks = useMemo(() => buildIntegrationKitLinks(API_BASE, appOrigin), [appOrigin]);
-  const filteredWorkflows = useMemo(() => {
-    const query = workflowQuery.trim().toLowerCase();
-    if (!query) return workflowList;
-    return workflowList.filter((item) => {
-      const name = item.name?.toLowerCase() || '';
-      const description = item.description?.toLowerCase() || '';
-      const id = item.workflow_id?.toLowerCase() || '';
-      return name.includes(query) || description.includes(query) || id.includes(query);
-    });
-  }, [workflowList, workflowQuery]);
   const normalizedProjectId = normalizeProjectId(projectId);
   const projectDisplayNameById = useMemo(() => {
     const labels = new Map<string, string>();
@@ -919,28 +924,6 @@ export default function App() {
     });
     return labels;
   }, [projectList]);
-  const projectSwitcherOptions = useMemo(
-    () => {
-      const seen = new Set<string>();
-      const options: Array<{ value: string; label: string }> = [];
-      const addOption = (value: unknown, label?: unknown) => {
-        const normalized = normalizeProjectId(value);
-        if (!normalized || seen.has(normalized)) return;
-        seen.add(normalized);
-        const normalizedLabel =
-          typeof label === 'string' && label.trim() ? label.trim() : normalized;
-        options.push({ value: normalized, label: normalizedLabel });
-      };
-
-      addOption(normalizedProjectId, projectDisplayNameById.get(normalizedProjectId));
-      projectList.forEach((item) => addOption(item.project_id, item.project_name));
-      recentProjectIds.forEach((value) =>
-        addOption(value, projectDisplayNameById.get(normalizeProjectId(value)))
-      );
-      return options;
-    },
-    [normalizedProjectId, projectDisplayNameById, projectList, recentProjectIds]
-  );
   const activeProjectId = normalizedProjectId || undefined;
   const runHistory = useMemo(() => {
     let items = runHistoryRaw;
@@ -974,6 +957,13 @@ export default function App() {
     [runHistoryRaw]
   );
   const filteredOutRunCount = Math.max(runHistoryRaw.length - runHistory.length, 0);
+  const workflowsForActiveProject = useMemo(
+    () =>
+      activeProjectId
+        ? workflowList.filter((item) => normalizeProjectId(item.project_id) === activeProjectId)
+        : workflowList,
+    [workflowList, activeProjectId]
+  );
 
   const historySummary = useMemo(
     () => summarizeHistory(runHistory, historyInputRateUsdPer1M, historyOutputRateUsdPer1M),
@@ -1105,29 +1095,21 @@ export default function App() {
   }, [autoCreatedWorkflowId, isTestEnv, activeProjectId]);
 
   useEffect(() => {
+    const initialTenant = normalizeTenantId(tenantId) || 'local';
+    rememberTenantSession(initialTenant);
+    updateUrlSearch({
+      tenant_id: initialTenant,
+      view: viewMode === 'scope' ? 'scope' : null
+    }, viewMode === 'scope' ? '/scope' : '/');
+  }, []);
+
+  useEffect(() => {
     void fetchProjects();
   }, []);
 
   useEffect(() => {
-    if (!listOpen) return;
     void fetchWorkflows();
-  }, [listOpen, activeProjectId]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(
-        RECENT_PROJECT_IDS_STORAGE_KEY,
-        JSON.stringify(recentProjectIds)
-      );
-    } catch {
-      // Ignore storage failures (private mode/quota).
-    }
-  }, [recentProjectIds]);
-
-  useEffect(() => {
-    void fetchWorkflows();
-  }, [activeProjectId]);
+  }, [activeProjectId, projectList]);
 
   useEffect(() => {
     if (!runHistoryOpen) return;
@@ -1343,7 +1325,6 @@ export default function App() {
       setVariablesSchema(parsed.variablesSchema);
       setSelectedNodeId(null);
       setWorkflowId(workflow.workflow_id);
-      setWorkflowInput(workflow.workflow_id);
       setWorkflowName(workflow.name);
       setWorkflowDescription(workflow.description || '');
       setActiveVersionId(workflow.active_version_id || null);
@@ -1388,7 +1369,6 @@ export default function App() {
     const workflow = result.data!;
     resetDraftToDefault();
     setWorkflowId(workflow.workflow_id);
-    setWorkflowInput(workflow.workflow_id);
     setWorkflowName(workflow.name);
     setWorkflowDescription(workflow.description || '');
     setActiveVersionId(workflow.active_version_id || null);
@@ -1431,92 +1411,8 @@ export default function App() {
     await createNewWorkflow();
   };
 
-  const loadWorkflowById = async (workflowIdToLoad: string) => {
-    if (!workflowIdToLoad.trim()) {
-      setStatus({ tone: 'warn', label: 'Enter workflow ID' });
-      return;
-    }
-    const projectScope = requireProjectId('Load workflow');
-    if (!projectScope) return;
-    setStatus({ tone: 'working', label: 'Loading workflow...' });
-    const result = await getWorkflow(workflowIdToLoad.trim(), projectScope);
-    if (result.error) {
-      setStatus({ tone: 'error', label: 'Load failed', detail: result.error.message });
-      return;
-    }
-    const workflow = result.data!;
-    const parsed = parseDraft(workflow.draft || DEFAULT_DRAFT);
-    setNodes(parsed.nodes);
-    setEdges(parsed.edges);
-    setVariablesSchema(parsed.variablesSchema);
-    setSelectedNodeId(null);
-    setWorkflowId(workflow.workflow_id);
-    setWorkflowName(workflow.name);
-    setWorkflowDescription(workflow.description || '');
-    setActiveVersionId(workflow.active_version_id || null);
-    setWorkflowInput(workflow.workflow_id);
-    setRunHistoryRaw([]);
-    setDirty(false);
-    void fetchRunHistory(workflow.workflow_id);
-    setStatus({ tone: 'ok', label: 'Workflow loaded' });
-  };
-
-  const handleLoadWorkflow = async () => {
-    if (!workflowInput.trim()) {
-      setStatus({ tone: 'warn', label: 'Enter workflow ID' });
-      return;
-    }
-    await loadWorkflowById(workflowInput.trim());
-  };
-
-  const rememberProjectIds = (...projectIds: Array<unknown>) => {
-    setRecentProjectIds((prev) => mergeRecentProjectIds(prev, projectIds));
-  };
-
-  const requireProjectId = (actionLabel: string): string | null => {
-    if (activeProjectId) return activeProjectId;
-    setStatus({ tone: 'warn', label: 'Select project first', detail: actionLabel });
-    return null;
-  };
-
-  const applyProjectId = (value: unknown) => {
-    const normalized = normalizeProjectId(value);
-    const previous = normalizedProjectId;
-    setProjectId(normalized);
-    rememberProjectIds(normalized);
-    if (typeof window !== 'undefined') {
-      const url = new URL(window.location.href);
-      if (normalized) {
-        url.searchParams.set('project_id', normalized);
-      } else {
-        url.searchParams.delete('project_id');
-      }
-      const search = url.searchParams.toString();
-      const nextUrl = `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
-      window.history.replaceState({}, '', nextUrl);
-    }
-    if (normalized !== previous) {
-      setWorkflowId('');
-      setWorkflowInput('');
-      setWorkflowName('');
-      setWorkflowDescription('');
-      setActiveVersionId(null);
-      setRunHistoryRaw([]);
-      resetDraftToDefault();
-      setMetaDirty(false);
-      setStatus({ tone: normalized ? 'ok' : 'warn', label: normalized ? `Project ${normalized}` : 'Select project' });
-    }
-  };
-
-  const fetchProjects = async () => {
-    setProjectListLoading(true);
-    const result = await listProjects({ limit: 200 });
-    if (result.error) {
-      setProjectListLoading(false);
-      setStatus({ tone: 'warn', label: 'Project list unavailable', detail: result.error.message });
-      return;
-    }
-    const projects = (result.data?.items || [])
+  const normalizeProjectsPayload = (items?: ProjectRecord[]): ProjectRecord[] =>
+    (items || [])
       .map((item) => {
         const project_id = normalizeProjectId(item.project_id);
         if (!project_id) return null;
@@ -1531,24 +1427,425 @@ export default function App() {
         };
       })
       .filter((item): item is ProjectRecord => item !== null);
+
+  const collectWorkflowLookupProjectScopes = async (
+    preferredProjectScope?: string
+  ): Promise<string[]> => {
+    const seen = new Set<string>();
+    const scopes: string[] = [];
+    const pushScope = (value: unknown) => {
+      const normalized = normalizeProjectId(value);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      scopes.push(normalized);
+    };
+
+    pushScope(preferredProjectScope);
+    pushScope(activeProjectId);
+    projectList.forEach((item) => pushScope(item.project_id));
+
+    let cursor: string | undefined;
+    for (let page = 0; page < PROJECT_LIST_MAX_PAGES; page += 1) {
+      const projectsResult = await listProjects({
+        limit: PROJECT_LIST_PAGE_LIMIT,
+        cursor
+      });
+      if (projectsResult.error) {
+        break;
+      }
+      const discoveredProjects = normalizeProjectsPayload(projectsResult.data?.items);
+      discoveredProjects.forEach((item) => pushScope(item.project_id));
+      const nextCursor = projectsResult.data?.next_cursor || undefined;
+      if (!nextCursor) {
+        break;
+      }
+      cursor = nextCursor;
+    }
+
+    return scopes;
+  };
+
+  const applyLoadedWorkflow = (workflow: WorkflowRecord) => {
+    const parsed = parseDraft(workflow.draft || DEFAULT_DRAFT);
+    setNodes(parsed.nodes);
+    setEdges(parsed.edges);
+    setVariablesSchema(parsed.variablesSchema);
+    setSelectedNodeId(null);
+    setWorkflowId(workflow.workflow_id);
+    setWorkflowName(workflow.name);
+    setWorkflowDescription(workflow.description || '');
+    setActiveVersionId(workflow.active_version_id || null);
+    setRunHistoryRaw([]);
+    setDirty(false);
+    void fetchRunHistory(workflow.workflow_id);
+  };
+
+  const loadWorkflowById = async (workflowIdToLoad: string, preferredProjectScope?: string) => {
+    const targetWorkflowId = workflowIdToLoad.trim();
+    if (!targetWorkflowId) {
+      setStatus({ tone: 'warn', label: 'Enter workflow ID' });
+      return;
+    }
+
+    setStatus({ tone: 'working', label: 'Loading workflow...' });
+    const projectScopes = await collectWorkflowLookupProjectScopes(preferredProjectScope);
+    if (!projectScopes.length) {
+      setStatus({ tone: 'warn', label: 'No projects available' });
+      return;
+    }
+
+    let lastErrorMessage = '';
+    for (const projectScope of projectScopes) {
+      const result = await getWorkflow(targetWorkflowId, projectScope);
+      if (result.error) {
+        lastErrorMessage = result.error.message || lastErrorMessage;
+        continue;
+      }
+
+      const workflow = result.data!;
+      const resolvedProjectScope = normalizeProjectId(workflow.project_id) || projectScope;
+      if (resolvedProjectScope !== activeProjectId) {
+        applyProjectId(resolvedProjectScope);
+      }
+      applyLoadedWorkflow(workflow);
+      setStatus({ tone: 'ok', label: 'Workflow loaded' });
+      return;
+    }
+
+    const fallbackMessage = `Workflow ${targetWorkflowId} was not found in ${projectScopes.length} project scopes`;
+    setStatus({
+      tone: 'error',
+      label: 'Load failed',
+      detail: lastErrorMessage || fallbackMessage
+    });
+  };
+
+  const requireProjectId = (actionLabel: string): string | null => {
+    if (activeProjectId) return activeProjectId;
+    setStatus({ tone: 'warn', label: 'Select project first', detail: actionLabel });
+    return null;
+  };
+
+  const updateUrlSearch = (updates: Record<string, string | null>, nextPath?: string) => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (typeof nextPath === 'string' && nextPath.trim()) {
+      url.pathname = nextPath;
+    }
+    Object.entries(updates).forEach(([key, value]) => {
+      if (typeof value === 'string' && value.trim()) {
+        url.searchParams.set(key, value.trim());
+      } else {
+        url.searchParams.delete(key);
+      }
+    });
+    const search = url.searchParams.toString();
+    const nextUrl = `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
+    window.history.replaceState({}, '', nextUrl);
+  };
+
+  const rememberTenantSession = (value: string) => {
+    setTenantSessionOptions((prev) => {
+      const seen = new Set<string>();
+      const next = [value, ...prev]
+        .map((item) => normalizeTenantId(item))
+        .filter((item) => !!item)
+        .filter((item) => {
+          if (seen.has(item)) return false;
+          seen.add(item);
+          return true;
+        });
+      return next;
+    });
+  };
+
+  const applyViewMode = (next: ViewMode) => {
+    setViewMode(next);
+    updateUrlSearch(
+      { view: next === 'scope' ? 'scope' : null },
+      next === 'scope' ? '/scope' : '/'
+    );
+  };
+
+  const applyTenantId = async (value: unknown) => {
+    const normalized = normalizeTenantId(value);
+    if (!normalized) {
+      setStatus({ tone: 'warn', label: 'Tenant ID is required' });
+      return;
+    }
+    const previous = tenantId;
+    setTenantId(normalized);
+    setTenantInput(normalized);
+    rememberTenantSession(normalized);
+    updateUrlSearch({ tenant_id: normalized });
+    if (normalized === previous) {
+      await fetchProjects();
+      await fetchWorkflows();
+      return;
+    }
+    setProjectId('');
+    setProjectList([]);
+    setWorkflowList([]);
+    setWorkflowId('');
+    setWorkflowName('');
+    setWorkflowDescription('');
+    setActiveVersionId(null);
+    setRunHistoryRaw([]);
+    resetDraftToDefault();
+    setDirty(false);
+    setMetaDirty(false);
+    setStatus({ tone: 'working', label: `Tenant ${normalized}` });
+    await fetchProjects();
+  };
+
+  const applyProjectId = (value: unknown) => {
+    const normalized = normalizeProjectId(value);
+    const previous = normalizedProjectId;
+    const selectedProjectName = projectDisplayNameById.get(normalized);
+    setProjectId(normalized);
+    updateUrlSearch({ project_id: normalized || null });
+    if (normalized !== previous) {
+      setWorkflowId('');
+      setWorkflowName('');
+      setWorkflowDescription('');
+      setActiveVersionId(null);
+      setRunHistoryRaw([]);
+      resetDraftToDefault();
+      setMetaDirty(false);
+      setStatus({
+        tone: normalized ? 'ok' : 'warn',
+        label: normalized ? selectedProjectName || 'Project selected' : 'Select project'
+      });
+    }
+  };
+
+  const openProjectEdit = (project: ProjectRecord) => {
+    setProjectEditTarget(project);
+    setProjectEditName(project.project_name || normalizeProjectId(project.project_id));
+  };
+
+  const closeProjectEdit = () => {
+    setProjectEditTarget(null);
+    setProjectEditName('');
+  };
+
+  const saveProjectEdit = async () => {
+    if (!projectEditTarget) return;
+    const projectScope = normalizeProjectId(projectEditTarget.project_id);
+    const nextName = projectEditName.trim();
+    if (!projectScope) {
+      setStatus({ tone: 'warn', label: 'Project ID is required' });
+      return;
+    }
+    if (!nextName) {
+      setStatus({ tone: 'warn', label: 'Project name is required' });
+      return;
+    }
+    setProjectEditLoading(true);
+    const result = await updateProject(projectScope, { project_name: nextName });
+    if (result.error) {
+      setStatus({ tone: 'error', label: 'Project update failed', detail: result.error.message });
+      setProjectEditLoading(false);
+      return;
+    }
+    closeProjectEdit();
+    await fetchProjects();
+    setStatus({ tone: 'ok', label: 'Project updated', detail: projectScope });
+    setProjectEditLoading(false);
+  };
+
+  const openProjectDelete = (project: ProjectRecord) => {
+    setProjectDeleteTarget(project);
+  };
+
+  const closeProjectDelete = () => {
+    setProjectDeleteTarget(null);
+  };
+
+  const confirmProjectDelete = async () => {
+    if (!projectDeleteTarget) return;
+    const projectScope = normalizeProjectId(projectDeleteTarget.project_id);
+    if (!projectScope) {
+      setStatus({ tone: 'warn', label: 'Project ID is required' });
+      return;
+    }
+
+    setProjectDeleteLoading(true);
+    const result = await deleteProject(projectScope);
+    if (result.error) {
+      const blockedByWorkflows =
+        result.error.code === 'ERR_PROJECT_NOT_EMPTY' || /project has workflows/i.test(result.error.message || '');
+      setStatus({
+        tone: blockedByWorkflows ? 'warn' : 'error',
+        label: blockedByWorkflows ? 'Delete blocked' : 'Project delete failed',
+        detail: result.error.message
+      });
+      setProjectDeleteLoading(false);
+      return;
+    }
+
+    if (activeProjectId === projectScope) {
+      applyProjectId('');
+    }
+    closeProjectDelete();
+    await fetchProjects();
+    await fetchWorkflows();
+    setStatus({ tone: 'ok', label: 'Project deleted', detail: projectScope });
+    setProjectDeleteLoading(false);
+  };
+
+  const fetchProjects = async () => {
+    setProjectListLoading(true);
+    const allProjects: ProjectRecord[] = [];
+    let cursor: string | undefined;
+
+    for (let page = 0; page < PROJECT_LIST_MAX_PAGES; page += 1) {
+      const result = await listProjects({
+        limit: PROJECT_LIST_PAGE_LIMIT,
+        cursor
+      });
+      if (result.error) {
+        setProjectListLoading(false);
+        setStatus({ tone: 'warn', label: 'Project list unavailable', detail: result.error.message });
+        return;
+      }
+
+      allProjects.push(...normalizeProjectsPayload(result.data?.items));
+      const nextCursor = result.data?.next_cursor || undefined;
+      if (!nextCursor) {
+        break;
+      }
+      cursor = nextCursor;
+    }
+
+    const projectsById = new Map<string, ProjectRecord>();
+    allProjects.forEach((item) => {
+      const projectScope = normalizeProjectId(item.project_id);
+      if (!projectScope) return;
+      projectsById.set(projectScope, {
+        ...item,
+        project_id: projectScope
+      });
+    });
+    const projects = Array.from(projectsById.values()).sort((left, right) =>
+      left.project_name.localeCompare(right.project_name)
+    );
+
     setProjectList(projects);
+    if (
+      activeProjectId &&
+      !projects.some((item) => normalizeProjectId(item.project_id) === activeProjectId)
+    ) {
+      applyProjectId('');
+    }
     setProjectListLoading(false);
   };
 
+  const listAllWorkflowsForProject = async (
+    projectScope: string
+  ): Promise<{ items: WorkflowSummary[]; errorMessage?: string }> => {
+    const items: WorkflowSummary[] = [];
+    let cursor: string | undefined;
+
+    for (let page = 0; page < WORKFLOW_LIST_MAX_PAGES; page += 1) {
+      const result = await listWorkflowsPage(
+        {
+          limit: WORKFLOW_LIST_PAGE_LIMIT,
+          cursor
+        },
+        projectScope
+      );
+      if (result.error) {
+        return {
+          items,
+          errorMessage: result.error.message || `Unable to load workflows for ${projectScope}`
+        };
+      }
+
+      (result.data?.items || []).forEach((item) => {
+        const workflowScope = normalizeProjectId(item.project_id) || projectScope;
+        items.push({
+          ...item,
+          workflow_id: item.workflow_id.trim(),
+          project_id: workflowScope
+        });
+      });
+
+      const nextCursor = result.data?.next_cursor || undefined;
+      if (!nextCursor) {
+        break;
+      }
+      cursor = nextCursor;
+    }
+
+    return { items };
+  };
+
   const fetchWorkflows = async () => {
-    if (!activeProjectId) {
+    const seenScopes = new Set<string>();
+    const projectScopes: string[] = [];
+    const addScope = (value: unknown) => {
+      const normalized = normalizeProjectId(value);
+      if (!normalized || seenScopes.has(normalized)) return;
+      seenScopes.add(normalized);
+      projectScopes.push(normalized);
+    };
+
+    addScope(activeProjectId);
+    projectList.forEach((item) => addScope(item.project_id));
+
+    if (!projectScopes.length) {
       setWorkflowList([]);
       setWorkflowListLoading(false);
       return;
     }
+
     setWorkflowListLoading(true);
-    const result = await listWorkflows(100, activeProjectId);
-    if (result.error) {
-      setStatus({ tone: 'error', label: 'List failed', detail: result.error.message });
-      setWorkflowListLoading(false);
-      return;
+    const responses = await Promise.all(projectScopes.map((projectScope) => listAllWorkflowsForProject(projectScope)));
+
+    const collected: WorkflowSummary[] = [];
+    let firstErrorMessage = '';
+    responses.forEach((response) => {
+      if (response.errorMessage && !firstErrorMessage) {
+        firstErrorMessage = response.errorMessage;
+      }
+      response.items.forEach((item) => {
+        if (!item.workflow_id) return;
+        collected.push(item);
+      });
+    });
+
+    const workflowsById = new Map<string, WorkflowSummary>();
+    collected.forEach((item) => {
+      if (!item.workflow_id) return;
+      const existing = workflowsById.get(item.workflow_id);
+      if (!existing) {
+        workflowsById.set(item.workflow_id, item);
+        return;
+      }
+      const existingUpdatedAt = Date.parse(existing.updated_at || existing.created_at || '') || 0;
+      const itemUpdatedAt = Date.parse(item.updated_at || item.created_at || '') || 0;
+      if (itemUpdatedAt >= existingUpdatedAt) {
+        workflowsById.set(item.workflow_id, item);
+      }
+    });
+
+    const sorted = Array.from(workflowsById.values()).sort((left, right) => {
+      const leftUpdatedAt = Date.parse(left.updated_at || left.created_at || '') || 0;
+      const rightUpdatedAt = Date.parse(right.updated_at || right.created_at || '') || 0;
+      if (rightUpdatedAt !== leftUpdatedAt) {
+        return rightUpdatedAt - leftUpdatedAt;
+      }
+      return left.workflow_id.localeCompare(right.workflow_id);
+    });
+
+    if (!sorted.length && firstErrorMessage) {
+      setStatus({ tone: 'error', label: 'List failed', detail: firstErrorMessage });
+    } else if (firstErrorMessage) {
+      setStatus({ tone: 'warn', label: 'Partial workflow list', detail: firstErrorMessage });
     }
-    setWorkflowList(result.data?.items || []);
+
+    setWorkflowList(sorted);
     setWorkflowListLoading(false);
   };
 
@@ -1570,7 +1867,6 @@ export default function App() {
     }
     const historyItems = result.data?.items || [];
     setRunHistoryRaw(historyItems);
-    rememberProjectIds(...historyItems.map((item) => item.project_id));
     setRunHistoryLoading(false);
   };
 
@@ -2407,294 +2703,272 @@ export default function App() {
     <AppShell
       className="app-shell"
       header={{ height: 86 }}
-      navbar={{ width: 300, breakpoint: 'sm' }}
-      aside={{ width: 360, breakpoint: 'sm' }}
+      navbar={viewMode === 'builder' ? { width: 300, breakpoint: 'sm' } : undefined}
+      aside={viewMode === 'builder' ? { width: 360, breakpoint: 'sm' } : undefined}
       padding="md"
     >
       <AppShell.Header className="header-shell">
         <Group h="100%" px="lg" justify="space-between" wrap="nowrap" className="header">
           <Group gap="sm" wrap="nowrap" className="header-brand">
             <Badge color="brand" variant="filled">
-              Builder
+              {viewMode === 'builder' ? 'Builder' : 'Explorer'}
             </Badge>
             <Stack gap={0}>
-              <Title order={4}>Workflow Studio</Title>
+              <Title order={4}>{viewMode === 'builder' ? 'Workflow Studio' : 'Tenant Explorer'}</Title>
               <Text size="xs" c="dimmed">
-                {workflowId ? `Workflow ${workflowId}` : 'No workflow loaded'}
+                {viewMode === 'builder'
+                  ? workflowId
+                    ? `Workflow ${workflowId}`
+                    : 'No workflow loaded'
+                  : `Tenant ${tenantId}`}
               </Text>
             </Stack>
           </Group>
-          <Box className="header-controls-wrap">
-            <Group gap="xs" wrap="nowrap" className="header-controls">
-              <Autocomplete
-                placeholder={
-                  projectListLoading
-                    ? 'Loading projects...'
-                    : projectSwitcherOptions.length
-                      ? 'Project'
-                      : 'Project ID'
-                }
-                className="header-project-input"
-                w={196}
-                size="sm"
-                limit={200}
-                data={projectSwitcherOptions}
-                value={projectId}
-                data-testid="project-selector"
-                renderOption={({ option }) => {
-                  const optionProjectId = normalizeProjectId(option.value);
-                  const optionProjectName =
-                    projectDisplayNameById.get(optionProjectId) || option.value;
-                  return (
-                    <Group justify="space-between" wrap="nowrap" gap="xs">
-                      <Text size="sm">{optionProjectName}</Text>
-                      {optionProjectName !== optionProjectId && (
-                        <Text size="xs" c="dimmed">
-                          {optionProjectId}
-                        </Text>
-                      )}
-                    </Group>
-                  );
-                }}
-                onChange={(value) => setProjectId(value)}
-                onOptionSubmit={(value) => applyProjectId(value)}
-                onBlur={(event) => applyProjectId(event.currentTarget.value)}
-              />
-              <Select
-                placeholder="Select workflow"
-                searchable
-                clearable
-                className="header-workflow-select"
-                w={280}
-                size="sm"
-                data={workflowList.map((item) => ({
-                  value: item.workflow_id,
-                  label: `${item.name} (${item.workflow_id})`
-                }))}
-                value={workflowId || undefined}
-                onChange={(value) => {
-                  if (!value) return;
-                  setWorkflowInput(value);
-                  void loadWorkflowById(value);
-                }}
-                nothingFoundMessage={workflowListLoading ? 'Loading...' : 'No workflows'}
-              />
-              <Button variant="default" size="sm" onClick={openList}>
-                Browse
-              </Button>
-              <Button variant="outline" size="sm" onClick={handleNewWorkflow} disabled={creatingWorkflow}>
-                New
-              </Button>
-              <Divider orientation="vertical" />
-              <Button variant="default" size="sm" onClick={handleSaveDraft}>
-                Save
-              </Button>
-              <Button variant="default" size="sm" onClick={handleAutoLayout} data-testid="auto-layout">
-                Auto layout
-              </Button>
-              <Button variant="filled" size="sm" onClick={handlePublish}>
-                Publish
-              </Button>
-              <Select
-                className="header-runmode-select"
-                value={runMode}
-                onChange={(value) => setRunMode((value as 'live' | 'test') || 'live')}
-                data={[
-                  { value: 'live', label: 'Live' },
-                  { value: 'test', label: 'Test' }
-                ]}
-                size="sm"
-                w={112}
-              />
-              <Button color="teal" variant="filled" size="sm" onClick={handleRun}>
-                Run
-              </Button>
-              <Button variant="default" size="sm" onClick={handleOpenRunHistory}>
-                History
-              </Button>
+          {viewMode === 'builder' ? (
+            <Box className="header-controls-wrap">
+              <Group gap="xs" wrap="nowrap" className="header-controls">
+                <Badge variant="outline">Project {activeProjectId || '-'}</Badge>
+                <Badge variant="outline">Workflow {workflowId || '-'}</Badge>
+                <Button variant="default" size="sm" onClick={() => applyViewMode('scope')}>
+                  Back to projects
+                </Button>
+                <Button variant="outline" size="sm" onClick={handleNewWorkflow} disabled={creatingWorkflow}>
+                  New
+                </Button>
+                <Divider orientation="vertical" />
+                <Button variant="default" size="sm" onClick={handleSaveDraft}>
+                  Save
+                </Button>
+                <Button variant="default" size="sm" onClick={handleAutoLayout} data-testid="auto-layout">
+                  Auto layout
+                </Button>
+                <Button variant="filled" size="sm" onClick={handlePublish}>
+                  Publish
+                </Button>
+                <Select
+                  className="header-runmode-select"
+                  value={runMode}
+                  onChange={(value) => setRunMode((value as 'live' | 'test') || 'live')}
+                  data={[
+                    { value: 'live', label: 'Live' },
+                    { value: 'test', label: 'Test' }
+                  ]}
+                  size="sm"
+                  w={112}
+                />
+                <Button color="teal" variant="filled" size="sm" onClick={handleRun}>
+                  Run
+                </Button>
+                <Button variant="default" size="sm" onClick={handleOpenRunHistory}>
+                  History
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleOpenChat}
+                  data-testid="open-chatkit"
+                  data-chatkit-url={chatkitUrl || undefined}
+                >
+                  Open Chat
+                </Button>
+                <Menu
+                  shadow="md"
+                  width={220}
+                  position="bottom-end"
+                  keepMounted
+                  opened={moreMenuOpen}
+                  onChange={setMoreMenuOpen}
+                >
+                  <Menu.Target>
+                    <Button variant="default" size="sm" onClick={() => setMoreMenuOpen((prev) => !prev)}>
+                      More
+                    </Button>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    <Menu.Item
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        void fetchProjects();
+                        void fetchWorkflows();
+                      }}
+                    >
+                      Refresh list
+                    </Menu.Item>
+                    <Menu.Item
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        handleAutoLayout();
+                      }}
+                      data-testid="auto-layout-menu"
+                    >
+                      Auto layout
+                    </Menu.Item>
+                    <Menu.Item
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        handleExportWorkflow();
+                      }}
+                      data-testid="export-workflow"
+                    >
+                      Export JSON
+                    </Menu.Item>
+                    <Menu.Item
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        handleImportClick();
+                      }}
+                      disabled={creatingWorkflow}
+                      data-testid="import-workflow"
+                    >
+                      Import JSON
+                    </Menu.Item>
+                    <Menu.Item
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        openIntegration();
+                      }}
+                      data-testid="open-integration-kit"
+                    >
+                      Integration kit
+                    </Menu.Item>
+                    <Menu.Divider />
+                    <Menu.Item
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        handleRollback();
+                      }}
+                    >
+                      Rollback draft
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={handleImportFileChange}
+                  data-testid="import-workflow-input"
+                  style={{ display: 'none' }}
+                />
+              </Group>
+            </Box>
+          ) : (
+            <Group gap="xs" wrap="nowrap">
+              <Badge variant="outline">Project {activeProjectId || '-'}</Badge>
+              <Badge variant="outline">Workflow {workflowId || '-'}</Badge>
               <Button
                 variant="default"
                 size="sm"
-                onClick={handleOpenChat}
-                data-testid="open-chatkit"
-                data-chatkit-url={chatkitUrl || undefined}
+                onClick={() => {
+                  void fetchProjects();
+                  void fetchWorkflows();
+                }}
               >
-                Open Chat
+                Refresh
               </Button>
-              <Menu
-                shadow="md"
-                width={220}
-                position="bottom-end"
-                keepMounted
-                opened={moreMenuOpen}
-                onChange={setMoreMenuOpen}
-              >
-                <Menu.Target>
-                  <Button variant="default" size="sm" onClick={() => setMoreMenuOpen((prev) => !prev)}>
-                    More
-                  </Button>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  <Menu.Item
-                    onClick={() => {
-                      setMoreMenuOpen(false);
-                      void fetchProjects();
-                      void fetchWorkflows();
-                    }}
-                  >
-                    Refresh list
-                  </Menu.Item>
-                  <Menu.Item
-                    onClick={() => {
-                      setMoreMenuOpen(false);
-                      handleAutoLayout();
-                    }}
-                    data-testid="auto-layout-menu"
-                  >
-                    Auto layout
-                  </Menu.Item>
-                  <Menu.Item
-                    onClick={() => {
-                      setMoreMenuOpen(false);
-                      handleExportWorkflow();
-                    }}
-                    data-testid="export-workflow"
-                  >
-                    Export JSON
-                  </Menu.Item>
-                  <Menu.Item
-                    onClick={() => {
-                      setMoreMenuOpen(false);
-                      handleImportClick();
-                    }}
-                    disabled={creatingWorkflow}
-                    data-testid="import-workflow"
-                  >
-                    Import JSON
-                  </Menu.Item>
-                  <Menu.Item
-                    onClick={() => {
-                      setMoreMenuOpen(false);
-                      openIntegration();
-                    }}
-                    data-testid="open-integration-kit"
-                  >
-                    Integration kit
-                  </Menu.Item>
-                  <Menu.Divider />
-                  <Menu.Item
-                    onClick={() => {
-                      setMoreMenuOpen(false);
-                      handleRollback();
-                    }}
-                  >
-                    Rollback draft
-                  </Menu.Item>
-                </Menu.Dropdown>
-              </Menu>
-              <input
-                ref={importInputRef}
-                type="file"
-                accept="application/json,.json"
-                onChange={handleImportFileChange}
-                data-testid="import-workflow-input"
-                style={{ display: 'none' }}
-              />
+              <Button variant="filled" size="sm" onClick={() => applyViewMode('builder')}>
+                Open Studio
+              </Button>
             </Group>
-          </Box>
+          )}
         </Group>
       </AppShell.Header>
 
-      <AppShell.Navbar p="md" className="panel">
-        <Stack gap="md">
-          <Group justify="space-between" align="center">
-            <Text className="panel-title">Node palette</Text>
-            <Badge color="brand" variant="light">
-              {nodes.length} nodes
-            </Badge>
-          </Group>
-          <ScrollArea h="calc(100vh - 180px)">
-            <Stack gap="sm">
-              {NODE_PALETTE.map((item) => (
-                <Card
-                  key={item.type}
-                  shadow="sm"
-                  radius="md"
-                  withBorder
-                  className={`palette-card tone-${item.tone}`}
-                  onClick={() => handleAddNode(item.type)}
-                >
-                  <Text fw={600}>{item.label}</Text>
-                  <Text size="sm" c="dimmed">
-                    {item.description}
-                  </Text>
-                </Card>
-              ))}
-            </Stack>
-          </ScrollArea>
-        </Stack>
-      </AppShell.Navbar>
-
-      <AppShell.Aside p="md" className="panel">
-        <Stack gap="sm">
-          <Group justify="space-between" align="center">
-            <Text className="panel-title">Autosave</Text>
-            <Switch checked={autoSave} onChange={(event) => setAutoSave(event.currentTarget.checked)} />
-          </Group>
-          <Tabs defaultValue="inspector">
-            <Tabs.List grow>
-              <Tabs.Tab value="inspector">Inspector</Tabs.Tab>
-              <Tabs.Tab value="validation">Validation</Tabs.Tab>
-            </Tabs.List>
-            <Tabs.Panel value="inspector" pt="md">
-              <ScrollArea h="calc(100vh - 240px)">
-                <Stack gap="md">{renderInspector()}</Stack>
-              </ScrollArea>
-            </Tabs.Panel>
-            <Tabs.Panel value="validation" pt="md">
-              <ScrollArea h="calc(100vh - 240px)">
-                <Stack gap="sm">
-                  <Group justify="space-between">
-                    <Text fw={600}>Issues</Text>
-                    <Badge color={issues.some((issue) => issue.level === 'error') ? 'red' : 'teal'}>
-                      {issues.length}
-                    </Badge>
-                  </Group>
-                  {issues.length === 0 ? (
+      {viewMode === 'builder' && (
+        <AppShell.Navbar p="md" className="panel">
+          <Stack gap="md">
+            <Group justify="space-between" align="center">
+              <Text className="panel-title">Node palette</Text>
+              <Badge color="brand" variant="light">
+                {nodes.length} nodes
+              </Badge>
+            </Group>
+            <ScrollArea h="calc(100vh - 180px)">
+              <Stack gap="sm">
+                {NODE_PALETTE.map((item) => (
+                  <Card
+                    key={item.type}
+                    shadow="sm"
+                    radius="md"
+                    withBorder
+                    className={`palette-card tone-${item.tone}`}
+                    onClick={() => handleAddNode(item.type)}
+                  >
+                    <Text fw={600}>{item.label}</Text>
                     <Text size="sm" c="dimmed">
-                      Graph looks good.
+                      {item.description}
                     </Text>
-                  ) : (
-                    issues.map((issue) => (
-                      <Card key={issue.id} withBorder radius="md" className={`issue ${issue.level}`}>
-                        <Text size="sm" fw={600}>
-                          {issue.level === 'error' ? 'Error' : 'Warning'}
-                        </Text>
-                        <Text size="sm" c="dimmed">
-                          {issue.message}
-                        </Text>
-                        {issue.nodeId && (
-                          <Button
-                            size="xs"
-                            variant="light"
-                            mt="xs"
-                            onClick={() => setSelectedNodeId(issue.nodeId || null)}
-                          >
-                            Focus node
-                          </Button>
-                        )}
-                      </Card>
-                    ))
-                  )}
-                </Stack>
-              </ScrollArea>
-            </Tabs.Panel>
-          </Tabs>
-        </Stack>
-      </AppShell.Aside>
+                  </Card>
+                ))}
+              </Stack>
+            </ScrollArea>
+          </Stack>
+        </AppShell.Navbar>
+      )}
+
+      {viewMode === 'builder' && (
+        <AppShell.Aside p="md" className="panel">
+          <Stack gap="sm">
+            <Group justify="space-between" align="center">
+              <Text className="panel-title">Autosave</Text>
+              <Switch checked={autoSave} onChange={(event) => setAutoSave(event.currentTarget.checked)} />
+            </Group>
+            <Tabs defaultValue="inspector">
+              <Tabs.List grow>
+                <Tabs.Tab value="inspector">Inspector</Tabs.Tab>
+                <Tabs.Tab value="validation">Validation</Tabs.Tab>
+              </Tabs.List>
+              <Tabs.Panel value="inspector" pt="md">
+                <ScrollArea h="calc(100vh - 240px)">
+                  <Stack gap="md">{renderInspector()}</Stack>
+                </ScrollArea>
+              </Tabs.Panel>
+              <Tabs.Panel value="validation" pt="md">
+                <ScrollArea h="calc(100vh - 240px)">
+                  <Stack gap="sm">
+                    <Group justify="space-between">
+                      <Text fw={600}>Issues</Text>
+                      <Badge color={issues.some((issue) => issue.level === 'error') ? 'red' : 'teal'}>
+                        {issues.length}
+                      </Badge>
+                    </Group>
+                    {issues.length === 0 ? (
+                      <Text size="sm" c="dimmed">
+                        Graph looks good.
+                      </Text>
+                    ) : (
+                      issues.map((issue) => (
+                        <Card key={issue.id} withBorder radius="md" className={`issue ${issue.level}`}>
+                          <Text size="sm" fw={600}>
+                            {issue.level === 'error' ? 'Error' : 'Warning'}
+                          </Text>
+                          <Text size="sm" c="dimmed">
+                            {issue.message}
+                          </Text>
+                          {issue.nodeId && (
+                            <Button
+                              size="xs"
+                              variant="light"
+                              mt="xs"
+                              onClick={() => setSelectedNodeId(issue.nodeId || null)}
+                            >
+                              Focus node
+                            </Button>
+                          )}
+                        </Card>
+                      ))
+                    )}
+                  </Stack>
+                </ScrollArea>
+              </Tabs.Panel>
+            </Tabs>
+          </Stack>
+        </AppShell.Aside>
+      )}
 
       <AppShell.Main>
-        <Stack gap="md">
+        {viewMode === 'builder' ? (
+          <Stack gap="md">
           <Drawer
             opened={chatOpen}
             onClose={() => setChatOpen(false)}
@@ -2875,73 +3149,263 @@ export default function App() {
               ))}
             </div>
           </Box>
-        </Stack>
+          </Stack>
+        ) : (
+          <Stack gap="md">
+            <Card withBorder radius="md">
+              <Group justify="space-between" align="flex-start" wrap="wrap">
+                <Stack gap={2}>
+                  <Text fw={600}>Scope Selection</Text>
+                  <Text size="sm" c="dimmed">
+                    Select tenant, project, and workflow before opening Workflow Studio.
+                  </Text>
+                </Stack>
+                <Group gap="xs" wrap="wrap">
+                  <Badge variant="outline">Tenant {tenantId}</Badge>
+                  <Badge variant="outline">Project {activeProjectId || '-'}</Badge>
+                  <Badge variant="outline">Workflow {workflowId || '-'}</Badge>
+                </Group>
+              </Group>
+            </Card>
+
+            <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
+              <Card withBorder radius="md" padding="md">
+                <Stack gap="sm">
+                  <Text fw={600}>Tenant</Text>
+                  <TextInput
+                    label="Tenant ID"
+                    placeholder="local"
+                    value={tenantInput}
+                    onChange={(event) => setTenantInput(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        void applyTenantId(tenantInput);
+                      }
+                    }}
+                  />
+                  <Group gap="xs" wrap="wrap">
+                    <Button size="sm" onClick={() => void applyTenantId(tenantInput)}>
+                      Load tenant
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="light"
+                      onClick={() => {
+                        void fetchProjects();
+                        void fetchWorkflows();
+                      }}
+                    >
+                      Refresh
+                    </Button>
+                  </Group>
+                  <Stack gap={6}>
+                    <Text size="xs" c="dimmed">
+                      Session tenants
+                    </Text>
+                    <Group gap={6} wrap="wrap">
+                      {tenantSessionOptions.map((item) => (
+                        <Badge
+                          key={item}
+                          variant={item === tenantId ? 'filled' : 'light'}
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => {
+                            void applyTenantId(item);
+                          }}
+                        >
+                          {item}
+                        </Badge>
+                      ))}
+                    </Group>
+                  </Stack>
+                </Stack>
+              </Card>
+
+              <Card withBorder radius="md" padding="md">
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center">
+                    <Text fw={600}>Projects</Text>
+                    <Badge color="gray" variant="light">
+                      {projectList.length}
+                    </Badge>
+                  </Group>
+                  <ScrollArea h={420}>
+                    <Stack gap="xs">
+                      {projectListLoading ? (
+                        <Text size="sm" c="dimmed">
+                          Loading projects...
+                        </Text>
+                      ) : projectList.length === 0 ? (
+                        <Text size="sm" c="dimmed">
+                          No projects in tenant.
+                        </Text>
+                      ) : (
+                        projectList.map((item) => {
+                          const projectScope = normalizeProjectId(item.project_id);
+                          const selected = projectScope === activeProjectId;
+                          return (
+                            <Card
+                              key={projectScope}
+                              withBorder
+                              radius="sm"
+                              padding="sm"
+                              style={{ cursor: 'pointer' }}
+                              onClick={() => applyProjectId(projectScope)}
+                            >
+                              <Group justify="space-between" align="flex-start" wrap="nowrap">
+                                <Stack gap={0} style={{ flex: 1 }}>
+                                  <Text fw={selected ? 700 : 600}>{item.project_name}</Text>
+                                  <Text size="xs" c="dimmed">
+                                    {projectScope}
+                                  </Text>
+                                </Stack>
+                                <Stack gap={6} align="flex-end">
+                                  {selected && <Badge color="teal">Selected</Badge>}
+                                  <Group gap={6} wrap="nowrap">
+                                    <Button
+                                      size="xs"
+                                      variant="light"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        openProjectEdit(item);
+                                      }}
+                                      data-testid={`edit-project-${projectScope}`}
+                                    >
+                                      Edit
+                                    </Button>
+                                    <Button
+                                      size="xs"
+                                      variant="light"
+                                      color="red"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        openProjectDelete(item);
+                                      }}
+                                      data-testid={`delete-project-${projectScope}`}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </Group>
+                                </Stack>
+                              </Group>
+                            </Card>
+                          );
+                        })
+                      )}
+                    </Stack>
+                  </ScrollArea>
+                </Stack>
+              </Card>
+
+              <Card withBorder radius="md" padding="md">
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center">
+                    <Text fw={600}>Workflows</Text>
+                    <Badge color="gray" variant="light">
+                      {workflowsForActiveProject.length}
+                    </Badge>
+                  </Group>
+                  <ScrollArea h={420}>
+                    <Stack gap="xs">
+                      {workflowListLoading ? (
+                        <Text size="sm" c="dimmed">
+                          Loading workflows...
+                        </Text>
+                      ) : workflowsForActiveProject.length === 0 ? (
+                        <Text size="sm" c="dimmed">
+                          {activeProjectId ? 'No workflows in project.' : 'Select a project first.'}
+                        </Text>
+                      ) : (
+                        workflowsForActiveProject.map((item) => {
+                          const workflowScope = normalizeProjectId(item.project_id);
+                          const selected = item.workflow_id === workflowId;
+                          return (
+                            <Card
+                              key={item.workflow_id}
+                              withBorder
+                              radius="sm"
+                              padding="sm"
+                              style={{ cursor: 'pointer' }}
+                              onClick={() => {
+                                void loadWorkflowById(item.workflow_id, workflowScope);
+                                applyViewMode('builder');
+                              }}
+                            >
+                              <Stack gap={2}>
+                                <Text fw={selected ? 700 : 600}>{item.name}</Text>
+                                <Text size="xs" c="dimmed">
+                                  {item.workflow_id}
+                                </Text>
+                                <Text size="xs" c="dimmed">
+                                  Project {workflowScope || '-'}
+                                </Text>
+                              </Stack>
+                            </Card>
+                          );
+                        })
+                      )}
+                    </Stack>
+                  </ScrollArea>
+                </Stack>
+              </Card>
+            </SimpleGrid>
+          </Stack>
+        )}
       </AppShell.Main>
 
-      <Modal opened={listOpen} onClose={closeList} title="Workflows" centered size="lg">
+      <Modal opened={!!projectEditTarget} onClose={closeProjectEdit} title="Edit project" centered size="sm">
         <Stack gap="sm">
-          <Group justify="space-between" align="center">
-            <TextInput
-              placeholder="Search by name or id"
-              value={workflowQuery}
-              onChange={(event) => setWorkflowQuery(event.currentTarget.value)}
-              style={{ flex: 1 }}
-            />
-            <Button variant="light" loading={workflowListLoading} onClick={fetchWorkflows}>
-              Refresh
+          <TextInput
+            label="Project name"
+            value={projectEditName}
+            onChange={(event) => setProjectEditName(event.currentTarget.value)}
+            data-testid="edit-project-name-input"
+          />
+          <Group justify="flex-end" gap="xs">
+            <Button variant="default" onClick={closeProjectEdit} disabled={projectEditLoading}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                void saveProjectEdit();
+              }}
+              loading={projectEditLoading}
+              data-testid="edit-project-confirm"
+            >
+              Save
             </Button>
           </Group>
-          <ScrollArea h={360}>
-            <Stack gap="sm">
-              {workflowListLoading ? (
-                <Text size="sm" c="dimmed">
-                  Loading workflows...
-                </Text>
-              ) : filteredWorkflows.length === 0 ? (
-                <Text size="sm" c="dimmed">
-                  No workflows found.
-                </Text>
-              ) : (
-                filteredWorkflows.map((item) => (
-                  <Card
-                    key={item.workflow_id}
-                    withBorder
-                    radius="md"
-                    className="workflow-card"
-                    onClick={() => {
-                      setWorkflowInput(item.workflow_id);
-                      void loadWorkflowById(item.workflow_id);
-                      closeList();
-                    }}
-                  >
-                    <Group justify="space-between" align="flex-start">
-                      <Stack gap={2}>
-                        <Text fw={600}>{item.name}</Text>
-                        <Text size="xs" c="dimmed">
-                          {item.workflow_id}
-                        </Text>
-                      </Stack>
-                      <Stack gap={4} align="flex-end">
-                        <Badge color={item.active_version_id ? 'teal' : 'gray'} variant="light">
-                          {item.active_version_id ? 'Published' : 'Draft'}
-                        </Badge>
-                        {item.updated_at && (
-                          <Text size="xs" c="dimmed">
-                            Updated {formatTimestamp(item.updated_at)}
-                          </Text>
-                        )}
-                      </Stack>
-                    </Group>
-                    {item.description && (
-                      <Text size="sm" c="dimmed" mt="xs">
-                        {item.description}
-                      </Text>
-                    )}
-                  </Card>
-                ))
-              )}
-            </Stack>
-          </ScrollArea>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={!!projectDeleteTarget}
+        onClose={closeProjectDelete}
+        title="Delete project?"
+        centered
+        size="sm"
+      >
+        <Stack gap="sm">
+          <Text size="sm">
+            Delete project <b>{projectDeleteTarget?.project_name || projectDeleteTarget?.project_id}</b>?
+          </Text>
+          <Text size="sm" c="dimmed">
+            This action cannot be undone. Project with workflows cannot be deleted.
+          </Text>
+          <Group justify="flex-end" gap="xs">
+            <Button variant="default" onClick={closeProjectDelete} disabled={projectDeleteLoading}>
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              onClick={() => {
+                void confirmProjectDelete();
+              }}
+              loading={projectDeleteLoading}
+              data-testid="delete-project-confirm"
+            >
+              Delete
+            </Button>
+          </Group>
         </Stack>
       </Modal>
 

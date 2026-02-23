@@ -270,6 +270,36 @@ class ChatKitTests(unittest.TestCase):
         loaded = self.run_store.get(run.id, tenant_id="tenant_test")
         self.assertEqual(loaded.status, "WAITING_FOR_INPUT")
 
+        retry_req = ThreadsCustomActionReq(
+            params=ThreadCustomActionParams(
+                thread_id=thread_id,
+                item_id=None,
+                action=Action(
+                    type="interrupt.submit",
+                    payload={
+                        "run_id": run.id,
+                        "interrupt_id": interrupt.id,
+                        "input": {"approved": "true"},
+                    },
+                ),
+            )
+        )
+        retry_events = asyncio.run(self._collect_events(retry_req))
+        retry_notices = [
+            event
+            for event in retry_events
+            if event.get("type") == "notice" and "already processed" in event.get("message", "").lower()
+        ]
+        self.assertFalse(retry_notices)
+        completed = any(
+            event.get("type") == "progress_update"
+            and "completed" in event.get("text", "").lower()
+            for event in retry_events
+        )
+        self.assertTrue(completed)
+        loaded = self.run_store.get(run.id, tenant_id="tenant_test")
+        self.assertEqual(loaded.status, "COMPLETED")
+
     def test_agent_executor_is_used(self):
         nodes = [
             Node("start", "start"),
