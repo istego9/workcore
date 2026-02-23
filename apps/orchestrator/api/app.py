@@ -751,6 +751,12 @@ def create_app(
         tenant = _tenant_id(request)
         cached = await ctx.idempotency.get(key, scope, tenant_id=tenant)
         if cached:
+            # Drain the inbound body even on replayed idempotent responses so
+            # upstream proxies can safely reuse the connection.
+            try:
+                await request.body()
+            except Exception:
+                pass
             if cached.status_code == 204:
                 return Response(status_code=204)
             return JSONResponse(cached.body, status_code=cached.status_code)

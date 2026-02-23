@@ -1600,6 +1600,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.json()["run_id"], second.json()["run_id"])
 
+    def test_start_run_idempotency_hit_drains_request_body(self):
+        from starlette.requests import Request
+
+        workflow_id, _ = self._create_workflow()
+        path = f"/workflows/{workflow_id}/runs"
+        headers = self._with_project({"Idempotency-Key": "idem_run_drain"})
+        body_calls = {"count": 0}
+        original_request_body = Request.body
+
+        async def _tracking_body(request):
+            if request.url.path == path:
+                body_calls["count"] += 1
+            return await original_request_body(request)
+
+        with mock.patch("starlette.requests.Request.body", new=_tracking_body):
+            first = self.client.post(path, json={"inputs": {"seed": "one"}}, headers=headers)
+            second = self.client.post(path, json={"inputs": {"seed": "one"}}, headers=headers)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.json()["run_id"], second.json()["run_id"])
+        self.assertGreaterEqual(body_calls["count"], 2)
+
     def test_start_run_succeeds_when_idempotency_cache_write_fails(self):
         token = os.getenv("WORKCORE_API_AUTH_TOKEN")
         auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
