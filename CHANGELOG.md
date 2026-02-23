@@ -4,6 +4,238 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.17.0`
+- Current API version: `0.18.0`
+- Compatibility: additive (`/orchestrator/messages` now documents optional custom-action envelope fields)
+
+### Added
+- `OrchestratorUserMessage` now documents optional `type`:
+  - `threads.add_user_message`
+  - `threads.custom_action`
+- `OrchestratorUserMessage` now documents optional `payload` for custom-action messages.
+- New schema: `OrchestratorCustomActionPayload`.
+- New OpenAPI request examples for `POST /orchestrator/messages`:
+  - standard user message
+  - `threads.custom_action` with structured payload
+
+### Changed
+- `POST /orchestrator/messages` contract now explicitly documents how custom-action fields are materialized for runtime input mapping:
+  - `message.text` -> `inputs.action_type`
+  - normalized payload fields -> flattened `inputs.*`
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.16.0`
+- Current API version: `0.17.0`
+- Compatibility: changed (context API validation status normalized to 422)
+
+### Added
+- None.
+
+### Changed
+- Context API (`POST /orchestrator/context/get|set|unset`) now documents validation errors consistently as HTTP `422`.
+- Removed ambiguous `400` validation response entries for context endpoints from OpenAPI.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.15.0`
+- Current API version: `0.16.0`
+- Compatibility: additive (new offline routing replay/eval endpoint and schemas)
+
+### Added
+- New endpoint:
+  - `POST /orchestrator/eval/replay`
+- New schemas:
+  - `OrchestratorEvalReplayCase`
+  - `OrchestratorEvalReplayRequest`
+  - `OrchestratorEvalReplayMetrics`
+  - `OrchestratorEvalReplayCaseResult`
+  - `OrchestratorEvalReplayResponse`
+
+### Changed
+- Agent integration kit now includes orchestrator replay/eval URL in required integration URLs.
+- Integration test openapi path checks now require `/orchestrator/eval/replay`.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.14.0`
+- Current API version: `0.15.0`
+- Compatibility: additive (routing policy contract expanded with switch-control and anti-flip fields)
+
+### Added
+- New schema: `RoutingPolicy`
+- `OrchestratorConfigUpsertRequest.routing_policy` now references `RoutingPolicy`.
+- `OrchestratorConfig.routing_policy` now references `RoutingPolicy`.
+- New routing policy fields:
+  - `sticky`
+  - `allow_switch`
+  - `explicit_switch_only`
+  - `cooldown_seconds`
+  - `hysteresis_margin`
+
+### Changed
+- Orchestrator policy documentation now explicitly describes anti-flip/hysteresis behavior.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.13.0`
+- Current API version: `0.14.0`
+- Compatibility: additive (orchestrator response now includes standardized route/action error contract)
+
+### Added
+- New schema: `OrchestratorActionError`
+- New response field: `OrchestratorMessageResponse.action_error`
+
+### Changed
+- Orchestrator route/action failures that do not raise transport-level HTTP errors now expose normalized error metadata:
+  - `code`
+  - `message`
+  - `retryable`
+  - `category`
+  - `action`
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.12.0`
+- Current API version: `0.13.0`
+- Compatibility: additive (`/orchestrator/messages` response extended with decision trace fields)
+
+### Added
+- New response schema: `OrchestratorDecisionTraceCandidate`
+- New response schema: `OrchestratorDecisionTrace`
+- `OrchestratorMessageResponse.decision_trace` with:
+  - workflow candidates and scores
+  - selected action/workflow
+  - reason codes and selection reason
+  - switch details (`switch_from_workflow_id`, `switch_to_workflow_id`, `switch_reason`)
+
+### Changed
+- API reference now documents decision-trace payload for orchestrator routing transparency.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.11.0`
+- Current API version: `0.12.0`
+- Compatibility: additive (ChatKit custom action payload contract clarified and validated; existing payload keys remain supported)
+
+### Added
+- `ChatKitActionPayload` now documents optional projection control fields:
+  - `state_exclude_paths`
+  - `output_include_paths`
+
+### Changed
+- `threads.custom_action` submit payload normalization is now explicit in API contract:
+  - extraction priority across `input` / `form` / `form_data` / `fields`
+  - flattening of wrapper keys into a single runtime input object
+  - scalar string typing (`true/false`, numeric literals, `null`)
+  - `documents` passthrough behavior
+- Projection controls in action payload are validated with the same path rules as run start payload.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-20
+
+### API diff vs previous version
+- Previous API version: `0.10.0`
+- Current API version: `0.11.0`
+- Compatibility: additive (new context endpoints and workflow node contract extension; existing routes remain supported)
+
+### Added
+- Orchestrator context endpoints:
+  - `POST /orchestrator/context/get`
+  - `POST /orchestrator/context/set`
+  - `POST /orchestrator/context/unset`
+- New API schemas:
+  - `OrchestratorContextScope`
+  - `OrchestratorContextGetRequest`
+  - `OrchestratorContextSetRequest`
+  - `OrchestratorContextUnsetRequest`
+  - `OrchestratorContextResponse`
+- Workflow node contract extension for `integration_http` configuration fields.
+
+### Changed
+- `ChatKitAction` now supports canonical action field `action_type` with backward-compatible alias field `type`.
+- ChatKit custom action examples now use canonical `action_type`.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-02-19
+
+### API diff vs previous version
+- Previous API version: `0.9.0`
+- Current API version: `0.10.0`
+- Compatibility: additive (project management endpoints extended without breaking existing contracts)
+
+### Added
+- Project management endpoints:
+  - `PATCH /projects/{project_id}` updates project metadata (`project_name`).
+  - `DELETE /projects/{project_id}` deletes a project when it has no workflows.
+- New API schema:
+  - `ProjectUpdateRequest`
+
+### Changed
+- API reference now documents project update/delete flows for admin Explore UX.
+- `DELETE /projects/{project_id}` now returns `409` when a project still contains workflows.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-02-18
 
 ### API diff vs previous version

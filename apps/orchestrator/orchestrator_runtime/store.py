@@ -63,6 +63,12 @@ def _resolve_project_name(project_id: str, project_name: Optional[str]) -> str:
     return derived or str(project_id or "").strip()
 
 
+def _normalize_context_project_id(project_id: Optional[str]) -> str:
+    if isinstance(project_id, str):
+        return project_id.strip()
+    return ""
+
+
 @dataclass
 class ProjectRecord:
     project_id: str
@@ -118,6 +124,18 @@ class SessionStateRecord:
     pending_options: List[str]
     disambiguation_turns: int
     last_user_message_id: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class OrchestratorContextRecord:
+    tenant_id: str
+    project_id: Optional[str]
+    scope_type: str
+    scope_id: str
+    key: str
+    value: Any
     created_at: datetime
     updated_at: datetime
 
@@ -181,6 +199,17 @@ class OrchestrationStore(Protocol):
         default_orchestrator_id: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> ProjectRecord:
+        ...
+
+    async def update_project(
+        self,
+        project_id: str,
+        tenant_id: str,
+        project_name: str,
+    ) -> Optional[ProjectRecord]:
+        ...
+
+    async def delete_project(self, project_id: str, tenant_id: str) -> bool:
         ...
 
     async def get_orchestrator_config(
@@ -255,6 +284,36 @@ class OrchestrationStore(Protocol):
     async def save_session_state(self, state: SessionStateRecord) -> SessionStateRecord:
         ...
 
+    async def get_context_values(
+        self,
+        scope_type: str,
+        scope_id: str,
+        tenant_id: str,
+        project_id: Optional[str] = None,
+        keys: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        ...
+
+    async def set_context_values(
+        self,
+        scope_type: str,
+        scope_id: str,
+        values: Dict[str, Any],
+        tenant_id: str,
+        project_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ...
+
+    async def unset_context_keys(
+        self,
+        scope_type: str,
+        scope_id: str,
+        keys: Sequence[str],
+        tenant_id: str,
+        project_id: Optional[str] = None,
+    ) -> List[str]:
+        ...
+
     async def append_stack_entry(
         self,
         project_id: str,
@@ -291,6 +350,7 @@ class InMemoryOrchestrationStore:
     orchestrator_configs: Dict[tuple[str, str, str], OrchestratorConfigRecord] = field(default_factory=dict)
     workflow_definitions: Dict[tuple[str, str, str], WorkflowDefinitionRecord] = field(default_factory=dict)
     session_states: Dict[tuple[str, str, str], SessionStateRecord] = field(default_factory=dict)
+    context_entries: Dict[tuple[str, str, str, str, str], OrchestratorContextRecord] = field(default_factory=dict)
     stack_entries: Dict[tuple[str, str, str], List[WorkflowStackEntryRecord]] = field(default_factory=dict)
     decisions: Dict[tuple[str, str, str], List[OrchestrationDecisionRecord]] = field(default_factory=dict)
 
@@ -357,6 +417,61 @@ class InMemoryOrchestrationStore:
         )
         self.projects[key] = record
         return record
+
+    async def update_project(
+        self,
+        project_id: str,
+        tenant_id: str,
+        project_name: str,
+    ) -> Optional[ProjectRecord]:
+        key = (tenant_id, project_id)
+        existing = self.projects.get(key)
+        if existing is None:
+            return None
+        existing.project_name = _resolve_project_name(project_id, project_name)
+        existing.updated_at = _now()
+        return existing
+
+    async def delete_project(self, project_id: str, tenant_id: str) -> bool:
+        key = (tenant_id, project_id)
+        deleted = self.projects.pop(key, None)
+        if deleted is None:
+            return False
+        self.orchestrator_configs = {
+            item_key: value
+            for item_key, value in self.orchestrator_configs.items()
+            if not (item_key[0] == tenant_id and item_key[1] == project_id)
+        }
+        self.workflow_definitions = {
+            item_key: value
+            for item_key, value in self.workflow_definitions.items()
+            if not (item_key[0] == tenant_id and item_key[1] == project_id)
+        }
+        self.session_states = {
+            item_key: value
+            for item_key, value in self.session_states.items()
+            if not (item_key[0] == tenant_id and item_key[1] == project_id)
+        }
+        self.context_entries = {
+            item_key: value
+            for item_key, value in self.context_entries.items()
+            if not (
+                value.tenant_id == tenant_id
+                and value.project_id is not None
+                and value.project_id == project_id
+            )
+        }
+        self.stack_entries = {
+            item_key: value
+            for item_key, value in self.stack_entries.items()
+            if not (item_key[0] == tenant_id and item_key[1] == project_id)
+        }
+        self.decisions = {
+            item_key: value
+            for item_key, value in self.decisions.items()
+            if not (item_key[0] == tenant_id and item_key[1] == project_id)
+        }
+        return True
 
     async def get_orchestrator_config(
         self,
@@ -512,6 +627,101 @@ class InMemoryOrchestrationStore:
         state.updated_at = now
         self.session_states[key] = state
         return state
+
+    async def get_context_values(
+        self,
+        scope_type: str,
+        scope_id: str,
+        tenant_id: str,
+        project_id: Optional[str] = None,
+        keys: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        normalized_scope = str(scope_type or "").strip().lower()
+        normalized_scope_id = str(scope_id or "").strip()
+        normalized_project_id = _normalize_context_project_id(project_id)
+        if not normalized_scope or not normalized_scope_id:
+            return {}
+        requested_keys = None
+        if keys is not None:
+            requested_keys = {str(item) for item in keys if isinstance(item, str) and item}
+        result: Dict[str, Any] = {}
+        for record in self.context_entries.values():
+            if record.tenant_id != tenant_id:
+                continue
+            if record.scope_type != normalized_scope or record.scope_id != normalized_scope_id:
+                continue
+            if normalized_project_id != _normalize_context_project_id(record.project_id):
+                continue
+            if requested_keys is not None and record.key not in requested_keys:
+                continue
+            result[record.key] = record.value
+        return result
+
+    async def set_context_values(
+        self,
+        scope_type: str,
+        scope_id: str,
+        values: Dict[str, Any],
+        tenant_id: str,
+        project_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_scope = str(scope_type or "").strip().lower()
+        normalized_scope_id = str(scope_id or "").strip()
+        normalized_project_id = _normalize_context_project_id(project_id)
+        if not normalized_scope or not normalized_scope_id:
+            return {}
+        now = _now()
+        for key, value in (values or {}).items():
+            if not isinstance(key, str) or not key:
+                continue
+            entry_key = (tenant_id, normalized_project_id, normalized_scope, normalized_scope_id, key)
+            existing = self.context_entries.get(entry_key)
+            if existing:
+                existing.project_id = normalized_project_id
+                existing.value = value
+                existing.updated_at = now
+                continue
+            self.context_entries[entry_key] = OrchestratorContextRecord(
+                tenant_id=tenant_id,
+                project_id=normalized_project_id,
+                scope_type=normalized_scope,
+                scope_id=normalized_scope_id,
+                key=key,
+                value=value,
+                created_at=now,
+                updated_at=now,
+            )
+        return await self.get_context_values(
+            normalized_scope,
+            normalized_scope_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
+
+    async def unset_context_keys(
+        self,
+        scope_type: str,
+        scope_id: str,
+        keys: Sequence[str],
+        tenant_id: str,
+        project_id: Optional[str] = None,
+    ) -> List[str]:
+        normalized_scope = str(scope_type or "").strip().lower()
+        normalized_scope_id = str(scope_id or "").strip()
+        normalized_project_id = _normalize_context_project_id(project_id)
+        removed: List[str] = []
+        for key in keys:
+            if not isinstance(key, str) or not key:
+                continue
+            entry_key = (tenant_id, normalized_project_id, normalized_scope, normalized_scope_id, key)
+            existing = self.context_entries.get(entry_key)
+            if existing is None:
+                continue
+            if normalized_project_id != _normalize_context_project_id(existing.project_id):
+                continue
+            self.context_entries.pop(entry_key, None)
+            removed.append(key)
+        return removed
 
     async def append_stack_entry(
         self,
@@ -677,6 +887,46 @@ class PostgresOrchestrationStore:
         if loaded is None:
             raise RuntimeError("failed to upsert project")
         return loaded
+
+    async def update_project(
+        self,
+        project_id: str,
+        tenant_id: str,
+        project_name: str,
+    ) -> Optional[ProjectRecord]:
+        row = await self.pool.fetchrow(
+            """
+            update projects
+            set project_name = $1, updated_at = now()
+            where project_id = $2 and tenant_id = $3
+            returning project_id, project_name, tenant_id, default_orchestrator_id, settings, created_at, updated_at
+            """,
+            _resolve_project_name(project_id, project_name),
+            project_id,
+            tenant_id,
+        )
+        if not row:
+            return None
+        return ProjectRecord(
+            project_id=row["project_id"],
+            project_name=_resolve_project_name(row["project_id"], row["project_name"]),
+            tenant_id=row["tenant_id"],
+            default_orchestrator_id=row["default_orchestrator_id"],
+            settings=_parse_dict(row["settings"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    async def delete_project(self, project_id: str, tenant_id: str) -> bool:
+        result = await self.pool.execute(
+            """
+            delete from projects
+            where project_id = $1 and tenant_id = $2
+            """,
+            project_id,
+            tenant_id,
+        )
+        return result != "DELETE 0"
 
     async def get_orchestrator_config(
         self,
@@ -1007,6 +1257,128 @@ class PostgresOrchestrationStore:
         if loaded is None:
             raise RuntimeError("failed to save session state")
         return loaded
+
+    async def get_context_values(
+        self,
+        scope_type: str,
+        scope_id: str,
+        tenant_id: str,
+        project_id: Optional[str] = None,
+        keys: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        normalized_scope = str(scope_type or "").strip().lower()
+        normalized_scope_id = str(scope_id or "").strip()
+        normalized_project_id = _normalize_context_project_id(project_id)
+        if keys:
+            rows = await self.pool.fetch(
+                """
+                select key, value
+                from orchestrator_context
+                where tenant_id = $1
+                  and project_id = $2
+                  and scope_type = $3
+                  and scope_id = $4
+                  and key = any($5::text[])
+                order by key asc
+                """,
+                tenant_id,
+                normalized_project_id,
+                normalized_scope,
+                normalized_scope_id,
+                [str(item) for item in keys if isinstance(item, str) and item],
+            )
+        else:
+            rows = await self.pool.fetch(
+                """
+                select key, value
+                from orchestrator_context
+                where tenant_id = $1
+                  and project_id = $2
+                  and scope_type = $3
+                  and scope_id = $4
+                order by key asc
+                """,
+                tenant_id,
+                normalized_project_id,
+                normalized_scope,
+                normalized_scope_id,
+            )
+        payload: Dict[str, Any] = {}
+        for row in rows:
+            payload[str(row["key"])] = _parse_json(row["value"], row["value"])
+        return payload
+
+    async def set_context_values(
+        self,
+        scope_type: str,
+        scope_id: str,
+        values: Dict[str, Any],
+        tenant_id: str,
+        project_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_scope = str(scope_type or "").strip().lower()
+        normalized_scope_id = str(scope_id or "").strip()
+        normalized_project_id = _normalize_context_project_id(project_id)
+        for key, value in (values or {}).items():
+            if not isinstance(key, str) or not key:
+                continue
+            await self.pool.execute(
+                """
+                insert into orchestrator_context (
+                  tenant_id, project_id, scope_type, scope_id, key, value
+                )
+                values ($1, $2, $3, $4, $5, $6::jsonb)
+                on conflict (tenant_id, project_id, scope_type, scope_id, key) do update
+                  set value = excluded.value,
+                      updated_at = now()
+                """,
+                tenant_id,
+                normalized_project_id,
+                normalized_scope,
+                normalized_scope_id,
+                key,
+                _jsonb(value),
+            )
+        return await self.get_context_values(
+            normalized_scope,
+            normalized_scope_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
+
+    async def unset_context_keys(
+        self,
+        scope_type: str,
+        scope_id: str,
+        keys: Sequence[str],
+        tenant_id: str,
+        project_id: Optional[str] = None,
+    ) -> List[str]:
+        removed: List[str] = []
+        normalized_scope = str(scope_type or "").strip().lower()
+        normalized_scope_id = str(scope_id or "").strip()
+        normalized_project_id = _normalize_context_project_id(project_id)
+        for key in keys:
+            if not isinstance(key, str) or not key:
+                continue
+            result = await self.pool.execute(
+                """
+                delete from orchestrator_context
+                where tenant_id = $1
+                  and project_id = $2
+                  and scope_type = $3
+                  and scope_id = $4
+                  and key = $5
+                """,
+                tenant_id,
+                normalized_project_id,
+                normalized_scope,
+                normalized_scope_id,
+                key,
+            )
+            if result != "DELETE 0":
+                removed.append(key)
+        return removed
 
     async def append_stack_entry(
         self,

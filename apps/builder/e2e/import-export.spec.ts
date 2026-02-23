@@ -15,6 +15,7 @@ test('workflow export and import create a new workflow', async ({ page, request 
   let importedWorkflowId: string | null = null;
   let exportPath: string | null = null;
   const projectId = `proj_export_${Date.now()}`;
+  const projectName = `Export Project ${Date.now()}`;
 
   const draft = {
     nodes: [
@@ -26,6 +27,12 @@ test('workflow export and import create a new workflow', async ({ page, request 
   };
 
   try {
+    const createProjectResponse = await request.post(`${apiBaseUrl}/projects`, {
+      data: { project_id: projectId, project_name: projectName, settings: { orchestrator_enabled: true } },
+      headers: apiAuthHeaders()
+    });
+    expect(createProjectResponse.ok()).toBeTruthy();
+
     const workflowName = `E2E Export ${Date.now()}`;
     const createResponse = await request.post(`${apiBaseUrl}/workflows`, {
       data: { name: workflowName, draft },
@@ -45,15 +52,10 @@ test('workflow export and import create a new workflow', async ({ page, request 
       { token: e2eApiAuthToken, tenant: e2eTenantId }
     );
     await page.goto('/?e2e=1');
-    await page.getByTestId('project-selector').fill(projectId);
-    await page.getByRole('button', { name: 'Browse' }).click();
-    const modal = page.getByRole('dialog', { name: 'Workflows' });
-    await modal.getByRole('button', { name: 'Refresh' }).click();
-    await modal.getByPlaceholder('Search by name or id').fill(workflowName);
-    await modal.getByText(`${workflowName}`).waitFor({ timeout: 10000 });
-    await modal.getByText(`${workflowName}`).click();
-    await expect(modal).toBeHidden({ timeout: 10000 });
-    await expect(page.getByText(`Workflow ${workflowId}`)).toBeVisible();
+    await page.getByRole('button', { name: 'Back to projects' }).click();
+    await page.getByText(projectName).first().click();
+    await page.getByText(workflowName).first().click();
+    await expect(page.getByText(`Workflow ${workflowId}`).first()).toBeVisible();
 
     await page.evaluate(() => {
       const item = document.querySelector('[data-testid="export-workflow"]');
@@ -77,7 +79,7 @@ test('workflow export and import create a new workflow', async ({ page, request 
     await importInput.setInputFiles(exportPath!);
     await page.getByText('Import completed').waitFor({ timeout: 10000 });
 
-    const header = await page.getByText(/Workflow wf_/).textContent();
+    const header = await page.getByText(/Workflow wf_/).first().textContent();
     importedWorkflowId = header?.replace('Workflow ', '').trim() || null;
     expect(importedWorkflowId).toBeTruthy();
     expect(importedWorkflowId).not.toBe(workflowId);

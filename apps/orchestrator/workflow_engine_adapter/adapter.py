@@ -57,6 +57,8 @@ class WorkflowEngineAdapter:
         user_input: str,
         metadata: Dict[str, Any],
         tenant_id: str,
+        action_type: Optional[str] = None,
+        action_payload: Optional[Dict[str, Any]] = None,
     ) -> WorkflowEngineResult:
         before_event = self.runtime.store.last_event("__none__")
         run_metadata = dict(metadata or {})
@@ -70,6 +72,15 @@ class WorkflowEngineAdapter:
             "session_id": session_id,
             "project_id": project_id,
         }
+        self._merge_custom_action_inputs(
+            inputs,
+            action_type=action_type,
+            action_payload=action_payload,
+            reserved_keys={"user_message", "session_id", "project_id", "context"},
+        )
+        context_prefill = run_metadata.get("context_prefill")
+        if isinstance(context_prefill, dict) and context_prefill:
+            inputs["context"] = dict(context_prefill)
         try:
             run = await self.runtime.start_run(
                 workflow_id,
@@ -108,6 +119,8 @@ class WorkflowEngineAdapter:
         user_input: str,
         metadata: Dict[str, Any],
         tenant_id: str,
+        action_type: Optional[str] = None,
+        action_payload: Optional[Dict[str, Any]] = None,
     ) -> WorkflowEngineResult:
         run = await self.get_run(run_id, tenant_id=tenant_id)
         if run is None:
@@ -117,17 +130,25 @@ class WorkflowEngineAdapter:
         run.metadata.update(dict(metadata or {}))
         run.metadata["session_id"] = session_id
         run.metadata["last_user_input"] = user_input
+        if action_type:
+            run.metadata["last_action_type"] = action_type
 
         if run.status == "WAITING_FOR_INPUT":
             open_interrupts = [item for item in run.interrupts.values() if item.status == "OPEN"]
             open_interrupts.sort(key=lambda item: item.id)
             if open_interrupts:
                 interrupt = open_interrupts[0]
+                interrupt_input = {"text": user_input}
+                self._merge_custom_action_inputs(
+                    interrupt_input,
+                    action_type=action_type,
+                    action_payload=action_payload,
+                )
                 try:
                     run = await self.runtime.resume_interrupt(
                         run,
                         interrupt.id,
-                        {"text": user_input},
+                        interrupt_input,
                         [],
                     )
                 except Exception as exc:
@@ -221,6 +242,27 @@ class WorkflowEngineAdapter:
             return self.runtime.store.list_events(run_id, after_id=after_id)
         except Exception:
             return []
+
+    @staticmethod
+    def _merge_custom_action_inputs(
+        target: Dict[str, Any],
+        action_type: Optional[str],
+        action_payload: Optional[Dict[str, Any]],
+        reserved_keys: Optional[set[str]] = None,
+    ) -> None:
+        reserved = set(reserved_keys or set())
+        reserved.add("action_type")
+        if isinstance(action_type, str) and action_type.strip():
+            target["action_type"] = action_type.strip()
+        if not isinstance(action_payload, dict):
+            return
+        for key, value in action_payload.items():
+            normalized_key = str(key).strip()
+            if not normalized_key:
+                continue
+            if normalized_key in reserved:
+                continue
+            target[normalized_key] = value
 
     def _snapshot_from_run(self, run: Run) -> WorkflowEngineStateSnapshot:
         metadata = dict(run.metadata or {})

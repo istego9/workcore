@@ -94,6 +94,52 @@ class ProjectRouterTests(unittest.IsolatedAsyncioTestCase):
             await self.router.resolve(request, tenant_id="local")
         self.assertEqual(cm.exception.code, "ERR_WORKFLOW_NOT_IN_PROJECT")
 
+    def test_from_payload_parses_custom_action_and_normalizes_payload(self):
+        request = RoutingRequest.from_payload(
+            {
+                "session_id": "s1",
+                "user_id": "u1",
+                "project_id": "proj_router",
+                "message": {
+                    "id": "m1",
+                    "type": "threads.custom_action",
+                    "text": "fm_budget_submit_basics",
+                    "payload": {
+                        "form": {"income_aed": "26600", "fixed_costs_aed": "9000"},
+                        "currency": "AED",
+                        "run_id": "run_1",
+                    },
+                },
+            }
+        )
+        self.assertEqual(request.message_type, "threads.custom_action")
+        self.assertEqual(request.action_type, "fm_budget_submit_basics")
+        self.assertEqual(
+            request.action_payload,
+            {
+                "income_aed": 26600,
+                "fixed_costs_aed": 9000,
+                "currency": "AED",
+            },
+        )
+
+    def test_from_payload_rejects_non_object_custom_action_payload(self):
+        with self.assertRaises(ProjectRouterError) as cm:
+            RoutingRequest.from_payload(
+                {
+                    "session_id": "s1",
+                    "user_id": "u1",
+                    "project_id": "proj_router",
+                    "message": {
+                        "id": "m1",
+                        "type": "threads.custom_action",
+                        "text": "fm_budget_submit_basics",
+                        "payload": "bad",
+                    },
+                }
+            )
+        self.assertEqual(cm.exception.code, "INVALID_ARGUMENT")
+
 
 if __name__ == "__main__":
     unittest.main()

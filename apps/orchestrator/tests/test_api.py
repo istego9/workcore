@@ -94,10 +94,18 @@ class AlwaysFailFkLedgerStore:
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        self._previous_api_token = os.environ.get("WORKCORE_API_AUTH_TOKEN")
+        os.environ.pop("WORKCORE_API_AUTH_TOKEN", None)
         self.workflow_store = InMemoryWorkflowStore()
         self.artifact_store = InMemoryArtifactStore()
         self.default_project_id = "proj_test"
         self.client = TestClient(create_app(workflow_store=self.workflow_store, artifact_store=self.artifact_store))
+
+    def tearDown(self):
+        if self._previous_api_token is None:
+            os.environ.pop("WORKCORE_API_AUTH_TOKEN", None)
+        else:
+            os.environ["WORKCORE_API_AUTH_TOKEN"] = self._previous_api_token
 
     def _with_project(self, headers=None, project_id: str | None = None):
         merged = dict(headers or {})
@@ -213,6 +221,18 @@ class ApiTests(unittest.TestCase):
 
         asyncio.run(_setup())
 
+    def _set_heuristic_router(self):
+        from apps.orchestrator.llm_adapter import ResponsesLLMRouter
+
+        self.client.get("/health")
+        ctx = self.client.app.state.api_context
+
+        async def _set_router():
+            await ctx.ensure_orchestration()
+            ctx.project_orchestrator.llm_router = ResponsesLLMRouter(force_heuristic=True)
+
+        asyncio.run(_set_router())
+
     def test_create_project(self):
         response = self.client.post(
             "/projects",
@@ -299,6 +319,71 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"]["code"], "INVALID_ARGUMENT")
 
+    def test_update_project(self):
+        project_id = "proj_update_me"
+        create_response = self.client.post(
+            "/projects",
+            json={"project_id": project_id, "project_name": "Before Name"},
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        response = self.client.patch(
+            f"/projects/{project_id}",
+            json={"project_name": "After Name"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["project_id"], project_id)
+        self.assertEqual(payload["project_name"], "After Name")
+        self.assertEqual(payload["tenant_id"], "local")
+
+    def test_update_project_validates_payload_and_scope(self):
+        missing_name = self.client.patch("/projects/proj_any", json={})
+        self.assertEqual(missing_name.status_code, 400)
+        self.assertEqual(missing_name.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        not_found = self.client.patch("/projects/proj_missing", json={"project_name": "Updated"})
+        self.assertEqual(not_found.status_code, 404)
+        self.assertEqual(not_found.json()["error"]["code"], "ERR_PROJECT_NOT_FOUND")
+
+    def test_delete_project(self):
+        project_id = "proj_delete_me"
+        create_response = self.client.post(
+            "/projects",
+            json={"project_id": project_id, "project_name": "Delete Me"},
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        delete_response = self.client.delete(f"/projects/{project_id}")
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertEqual(delete_response.text, "")
+
+        list_response = self.client.get("/projects")
+        self.assertEqual(list_response.status_code, 200)
+        project_ids = [item["project_id"] for item in list_response.json()["items"]]
+        self.assertNotIn(project_id, project_ids)
+
+    def test_delete_project_requires_empty_scope(self):
+        project_id = "proj_delete_blocked"
+        create_project_response = self.client.post(
+            "/projects",
+            json={"project_id": project_id, "project_name": "Delete Blocked"},
+        )
+        self.assertEqual(create_project_response.status_code, 201)
+
+        headers = self._with_project(project_id=project_id)
+        workflow_id, _ = self._create_workflow(headers=headers)
+        self.assertTrue(workflow_id.startswith("wf_"))
+
+        delete_response = self.client.delete(f"/projects/{project_id}")
+        self.assertEqual(delete_response.status_code, 409)
+        self.assertEqual(delete_response.json()["error"]["code"], "ERR_PROJECT_NOT_EMPTY")
+
+    def test_delete_project_returns_not_found_when_missing(self):
+        response = self.client.delete("/projects/proj_missing")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "ERR_PROJECT_NOT_FOUND")
+
     def test_upsert_project_workflow_definition_enables_direct_orchestrator_mode(self):
         project_id = "proj_registry_direct"
         workflow_headers = self._with_project(project_id=project_id)
@@ -347,6 +432,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "direct")
         self.assertEqual(payload["chosen_workflow_id"], workflow_id)
         self.assertIn(payload["chosen_action"], {"START_WORKFLOW", "RESUME_CURRENT"})
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("mode"), "direct")
+        self.assertEqual(trace.get("selected_workflow_id"), workflow_id)
+        self.assertEqual(trace.get("selected_action"), payload["chosen_action"])
+        self.assertTrue(isinstance(trace.get("candidates"), list) and trace["candidates"])
 
     def test_upsert_project_workflow_definition_validates_scope(self):
         project_id = "proj_registry_scope"
@@ -473,6 +563,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "direct")
         self.assertEqual(payload["chosen_workflow_id"], workflow_id)
         self.assertIn(payload["chosen_action"], {"START_WORKFLOW", "RESUME_CURRENT"})
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("mode"), "direct")
+        self.assertEqual(trace.get("selected_workflow_id"), workflow_id)
+        self.assertEqual(trace.get("selected_action"), payload["chosen_action"])
+        self.assertIn("selection_reason", trace)
         self.assertTrue(payload.get("run_id"))
 
         run_response = self.client.get(f"/runs/{payload['run_id']}")
@@ -482,6 +577,57 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(metadata.get("agent_executor_mode"), "live")
         self.assertEqual(metadata.get("agent_mock"), False)
         self.assertEqual(metadata.get("llm_enabled"), True)
+
+    def test_orchestrator_direct_mode_materializes_custom_action_payload_into_inputs(self):
+        workflow_id, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_custom_action_inputs",
+            workflow_defs=[
+                {
+                    "workflow_id": workflow_id,
+                    "name": "Custom action flow",
+                    "description": "Maps action payload into run inputs",
+                    "tags": ["budget"],
+                    "examples": ["submit budget"],
+                }
+            ],
+        )
+        response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_custom_action",
+                "user_id": "u_custom_action",
+                "project_id": "proj_custom_action_inputs",
+                "workflow_id": workflow_id,
+                "message": {
+                    "id": "m_custom_action_1",
+                    "type": "threads.custom_action",
+                    "text": "fm_budget_submit_basics",
+                    "payload": {
+                        "form": {"income_aed": "26600", "fixed_costs_aed": "9000"},
+                        "currency": "AED",
+                        "has_savings": "true",
+                    },
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get("run_id"))
+
+        run_response = self.client.get(f"/runs/{payload['run_id']}")
+        self.assertEqual(run_response.status_code, 200)
+        run_payload = run_response.json()
+        inputs = run_payload.get("inputs", {})
+        self.assertEqual(inputs.get("user_message"), "fm_budget_submit_basics")
+        self.assertEqual(inputs.get("action_type"), "fm_budget_submit_basics")
+        self.assertEqual(inputs.get("income_aed"), 26600)
+        self.assertEqual(inputs.get("fixed_costs_aed"), 9000)
+        self.assertEqual(inputs.get("currency"), "AED")
+        self.assertEqual(inputs.get("has_savings"), True)
+        state = run_payload.get("state", {})
+        self.assertEqual(state.get("action_type"), "fm_budget_submit_basics")
+        self.assertEqual(state.get("income_aed"), 26600)
 
     def test_orchestrator_mode_disambiguates_on_low_confidence(self):
         wf_a, _ = self._create_workflow()
@@ -526,6 +672,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "orchestrated")
         self.assertEqual(payload["chosen_action"], "DISAMBIGUATE")
         self.assertEqual(payload["message"]["type"], "clarification")
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("mode"), "orchestrated")
+        self.assertEqual(trace.get("selected_action"), "DISAMBIGUATE")
+        self.assertTrue(isinstance(trace.get("candidates"), list))
 
     def test_orchestrator_switches_active_workflow(self):
         wf_active, _ = self._create_interaction_workflow()
@@ -585,7 +735,159 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "orchestrated")
         self.assertEqual(payload["chosen_action"], "SWITCH_WORKFLOW")
         self.assertEqual(payload["chosen_workflow_id"], wf_target)
+        trace = payload.get("decision_trace") or {}
+        self.assertEqual(trace.get("selected_action"), "SWITCH_WORKFLOW")
+        self.assertEqual(trace.get("selected_workflow_id"), wf_target)
+        self.assertEqual(trace.get("switch_from_workflow_id"), wf_active)
+        self.assertEqual(trace.get("switch_to_workflow_id"), wf_target)
+        self.assertTrue(trace.get("switch_reason"))
         self.assertTrue(payload.get("run_id"))
+
+    def test_orchestrator_policy_disables_switching(self):
+        wf_active, _ = self._create_interaction_workflow()
+        wf_target, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_switch_disabled",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_active,
+                    "name": "Current flow",
+                    "description": "Currently running",
+                    "tags": ["current"],
+                    "examples": ["continue current"],
+                },
+                {
+                    "workflow_id": wf_target,
+                    "name": "Card opening",
+                    "description": "Open a card",
+                    "tags": ["карта", "card"],
+                    "examples": ["открыть карту"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": False,
+            },
+        )
+        self._set_heuristic_router()
+        start_active = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_disabled",
+                "user_id": "u_switch_disabled",
+                "project_id": "proj_switch_disabled",
+                "workflow_id": wf_active,
+                "message": {"id": "m_switch_disabled_1", "text": "start active"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(start_active.status_code, 200)
+
+        switch_response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_disabled",
+                "user_id": "u_switch_disabled",
+                "project_id": "proj_switch_disabled",
+                "message": {"id": "m_switch_disabled_2", "text": "переключи на карту"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(switch_response.status_code, 200)
+        payload = switch_response.json()
+        self.assertEqual(payload["chosen_action"], "RESUME_CURRENT")
+        self.assertEqual(payload["chosen_workflow_id"], wf_active)
+        action_error = payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_SWITCH_DISABLED")
+        self.assertEqual(action_error.get("category"), "action")
+
+    def test_orchestrator_switch_cooldown_blocks_rapid_switches(self):
+        wf_active, _ = self._create_interaction_workflow()
+        wf_target_a, _ = self._create_interaction_workflow()
+        wf_target_b, _ = self._create_interaction_workflow()
+        self._bootstrap_project(
+            project_id="proj_switch_cooldown",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_active,
+                    "name": "Current flow",
+                    "description": "Current process",
+                    "tags": ["active-flow"],
+                    "examples": ["start active flow"],
+                },
+                {
+                    "workflow_id": wf_target_a,
+                    "name": "Card flow",
+                    "description": "Card scenario",
+                    "tags": ["card-a"],
+                    "examples": ["switch to card a"],
+                },
+                {
+                    "workflow_id": wf_target_b,
+                    "name": "Loan flow",
+                    "description": "Loan scenario",
+                    "tags": ["loan-b"],
+                    "examples": ["switch to loan b"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": True,
+                "cooldown_seconds": 3600,
+            },
+        )
+        self._set_heuristic_router()
+        start_active = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_cooldown",
+                "user_id": "u_switch_cooldown",
+                "project_id": "proj_switch_cooldown",
+                "workflow_id": wf_active,
+                "message": {"id": "m_switch_cooldown_1", "text": "start active"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(start_active.status_code, 200)
+
+        first_switch = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_cooldown",
+                "user_id": "u_switch_cooldown",
+                "project_id": "proj_switch_cooldown",
+                "message": {"id": "m_switch_cooldown_2", "text": "switch to card-a"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(first_switch.status_code, 200)
+        first_payload = first_switch.json()
+        self.assertEqual(first_payload["chosen_action"], "SWITCH_WORKFLOW")
+        self.assertEqual(first_payload["chosen_workflow_id"], wf_target_a)
+
+        second_switch = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_switch_cooldown",
+                "user_id": "u_switch_cooldown",
+                "project_id": "proj_switch_cooldown",
+                "message": {"id": "m_switch_cooldown_3", "text": "switch to loan-b"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(second_switch.status_code, 200)
+        second_payload = second_switch.json()
+        self.assertEqual(second_payload["chosen_action"], "RESUME_CURRENT")
+        self.assertEqual(second_payload["chosen_workflow_id"], wf_target_a)
+        action_error = second_payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_SWITCH_COOLDOWN_ACTIVE")
+        self.assertTrue(action_error.get("retryable"))
 
     def test_orchestrator_cancel_not_allowed(self):
         wf_active, _ = self._create_interaction_workflow()
@@ -640,6 +942,183 @@ class ApiTests(unittest.TestCase):
         payload = cancel_response.json()
         self.assertEqual(payload["chosen_action"], "CANCEL")
         self.assertIn("Нельзя отменить", payload["message"]["text"])
+        action_error = payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_CANCEL_NOT_ALLOWED")
+        self.assertEqual(action_error.get("category"), "action")
+        self.assertFalse(action_error.get("retryable"))
+
+    def test_orchestrator_cancel_without_active_workflow_returns_action_error(self):
+        workflow_id, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_cancel_no_active",
+            workflow_defs=[
+                {
+                    "workflow_id": workflow_id,
+                    "name": "Cancel fallback flow",
+                    "description": "Flow for cancel without active run",
+                    "tags": ["cancel"],
+                    "examples": ["start"],
+                }
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+            },
+        )
+        self._set_heuristic_router()
+
+        response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_cancel_no_active",
+                "user_id": "u_cancel_no_active",
+                "project_id": "proj_cancel_no_active",
+                "message": {"id": "m_cancel_no_active_1", "text": "отмени"},
+                "metadata": {"locale": "ru-RU"},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["chosen_action"], "CANCEL")
+        action_error = payload.get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_NO_ACTIVE_WORKFLOW")
+        self.assertEqual(action_error.get("category"), "action")
+        self.assertTrue(action_error.get("retryable"))
+
+    def test_orchestrator_eval_replay_reports_metrics(self):
+        wf_card, _ = self._create_workflow()
+        wf_loan, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_eval_replay",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_card,
+                    "name": "Card flow",
+                    "description": "Card routing workflow",
+                    "tags": ["card-route"],
+                    "examples": ["start card-route"],
+                },
+                {
+                    "workflow_id": wf_loan,
+                    "name": "Loan flow",
+                    "description": "Loan routing workflow",
+                    "tags": ["loan-route"],
+                    "examples": ["switch to loan-route"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": True,
+            },
+        )
+        self._set_heuristic_router()
+        response = self.client.post(
+            "/orchestrator/eval/replay",
+            json={
+                "project_id": "proj_eval_replay",
+                "session_id": "s_eval_replay",
+                "user_id": "u_eval_replay",
+                "cases": [
+                    {
+                        "case_id": "c1",
+                        "message_text": "start card-route",
+                        "expected_action": "START_WORKFLOW",
+                        "expected_workflow_id": wf_card,
+                    },
+                    {
+                        "case_id": "c2",
+                        "message_text": "switch to loan-route",
+                        "expected_action": "SWITCH_WORKFLOW",
+                        "expected_workflow_id": wf_loan,
+                    },
+                    {
+                        "case_id": "c3",
+                        "message_text": "отмени",
+                        "expected_action": "CANCEL",
+                        "expected_workflow_id": wf_loan,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["mode"], "offline_eval")
+        self.assertEqual(payload["project_id"], "proj_eval_replay")
+        self.assertEqual(payload["orchestrator_id"], "orc_default")
+        self.assertEqual(payload["total_cases"], 3)
+        self.assertEqual(len(payload["items"]), 3)
+        metrics = payload.get("metrics") or {}
+        self.assertEqual(metrics.get("cases_with_expected_action"), 3)
+        self.assertEqual(metrics.get("cases_with_expected_workflow"), 3)
+        self.assertEqual(metrics.get("cases_with_exact_expectations"), 3)
+        self.assertEqual(metrics.get("matched_action"), 3)
+        self.assertEqual(metrics.get("matched_workflow_id"), 3)
+        self.assertEqual(metrics.get("matched_exact"), 3)
+        self.assertEqual(metrics.get("action_accuracy"), 1.0)
+        self.assertEqual(metrics.get("workflow_accuracy"), 1.0)
+        self.assertEqual(metrics.get("exact_match_rate"), 1.0)
+        self.assertIsNotNone(metrics.get("average_confidence"))
+
+    def test_orchestrator_eval_replay_respects_switch_cooldown(self):
+        wf_card, _ = self._create_workflow()
+        wf_loan, _ = self._create_workflow()
+        self._bootstrap_project(
+            project_id="proj_eval_cooldown",
+            workflow_defs=[
+                {
+                    "workflow_id": wf_card,
+                    "name": "Card flow",
+                    "description": "Card routing workflow",
+                    "tags": ["card-route"],
+                    "examples": ["start card-route"],
+                },
+                {
+                    "workflow_id": wf_loan,
+                    "name": "Loan flow",
+                    "description": "Loan routing workflow",
+                    "tags": ["loan-route"],
+                    "examples": ["switch to loan-route"],
+                },
+            ],
+            routing_policy={
+                "confidence_threshold": 0.2,
+                "switch_margin": 0.1,
+                "max_disambiguation_turns": 1,
+                "top_k_candidates": 10,
+                "allow_switch": True,
+                "cooldown_seconds": 3600,
+            },
+        )
+        self._set_heuristic_router()
+        response = self.client.post(
+            "/orchestrator/eval/replay",
+            json={
+                "project_id": "proj_eval_cooldown",
+                "session_id": "s_eval_cooldown",
+                "user_id": "u_eval_cooldown",
+                "cases": [
+                    {"case_id": "c1", "message_text": "start card-route"},
+                    {"case_id": "c2", "message_text": "switch to loan-route"},
+                    {"case_id": "c3", "message_text": "switch to card-route"},
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_cases"], 3)
+        items = payload.get("items") or []
+        self.assertEqual(items[1]["chosen_action"], "SWITCH_WORKFLOW")
+        self.assertEqual(items[1]["chosen_workflow_id"], wf_loan)
+        self.assertEqual(items[2]["chosen_action"], "RESUME_CURRENT")
+        self.assertEqual(items[2]["chosen_workflow_id"], wf_loan)
+        action_error = items[2].get("action_error") or {}
+        self.assertEqual(action_error.get("code"), "ERR_SWITCH_COOLDOWN_ACTIVE")
+        self.assertEqual(action_error.get("category"), "action")
 
     def test_orchestrator_stack_endpoint(self):
         workflow_id, _ = self._create_workflow()
@@ -674,6 +1153,151 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(stack_payload["project_id"], "proj_stack")
         self.assertEqual(stack_payload["session_id"], "s_stack")
         self.assertGreaterEqual(len(stack_payload["items"]), 1)
+
+    def test_orchestrator_context_set_get_unset(self):
+        set_response = self.client.post(
+            "/orchestrator/context/set",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_1",
+                "project_id": "proj_ctx",
+                "values": {"profile_id": "prof_1", "tier": "gold"},
+            },
+        )
+        self.assertEqual(set_response.status_code, 200)
+        set_payload = set_response.json()
+        self.assertEqual(set_payload["context"]["profile_id"], "prof_1")
+        self.assertEqual(set_payload["context"]["tier"], "gold")
+
+        get_response = self.client.post(
+            "/orchestrator/context/get",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_1",
+                "project_id": "proj_ctx",
+                "keys": ["profile_id"],
+            },
+        )
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.json()
+        self.assertEqual(get_payload["context"], {"profile_id": "prof_1"})
+
+        unset_response = self.client.post(
+            "/orchestrator/context/unset",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_1",
+                "project_id": "proj_ctx",
+                "keys": ["tier"],
+            },
+        )
+        self.assertEqual(unset_response.status_code, 200)
+        unset_payload = unset_response.json()
+        self.assertEqual(unset_payload["removed_keys"], ["tier"])
+        self.assertEqual(unset_payload["context"], {"profile_id": "prof_1"})
+
+    def test_orchestrator_context_validation_errors_return_422(self):
+        bad_get = self.client.post(
+            "/orchestrator/context/get",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_bad",
+                "project_id": "proj_ctx",
+                "keys": "not_array",
+            },
+        )
+        self.assertEqual(bad_get.status_code, 422)
+        self.assertEqual(bad_get.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_set = self.client.post(
+            "/orchestrator/context/set",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_bad",
+                "project_id": "proj_ctx",
+                "values": [],
+            },
+        )
+        self.assertEqual(bad_set.status_code, 422)
+        self.assertEqual(bad_set.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_unset = self.client.post(
+            "/orchestrator/context/unset",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_bad",
+                "project_id": "proj_ctx",
+                "keys": [],
+            },
+        )
+        self.assertEqual(bad_unset.status_code, 422)
+        self.assertEqual(bad_unset.json()["error"]["code"], "INVALID_ARGUMENT")
+
+    def test_orchestrator_direct_mode_prefills_session_context_into_inputs(self):
+        project_id = "proj_ctx_prefill"
+        headers = self._with_project(project_id=project_id)
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {"id": "out", "type": "output", "config": {"expression": "inputs['context']['profile_id']"}},
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [{"source": "start", "target": "out"}, {"source": "out", "target": "end"}],
+            "variables_schema": {},
+        }
+        workflow_create = self.client.post(
+            "/workflows",
+            json={"name": "Context prefill workflow", "draft": draft},
+            headers=headers,
+        )
+        self.assertEqual(workflow_create.status_code, 201)
+        workflow_id = workflow_create.json()["workflow_id"]
+        workflow_publish = self.client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+        self.assertEqual(workflow_publish.status_code, 200)
+
+        self._bootstrap_project(
+            project_id=project_id,
+            workflow_defs=[
+                {
+                    "workflow_id": workflow_id,
+                    "name": "Context prefill workflow",
+                    "description": "Uses inputs.context",
+                    "tags": ["context"],
+                    "examples": ["start"],
+                }
+            ],
+        )
+
+        set_response = self.client.post(
+            "/orchestrator/context/set",
+            json={
+                "scope": "session",
+                "scope_id": "s_ctx_prefill",
+                "project_id": project_id,
+                "values": {"profile_id": "prof_ctx_42"},
+            },
+        )
+        self.assertEqual(set_response.status_code, 200)
+
+        route_response = self.client.post(
+            "/orchestrator/messages",
+            json={
+                "session_id": "s_ctx_prefill",
+                "user_id": "u_ctx_prefill",
+                "project_id": project_id,
+                "workflow_id": workflow_id,
+                "message": {"id": "m_ctx_prefill_1", "text": "start"},
+            },
+        )
+        self.assertEqual(route_response.status_code, 200)
+        run_id = route_response.json().get("run_id")
+        self.assertTrue(run_id)
+
+        run_response = self.client.get(f"/runs/{run_id}")
+        self.assertEqual(run_response.status_code, 200)
+        run_payload = run_response.json()
+        self.assertEqual(run_payload.get("inputs", {}).get("context", {}).get("profile_id"), "prof_ctx_42")
+        self.assertEqual(run_payload.get("outputs"), {"result": "prof_ctx_42"})
 
     def test_start_and_get_run(self):
         workflow_id, _ = self._create_workflow()
@@ -1565,6 +2189,7 @@ class ApiTests(unittest.TestCase):
         draft_schema_payload = draft_schema_response.json()
         self.assertEqual(draft_schema_payload["title"], "WorkCore Workflow Draft")
         self.assertIn("assignments", draft_schema_payload["$defs"]["setStateConfig"]["properties"])
+        self.assertIn("integration_http", draft_schema_payload["$defs"]["nodeType"]["enum"])
 
         export_schema_response = self.client.get("/schemas/workflow-export-v1.schema.json")
         self.assertEqual(export_schema_response.status_code, 200)
@@ -1858,6 +2483,7 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
             "WORKCORE_ALLOW_INSECURE_DEV": "0",
             "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
             "CORS_ALLOW_ORIGINS": "http://workcore.build:8080",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
         }
 
         def getter(name: str, default=None):
@@ -1872,6 +2498,7 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
             "WORKCORE_ALLOW_INSECURE_DEV": "0",
             "WORKCORE_API_AUTH_TOKEN": "token_ok",
             "CORS_ALLOW_ORIGINS": "http://workcore.build:8080",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
         }
 
         def getter(name: str, default=None):
@@ -1887,6 +2514,7 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
             "WORKCORE_API_AUTH_TOKEN": "token_ok",
             "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
             "CORS_ALLOW_ORIGINS": "https://workcore.build,*",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
         }
 
         def getter(name: str, default=None):
@@ -1904,6 +2532,39 @@ class ApiSecurityEnvValidationTests(unittest.TestCase):
 
         with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
             validate_runtime_security_env()
+
+    def test_validate_runtime_security_env_rejects_bare_wildcard_http_egress_hosts(self):
+        env = {
+            "WORKCORE_ALLOW_INSECURE_DEV": "0",
+            "WORKCORE_API_AUTH_TOKEN": "token_ok",
+            "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
+            "CORS_ALLOW_ORIGINS": "https://workcore.build",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "*,api.example.com",
+        }
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with self.assertRaises(RuntimeError):
+            with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+                validate_runtime_security_env()
+
+    def test_validate_runtime_security_env_rejects_invalid_http_egress_deny_cidrs(self):
+        env = {
+            "WORKCORE_ALLOW_INSECURE_DEV": "0",
+            "WORKCORE_API_AUTH_TOKEN": "token_ok",
+            "WEBHOOK_DEFAULT_INBOUND_SECRET": "secret_ok",
+            "CORS_ALLOW_ORIGINS": "https://workcore.build",
+            "INTEGRATION_HTTP_ALLOWED_HOSTS": "api.example.com",
+            "INTEGRATION_HTTP_DENY_CIDRS": "not_a_cidr",
+        }
+
+        def getter(name: str, default=None):
+            return env.get(name, default)
+
+        with self.assertRaises(RuntimeError):
+            with mock.patch("apps.orchestrator.api.app.get_env", side_effect=getter):
+                validate_runtime_security_env()
 
 
 if __name__ == "__main__":

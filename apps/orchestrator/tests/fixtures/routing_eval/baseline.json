@@ -1,0 +1,60 @@
+{
+  "project_id": "proj_routing_harness",
+  "session_id": "s_routing_harness",
+  "user_id": "u_routing_harness",
+  "routing_policy": {
+    "confidence_threshold": 0.2,
+    "switch_margin": 0.1,
+    "max_disambiguation_turns": 1,
+    "top_k_candidates": 10,
+    "allow_switch": true,
+    "cooldown_seconds": 3600
+  },
+  "workflows": [
+    {
+      "key": "card",
+      "name": "Card flow",
+      "description": "Card routing workflow",
+      "tags": ["card-route"],
+      "examples": ["start card-route"]
+    },
+    {
+      "key": "loan",
+      "name": "Loan flow",
+      "description": "Loan routing workflow",
+      "tags": ["loan-route"],
+      "examples": ["switch to loan-route"]
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "case_1_start_card",
+      "message_text": "start card-route",
+      "expected_action": "START_WORKFLOW",
+      "expected_workflow_key": "card"
+    },
+    {
+      "case_id": "case_2_switch_loan",
+      "message_text": "switch to loan-route",
+      "expected_action": "SWITCH_WORKFLOW",
+      "expected_workflow_key": "loan"
+    },
+    {
+      "case_id": "case_3_cooldown_block",
+      "message_text": "switch to card-route",
+      "expected_action": "RESUME_CURRENT",
+      "expected_workflow_key": "loan"
+    },
+    {
+      "case_id": "case_4_cancel",
+      "message_text": "cancel",
+      "expected_action": "CANCEL",
+      "expected_workflow_key": "loan"
+    }
+  ],
+  "thresholds": {
+    "action_accuracy_min": 1.0,
+    "workflow_accuracy_min": 1.0,
+    "exact_match_rate_min": 1.0
+  }
+}

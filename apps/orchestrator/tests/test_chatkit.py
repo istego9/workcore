@@ -19,6 +19,7 @@ from chatkit.types import (
 from apps.orchestrator.api.store import InMemoryRunStore
 from apps.orchestrator.chatkit.app import create_app as create_chatkit_app
 from apps.orchestrator.chatkit.context import ChatKitContext
+from apps.orchestrator.chatkit.custom_actions import normalize_custom_action_payload
 from apps.orchestrator.chatkit.server import WorkflowChatKitServer
 from apps.orchestrator.chatkit.store import InMemoryAttachmentStore, InMemoryChatKitStore
 from apps.orchestrator.runtime import Edge, Node, SimpleEvaluator, Workflow
@@ -132,6 +133,172 @@ class ChatKitTests(unittest.TestCase):
         )
         self.assertTrue(completed)
         self.assertEqual(self.run_store.get(run.id, tenant_id="tenant_test").status, "COMPLETED")
+
+    def test_action_alias_resolves_to_canonical_action_type(self):
+        create_req = ThreadsCreateReq(
+            metadata={"workflow_id": self.workflow_id, "workflow_version_id": self.workflow_version_id},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            )
+        )
+        create_events = asyncio.run(self._collect_events(create_req))
+        thread_id = next(
+            event["thread"]["id"]
+            for event in create_events
+            if event.get("type") == "thread.created"
+        )
+
+        run = next(iter(self.run_store.runs.values()))
+        interrupt = next(iter(run.interrupts.values()))
+
+        action_req = ThreadsCustomActionReq(
+            params=ThreadCustomActionParams(
+                thread_id=thread_id,
+                item_id=None,
+                action=Action(
+                    type="approve",
+                    payload={"run_id": run.id, "interrupt_id": interrupt.id},
+                ),
+            )
+        )
+
+        events = asyncio.run(self._collect_events(action_req))
+        completed = any(
+            event.get("type") == "progress_update"
+            and "completed" in event.get("text", "").lower()
+            for event in events
+        )
+        self.assertTrue(completed)
+        self.assertEqual(self.run_store.get(run.id, tenant_id="tenant_test").status, "COMPLETED")
+
+    def test_custom_action_payload_normalization_flattens_and_types_scalars(self):
+        documents = [{"doc_id": "doc_1", "pages": [{"artifact_ref": "art_1"}]}]
+        normalized = normalize_custom_action_payload(
+            {
+                "run_id": "run_1",
+                "interrupt_id": "intr_1",
+                "input": {
+                    "fields": {
+                        "approved": "true",
+                        "attempts": "2",
+                        "score": "4.75",
+                        "external_id": "00123",
+                    },
+                    "documents": documents,
+                },
+            }
+        )
+        self.assertEqual(
+            normalized,
+            {
+                "approved": True,
+                "attempts": 2,
+                "score": 4.75,
+                "external_id": "00123",
+                "documents": documents,
+            },
+        )
+
+    def test_custom_action_payload_normalization_validates_projection_paths(self):
+        with self.assertRaises(ValueError):
+            normalize_custom_action_payload(
+                {
+                    "input": {
+                        "state_exclude_paths": ["documents..image_base64"],
+                    }
+                }
+            )
+
+        normalized = normalize_custom_action_payload(
+            {
+                "input": {
+                    "state_exclude_paths": [
+                        "documents.pages.image_base64",
+                        "documents.pages.image_base64",
+                    ],
+                    "output_include_paths": ["result.claim_id"],
+                }
+            }
+        )
+        self.assertEqual(normalized["state_exclude_paths"], ["documents.pages.image_base64"])
+        self.assertEqual(normalized["output_include_paths"], ["result.claim_id"])
+
+    def test_submit_action_rejects_invalid_projection_paths(self):
+        create_req = ThreadsCreateReq(
+            metadata={"workflow_id": self.workflow_id, "workflow_version_id": self.workflow_version_id},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            )
+        )
+        create_events = asyncio.run(self._collect_events(create_req))
+        thread_id = next(
+            event["thread"]["id"]
+            for event in create_events
+            if event.get("type") == "thread.created"
+        )
+        run = next(iter(self.run_store.runs.values()))
+        interrupt = next(iter(run.interrupts.values()))
+
+        action_req = ThreadsCustomActionReq(
+            params=ThreadCustomActionParams(
+                thread_id=thread_id,
+                item_id=None,
+                action=Action(
+                    type="interrupt.submit",
+                    payload={
+                        "run_id": run.id,
+                        "interrupt_id": interrupt.id,
+                        "input": {
+                            "state_exclude_paths": ["documents..image_base64"],
+                        },
+                    },
+                ),
+            )
+        )
+        events = asyncio.run(self._collect_events(action_req))
+        errors = [event for event in events if event.get("type") == "error"]
+        self.assertTrue(errors)
+        self.assertIn("state_exclude_paths", errors[0].get("message", ""))
+        loaded = self.run_store.get(run.id, tenant_id="tenant_test")
+        self.assertEqual(loaded.status, "WAITING_FOR_INPUT")
+
+        retry_req = ThreadsCustomActionReq(
+            params=ThreadCustomActionParams(
+                thread_id=thread_id,
+                item_id=None,
+                action=Action(
+                    type="interrupt.submit",
+                    payload={
+                        "run_id": run.id,
+                        "interrupt_id": interrupt.id,
+                        "input": {"approved": "true"},
+                    },
+                ),
+            )
+        )
+        retry_events = asyncio.run(self._collect_events(retry_req))
+        retry_notices = [
+            event
+            for event in retry_events
+            if event.get("type") == "notice" and "already processed" in event.get("message", "").lower()
+        ]
+        self.assertFalse(retry_notices)
+        completed = any(
+            event.get("type") == "progress_update"
+            and "completed" in event.get("text", "").lower()
+            for event in retry_events
+        )
+        self.assertTrue(completed)
+        loaded = self.run_store.get(run.id, tenant_id="tenant_test")
+        self.assertEqual(loaded.status, "COMPLETED")
 
     def test_agent_executor_is_used(self):
         nodes = [

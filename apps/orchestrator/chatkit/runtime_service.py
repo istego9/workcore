@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -52,7 +53,7 @@ class ChatKitRuntimeService:
             metadata_payload.setdefault("llm_enabled", False)
         metadata_payload["tenant_id"] = tenant_id
         run = engine.start_run(inputs, mode=mode, metadata=metadata_payload)
-        events = engine.execute_until_blocked(run)
+        events = await asyncio.to_thread(engine.execute_until_blocked, run)
         await self._publish_with_snapshot(run, events)
         return run
 
@@ -69,7 +70,7 @@ class ChatKitRuntimeService:
             raise RuntimeError("tenant_id is required")
         workflow = await self.workflow_loader(run.workflow_id, run.version_id, resolved_tenant)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
-        events = engine.resume_interrupt(run, interrupt_id, input_data, files)
+        events = await asyncio.to_thread(engine.resume_interrupt, run, interrupt_id, input_data, files)
         await self._publish_with_snapshot(run, events)
         return run
 

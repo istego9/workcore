@@ -83,6 +83,12 @@ A task is done when:
 - Services are restarted for affected components.
 - Relevant E2E/smoke checks are executed.
 
+## Process artifacts (operational)
+- Quality scoreboard: `docs/QUALITY_SCORE.md`
+- Security baseline: `docs/SECURITY.md`
+- Reliability baseline: `docs/RELIABILITY.md`
+- Execution plans and tech debt tracker: `docs/exec-plans/`
+
 ## Skills available in this repo
 Skills are stored under `.codex/skills/<skill-name>/SKILL.md`. Codex can invoke them explicitly (e.g., `$api-contracts`) or implicitly by matching descriptions.
 

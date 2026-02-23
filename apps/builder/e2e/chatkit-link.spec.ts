@@ -13,6 +13,7 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
   let workflowId: string | null = null;
   let versionId: string | null = null;
   const projectId = `proj_e2e_${Date.now()}`;
+  const projectName = `E2E Project ${Date.now()}`;
   const workflowName = `E2E Chat ${Date.now()}`;
   const draft = {
     nodes: [
@@ -24,6 +25,12 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
   };
 
   try {
+    const createProjectResponse = await request.post(`${apiBaseUrl}/projects`, {
+      data: { project_id: projectId, project_name: projectName, settings: { orchestrator_enabled: true } },
+      headers: apiAuthHeaders()
+    });
+    expect(createProjectResponse.ok()).toBeTruthy();
+
     const createResponse = await request.post(`${apiBaseUrl}/workflows`, {
       data: { name: workflowName, draft },
       headers: apiAuthHeaders(projectId)
@@ -49,15 +56,10 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
       { token: e2eApiAuthToken, tenant: e2eTenantId }
     );
     await page.goto('/?e2e=1');
-    await page.getByTestId('project-selector').fill(projectId);
-    await page.getByRole('button', { name: 'Browse' }).click();
-    const modal = page.getByRole('dialog', { name: 'Workflows' });
-    await modal.getByRole('button', { name: 'Refresh' }).click();
-    await modal.getByPlaceholder('Search by name or id').fill(workflowName);
-    await modal.getByText(`${workflowName}`).waitFor({ timeout: 10000 });
-    await modal.getByText(`${workflowName}`).click();
-    await expect(modal).toBeHidden({ timeout: 10000 });
-    await expect(page.getByText(`Workflow ${workflowId}`)).toBeVisible();
+    await page.getByRole('button', { name: 'Back to projects' }).click();
+    await page.getByText(projectName).first().click();
+    await page.getByText(workflowName).first().click();
+    await expect(page.getByText(`Workflow ${workflowId}`).first()).toBeVisible();
 
     const openChatButton = page.getByTestId('open-chatkit');
     const dataUrl = await openChatButton.getAttribute('data-chatkit-url');

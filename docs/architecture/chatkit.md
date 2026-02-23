@@ -21,6 +21,7 @@ Status: Draft
   - Appends a user message to an existing thread and continues run execution.
 - `threads.custom_action`:
   - Sends widget actions (`interrupt.approve`, `interrupt.reject`, `interrupt.submit`, `interrupt.cancel`).
+  - Canonical field is `action.action_type`; backward-compatible alias `action.type` is still accepted.
   - Runtime currently rejects `interrupt.cancel` with an explicit error event.
 
 ## Thread ↔ Run mapping
@@ -49,17 +50,30 @@ Status: Draft
 - Edit templates with ChatKit Studio or by hand (JSON + Jinja data fields).
 
 ## Action types
-- `interrupt.approve`
-- `interrupt.reject`
-- `interrupt.submit`
-- `interrupt.cancel` (not supported in MVP; returns an error)
+- Canonical action types:
+  - `interrupt.approve`
+  - `interrupt.reject`
+  - `interrupt.submit`
+  - `interrupt.cancel` (not supported in MVP; returns an error)
+- Alias map (accepted and normalized to canonical):
+  - `approve` -> `interrupt.approve`
+  - `reject` -> `interrupt.reject`
+  - `submit` -> `interrupt.submit`
+  - `cancel` -> `interrupt.cancel`
 
 Action payload fields consumed by runtime:
+- `action_type` (preferred canonical action type)
 - `run_id` (optional when thread metadata already has run_id)
 - `interrupt_id` (optional if there is a single OPEN interrupt)
 - `input` / `form` / `form_data` / `fields` (for submit data)
 - `files` (uploaded file refs)
 - `idempotency_key` or `action_id` (optional client-supplied dedupe key)
+- Submit payload normalization (WorkCore-native):
+  - extraction order: `input` -> `form` -> `form_data` -> `fields` -> fallback top-level keys
+  - wrapper keys are flattened into one input map
+  - scalar strings are coerced to native types where safe (`true/false`, integer, float, `null`)
+  - `documents` payload is passed through as-is
+  - `state_exclude_paths` and `output_include_paths` are validated with projection path rules
 
 ## Streaming behavior
 - Run events are mapped to ChatKit stream events:
@@ -87,8 +101,9 @@ Action payload fields consumed by runtime:
 
 ## Idempotency (actions)
 - Actions are deduped via `idempotency_keys` (scope `chatkit_action`).
-- Default key: `{run_id}:{interrupt_id}:{action_type}` unless the payload includes `idempotency_key`.
+- Default key: `{run_id}:{interrupt_id}:{canonical_action_type}` unless the payload includes `idempotency_key`.
 - TTL configurable via `CHATKIT_IDEMPOTENCY_TTL_SECONDS`.
+- Idempotency reservation starts after action payload validation succeeds, so invalid submit payloads do not lock retries.
 
 ## Delivery and fallback strategy for third-party clients
 - Primary: consume ChatKit SSE response stream from `POST /chatkit`.

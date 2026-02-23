@@ -13,6 +13,13 @@ Project-level orchestration adds an intent-routing layer in front of workflow ex
 - mode is selected: direct workflow (`workflow_id` provided) or orchestrated
 - orchestrator evaluates intent and policy, then issues workflow adapter action (start/resume/cancel)
 - every inbound message produces one orchestration decision log
+- orchestrator response includes `decision_trace` with candidate scores, selected workflow/action, and selection/switch reason
+- orchestrator response includes standardized `action_error` contract (`code`, `message`, `retryable`, `category`, `action`) when route/action constraints block normal execution
+- orchestrator supports offline routing replay/eval (`POST /orchestrator/eval/replay`) to evaluate routing quality without mutating runs/session state
+- session context (when present) is injected into workflow inputs as `inputs.context`
+- when `/orchestrator/messages` receives `message.type=threads.custom_action`, runtime maps:
+  - `message.text` -> `inputs.action_type`
+  - normalized `message.payload` fields -> flattened `inputs.*`
 
 ## Run lifecycle
 Statuses:
@@ -72,18 +79,61 @@ Transitions:
 - `project_id` is required for orchestrated chat entry.
 - `workflow_id` present => direct workflow mode.
 - `workflow_id` absent => orchestrator mode (explicit `orchestrator_id` or project default).
+- message envelope supports optional `message.type`:
+  - `threads.add_user_message` (default behavior)
+  - `threads.custom_action` (materializes payload/action fields into run inputs)
 - Candidate workflows are shortlisted from `workflow_definitions` by tags/examples and bounded by `top_k_candidates`.
 - The LLM router returns a strict structured decision.
+- Routing policy fields:
+  - `sticky`
+  - `allow_switch`
+  - `explicit_switch_only`
+  - `cooldown_seconds`
+  - `hysteresis_margin`
 
 Anti-flapping policy with active run:
 - STOP/OPERATOR intent has highest priority.
-- SWITCH requires high confidence and `switch_margin` above configured threshold.
+- SWITCH requires high confidence and `switch_margin + hysteresis_margin` threshold.
+- Sticky/explicit/cooldown policies can block switching and keep current workflow active.
 - Otherwise continue current run (`RESUME_CURRENT`).
 
 Low-confidence handling:
 - Ask one clarifying question (`DISAMBIGUATE`) and persist pending disambiguation state.
 - Retry intent routing after user reply.
 - Move to fallback after max disambiguation turns.
+
+## Unified context API (thread/session)
+- Runtime exposes context operations:
+  - `context.get`
+  - `context.set`
+  - `context.unset`
+- Supported scopes:
+  - `session` (typically keyed by orchestrator `session_id`)
+  - `thread` (typically keyed by ChatKit `thread_id`)
+- Context values are tenant-scoped persisted key/value records.
+- Orchestrator routing can prefill workflow inputs from `session` scope (`inputs.context`).
+
+## Integration HTTP node (non-MCP)
+- Node type: `integration_http`
+- Purpose: call external HTTP APIs from workflow runtime without MCP indirection.
+- Core behavior:
+  - configurable method/url/headers/auth
+  - timeout + retry policy
+  - optional request body expression evaluated from runtime context
+  - response mapped to node output and optionally to configured state targets
+- Error behavior:
+  - `fail_on_status=true` fails node on unexpected HTTP status (after retries)
+  - `allowed_statuses` can override status acceptance
+- Egress guardrails:
+  - runtime enforces deny-by-default host policy from `INTEGRATION_HTTP_ALLOWED_HOSTS`
+  - target scheme must be in `INTEGRATION_HTTP_ALLOWED_SCHEMES` (default `https`)
+  - private/link-local/loopback targets are rejected unless `INTEGRATION_HTTP_ALLOW_PRIVATE_NETWORKS=true`
+  - hostname targets are DNS-resolved and resolved IPs are checked against private/local policies
+  - optional CIDR deny overlay is enforced from `INTEGRATION_HTTP_DENY_CIDRS`
+
+## Async runtime service boundary
+- Runtime service async entrypoints (`start_run`, `resume_interrupt`, `rerun_node`) offload blocking engine execution loops to worker threads.
+- Goal: keep API/chat event loop responsive even when node executors perform blocking network I/O or backoff sleeps.
 
 ## Cancel and commit-point semantics
 - Engine adapter exposes per-run state with `cancellable` and optional `commit_point_reached`.

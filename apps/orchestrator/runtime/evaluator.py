@@ -85,6 +85,9 @@ class SimpleEvaluator(ExpressionEvaluator):
         ast.Subscript,
         ast.Index,
         ast.Attribute,
+        ast.Dict,
+        ast.List,
+        ast.Tuple,
     )
 
     def eval(self, expression: str, context: ExpressionContext) -> Any:

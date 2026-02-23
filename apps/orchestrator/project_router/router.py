@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from apps.orchestrator.project_router.custom_actions import normalize_orchestrator_custom_action_payload
 from apps.orchestrator.orchestrator_runtime.store import (
     OrchestrationStore,
     OrchestratorConfigRecord,
@@ -21,6 +22,9 @@ class RoutingRequest:
     message_id: str
     message_text: str
     metadata: Dict[str, Any]
+    message_type: str = "threads.add_user_message"
+    action_type: Optional[str] = None
+    action_payload: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "RoutingRequest":
@@ -48,6 +52,8 @@ class RoutingRequest:
             raise ProjectRouterError("INVALID_ARGUMENT", "message object is required", 400)
         message_id = message.get("id")
         message_text = message.get("text")
+        message_type_raw = message.get("type")
+        message_payload_raw = message.get("payload")
         if not isinstance(message_id, str) or not message_id.strip():
             raise ProjectRouterError("INVALID_ARGUMENT", "message.id is required", 400)
         if not isinstance(message_text, str) or not message_text.strip():
@@ -56,6 +62,35 @@ class RoutingRequest:
             metadata = {}
         if not isinstance(metadata, dict):
             raise ProjectRouterError("INVALID_ARGUMENT", "metadata must be an object", 400)
+        if message_type_raw is None:
+            message_type = "threads.add_user_message"
+        elif isinstance(message_type_raw, str) and message_type_raw.strip():
+            message_type = message_type_raw.strip().lower()
+        else:
+            raise ProjectRouterError(
+                "INVALID_ARGUMENT",
+                "message.type must be a non-empty string when provided",
+                400,
+            )
+
+        action_type: Optional[str] = None
+        action_payload: Dict[str, Any] = {}
+        if message_type == "threads.custom_action":
+            if message_payload_raw is None:
+                message_payload_raw = {}
+            if not isinstance(message_payload_raw, dict):
+                raise ProjectRouterError(
+                    "INVALID_ARGUMENT",
+                    "message.payload must be an object for threads.custom_action",
+                    400,
+                )
+            action_type = message_text.strip()
+            try:
+                action_payload = normalize_orchestrator_custom_action_payload(message_payload_raw)
+            except ValueError as exc:
+                raise ProjectRouterError("INVALID_ARGUMENT", str(exc), 400) from exc
+        elif message_payload_raw is not None and not isinstance(message_payload_raw, dict):
+            raise ProjectRouterError("INVALID_ARGUMENT", "message.payload must be an object when provided", 400)
 
         return cls(
             session_id=session_id.strip(),
@@ -66,6 +101,9 @@ class RoutingRequest:
             message_id=message_id.strip(),
             message_text=message_text.strip(),
             metadata=dict(metadata),
+            message_type=message_type,
+            action_type=action_type,
+            action_payload=action_payload,
         )
 
 

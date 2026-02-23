@@ -71,6 +71,35 @@ All API errors use:
 
 Runtime applies `assignments[]` in order when present. If `assignments[]` is missing, runtime falls back to legacy `target` + `expression`.
 
+## Integration HTTP node (`integration_http`)
+Use `integration_http` for non-MCP external API calls directly in workflow runtime.
+
+Supported config fields:
+- `url` (required)
+- `method` (`GET|POST|PUT|PATCH|DELETE`, default `GET`)
+- `headers` (optional object)
+- `auth` (optional object):
+  - `type`: `none|bearer|basic`
+  - `token` or `token_env` (for bearer)
+  - `username/password` or `username_env/password_env` (for basic)
+- `timeout_s` (optional, default runtime value)
+- `retry_attempts` and `retry_backoff_s` (optional)
+- `request_body_expression` (optional expression evaluated against `inputs/state/node_outputs`)
+- `response_state_target` (optional state path for full response envelope)
+- `response_body_state_target` (optional state path for response body)
+- `fail_on_status` (optional bool, default `true`)
+- `allowed_statuses` (optional list of HTTP status codes)
+
+Runtime egress policy:
+- `INTEGRATION_HTTP_ALLOWED_HOSTS` (required allowlist for executor traffic, comma-separated).
+- `INTEGRATION_HTTP_ALLOWED_SCHEMES` (optional, default `https`).
+- `INTEGRATION_HTTP_ALLOW_PRIVATE_NETWORKS` (optional, default `false`).
+- `INTEGRATION_HTTP_DENY_CIDRS` (optional CIDR deny overlay for resolved target IPs, comma-separated).
+
+Resolution behavior:
+- For hostname targets, runtime resolves DNS and validates each resolved IP against private/local restrictions.
+- When `INTEGRATION_HTTP_DENY_CIDRS` is configured, resolved IPs matching any listed CIDR are always blocked.
+
 ## Artifact references and run projections
 For document-heavy workflows, prefer artifact references over inline binary payloads.
 
@@ -146,7 +175,16 @@ Public project-registry bootstrap no longer requires DB-side seeding.
   - Request body:
     - `orchestrator_id` (required)
     - `name` (required)
-    - `routing_policy` (optional object)
+    - `routing_policy` (optional object):
+      - `confidence_threshold`
+      - `switch_margin`
+      - `max_disambiguation_turns`
+      - `top_k_candidates`
+      - `sticky`
+      - `allow_switch`
+      - `explicit_switch_only`
+      - `cooldown_seconds`
+      - `hysteresis_margin`
     - `fallback_workflow_id` (optional)
     - `prompt_profile` (optional)
     - `set_as_default` (optional bool, default `false`)
@@ -175,6 +213,24 @@ Common validation/error behavior:
   - `workflow_id` present -> direct workflow mode.
   - `workflow_id` absent -> orchestrator mode (`orchestrator_id` or project default).
 - Every inbound message creates one orchestration decision log.
+- `POST /orchestrator/messages` response now includes `decision_trace` for routing transparency:
+  - candidate workflows with `score` and `reason_codes`
+  - selected action + selected workflow
+  - explicit `selection_reason`
+  - switch details (`switch_from_workflow_id`, `switch_to_workflow_id`, `switch_reason`) when switching happens
+- Route/action error contract in orchestrator response:
+  - `action_error` is present when router selected an action but execution is restricted/failed by policy.
+  - structure: `code`, `message`, `retryable`, `category` (`route` or `action`), `action`.
+- Session context prefill:
+  - Runtime injects persisted `session` context into workflow inputs as `inputs.context` (when available).
+- Custom action envelope on orchestrator entrypoint:
+  - `message.type` is optional:
+    - omitted or `threads.add_user_message` -> standard text routing
+    - `threads.custom_action` -> `message.text` is treated as `action_type`
+  - For `threads.custom_action`, normalized `message.payload` fields are materialized into workflow inputs:
+    - `inputs.action_type = message.text`
+    - payload fields -> flattened into `inputs.*`
+  - Existing `message.id` + `message.text` behavior remains backward compatible.
 
 Validation errors:
 - `ERR_PROJECT_ID_REQUIRED`
@@ -185,6 +241,22 @@ Validation errors:
 Session stack diagnostics:
 - `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
 
+Session/thread context API:
+- `POST /orchestrator/context/get` (`context.get`)
+- `POST /orchestrator/context/set` (`context.set`)
+- `POST /orchestrator/context/unset` (`context.unset`)
+- Scopes: `session` and `thread`
+- Validation errors for context API return HTTP `422`.
+
+Offline routing replay/eval:
+- `POST /orchestrator/eval/replay`
+- Read-only evaluation mode (does not start/resume/cancel runs).
+- Input: labeled `cases[]` with `message_text` and optional expectations (`expected_action`, `expected_workflow_id`).
+- Output:
+  - per-case predicted action/workflow + decision trace
+  - action_error (when policy blocks a switch or fallback is unavailable)
+  - aggregate accuracy metrics (`action_accuracy`, `workflow_accuracy`, `exact_match_rate`)
+
 ## Agent integration kit URL
 - Markdown entrypoint: `/agent-integration-kit`
 - Machine-readable bundle: `/agent-integration-kit.json`
@@ -194,6 +266,7 @@ Session stack diagnostics:
 - Project orchestrator config endpoint: `POST /projects/{project_id}/orchestrators`
 - Project workflow definition endpoint: `POST /projects/{project_id}/workflow-definitions`
 - Orchestrator message endpoint: `POST /orchestrator/messages`
+- Orchestrator replay/eval endpoint: `POST /orchestrator/eval/replay`
 - Orchestrator stack diagnostics: `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
 - Integration test UI: `/agent-integration-test`
 - Integration test JSON report: `/agent-integration-test.json`
@@ -231,13 +304,14 @@ curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_
 6. `POST /projects/{project_id}/workflow-definitions` register workflow in project routing index
 7. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
 8. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
-9. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
-10. `GET /runs/{run_id}` read state
-11. `GET /runs/{run_id}/stream` consume SSE events
-12. `GET /runs/{run_id}/ledger` read immutable execution ledger
-13. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
-14. `POST /runs/{run_id}/cancel` cancel run
-15. `POST /runs/{run_id}/rerun-node` rerun node
+9. `POST /orchestrator/eval/replay` run offline routing replay/eval over labeled cases
+10. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
+11. `GET /runs/{run_id}` read state
+12. `GET /runs/{run_id}/stream` consume SSE events
+13. `GET /runs/{run_id}/ledger` read immutable execution ledger
+14. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
+15. `POST /runs/{run_id}/cancel` cancel run
+16. `POST /runs/{run_id}/rerun-node` rerun node
 
 ## Atomic handoff API
 - Create handoff package and start run atomically:
@@ -261,6 +335,16 @@ For full user interaction (approval/forms/files) integrate `POST /chatkit` in ad
   - `threads.create`
   - `threads.add_user_message`
   - `threads.custom_action`
+- For `threads.custom_action`:
+  - Preferred canonical field: `action.action_type`
+  - Backward-compatible alias field: `action.type`
+  - Runtime resolves aliases to canonical action type before execution/idempotency.
+  - For `interrupt.submit`, runtime normalizes payload natively:
+    - source priority: `payload.input` -> `payload.form` -> `payload.form_data` -> `payload.fields` -> fallback top-level keys
+    - nested wrapper keys are flattened into a single input object
+    - scalar strings are typed when safe (`true/false`, numeric literals, `null`)
+    - `documents` payload passes through unchanged
+    - `state_exclude_paths` / `output_include_paths` are validated using run projection path rules
 - For `threads.create` pass `metadata.workflow_id` (and optional `metadata.workflow_version_id`).
 - Recommended metadata keys for reconciliation:
   - `external_user_id`
@@ -304,7 +388,7 @@ curl -N -X POST "https://api.workcore.build/chatkit" \
     "params": {
       "thread_id": "thr_01",
       "action": {
-        "type": "interrupt.approve",
+        "action_type": "interrupt.approve",
         "payload": {
           "run_id": "run_01",
           "interrupt_id": "intr_01",

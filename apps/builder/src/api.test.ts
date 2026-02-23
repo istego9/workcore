@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE, listProjects, listRuns, listWorkflows } from './api';
+import { API_BASE, deleteProject, listProjects, listRuns, listWorkflows, updateProject } from './api';
 
 describe('api listRuns', () => {
   const fetchMock = vi.fn();
@@ -130,6 +130,41 @@ describe('api listRuns', () => {
           Authorization: 'Bearer token_local',
           'X-Tenant-Id': 'tenant_local'
         })
+      })
+    );
+  });
+
+  it('calls PATCH /projects/{project_id} for project edit', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ project_id: 'proj_1', project_name: 'Renamed' })
+    } as Response);
+
+    await updateProject('proj_1', { project_name: 'Renamed' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects/proj_1`,
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ project_name: 'Renamed' })
+      })
+    );
+  });
+
+  it('calls DELETE /projects/{project_id} for project deletion', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => null
+    } as Response);
+
+    await deleteProject('proj_1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects/proj_1`,
+      expect.objectContaining({
+        method: 'DELETE'
       })
     );
   });

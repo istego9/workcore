@@ -176,7 +176,12 @@ def parse_env_file(path: Path) -> dict[str, str]:
 
 docker_env_example = parse_env_file(root / ".env.docker.example")
 
-for required in ("WORKCORE_API_AUTH_TOKEN", "WEBHOOK_DEFAULT_INBOUND_SECRET", "CORS_ALLOW_ORIGINS"):
+for required in (
+    "WORKCORE_API_AUTH_TOKEN",
+    "WEBHOOK_DEFAULT_INBOUND_SECRET",
+    "CORS_ALLOW_ORIGINS",
+    "INTEGRATION_HTTP_ALLOWED_HOSTS",
+):
     if not docker_env_example.get(required):
         print(f".env.docker.example must set non-empty {required}", file=sys.stderr)
         sys.exit(1)

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.9.0
+  version: 0.18.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -263,7 +263,7 @@ paths:
                     thread_id: thr_01
                     item_id: null
                     action:
-                      type: interrupt.approve
+                      action_type: interrupt.approve
                       payload:
                         run_id: run_01
                         interrupt_id: intr_01
@@ -312,6 +312,30 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/OrchestratorMessageRequest'
+            examples:
+              user_message:
+                summary: Standard user message routing
+                value:
+                  session_id: sess_01
+                  user_id: user_01
+                  project_id: proj_01
+                  message:
+                    id: msg_01
+                    text: open account
+              custom_action:
+                summary: Custom action routing with payload materialization
+                value:
+                  session_id: sess_01
+                  user_id: user_01
+                  project_id: proj_01
+                  message:
+                    id: msg_02
+                    type: threads.custom_action
+                    text: fm_budget_submit_basics
+                    payload:
+                      income_aed: 26600
+                      fixed_costs_aed: 9000
+                      currency: AED
       responses:
         '200':
           description: Routed successfully
@@ -319,6 +343,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrchestratorMessageResponse'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+
+  /orchestrator/eval/replay:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [orchestrator]
+      summary: Offline replay/eval for routing quality
+      description: >
+        Runs read-only routing replay against labeled message cases without starting/resuming/cancelling workflow runs.
+        Useful for offline evaluation of routing behavior and quality metrics.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorEvalReplayRequest'
+      responses:
+        '200':
+          description: Replay evaluation report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorEvalReplayResponse'
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }
         '409': { $ref: '#/components/responses/ErrorResponse' }
@@ -344,6 +398,82 @@ paths:
                 $ref: '#/components/schemas/WorkflowStackResponse'
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }
+  /orchestrator/context/get:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    post:
+      tags: [orchestrator]
+      summary: context.get for thread/session scope
+      description: >
+        Reads persisted context values for `session` or `thread` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorContextGetRequest'
+      responses:
+        '200':
+          description: Context payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResponse'
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+
+  /orchestrator/context/set:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [orchestrator]
+      summary: context.set for thread/session scope
+      description: >
+        Writes or updates persisted context values for `session` or `thread` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorContextSetRequest'
+      responses:
+        '200':
+          description: Context payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResponse'
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+
+  /orchestrator/context/unset:
+    parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [orchestrator]
+      summary: context.unset for thread/session scope
+      description: >
+        Deletes selected persisted context keys for `session` or `thread` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorContextUnsetRequest'
+      responses:
+        '200':
+          description: Context payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResponse'
+        '422': { $ref: '#/components/responses/ErrorResponse' }
   /projects:
     parameters:
       - $ref: '#/components/parameters/TenantId'
@@ -386,6 +516,41 @@ paths:
                 $ref: '#/components/schemas/Project'
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '409': { $ref: '#/components/responses/ErrorResponse' }
+  /projects/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdPath'
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    patch:
+      tags: [projects]
+      summary: Update project metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdateRequest'
+            example:
+              project_name: HQ21 Production
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      tags: [projects]
+      summary: Delete project
+      description: Deletes a tenant-scoped project if it has no workflows.
+      responses:
+        '204':
+          description: Deleted
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
   /projects/{project_id}/orchestrators:
     parameters:
       - $ref: '#/components/parameters/ProjectIdPath'
@@ -409,6 +574,11 @@ paths:
                 switch_margin: 0.2
                 max_disambiguation_turns: 2
                 top_k_candidates: 10
+                sticky: false
+                allow_switch: true
+                explicit_switch_only: false
+                cooldown_seconds: 0
+                hysteresis_margin: 0.05
               fallback_workflow_id: wf_fallback
               prompt_profile: default
               set_as_default: true
@@ -1384,23 +1554,37 @@ components:
     ChatKitAction:
       type: object
       description: >
-        `interrupt.cancel` is accepted by protocol but currently returns an explicit
-        error event in runtime.
+        Canonical custom action contract for `threads.custom_action`.
+        Prefer `action_type` with canonical values. Backward-compatible aliases are accepted via `type`.
+        `interrupt.cancel` is accepted by protocol but currently returns an explicit error event in runtime.
       properties:
-        type:
+        action_type:
           type: string
           enum:
             - interrupt.approve
             - interrupt.reject
             - interrupt.submit
             - interrupt.cancel
+        type:
+          type: string
+          description: Backward-compatible alias field mapped to canonical `action_type`.
         payload:
           $ref: '#/components/schemas/ChatKitActionPayload'
-      required: [type]
+      anyOf:
+        - required: [action_type]
+        - required: [type]
 
     ChatKitActionPayload:
       type: object
+      description: >
+        Submit payload is normalized by WorkCore runtime.
+        Extraction order: `input` -> `form` -> `form_data` -> `fields` -> fallback top-level keys.
+        Wrapper keys are flattened, scalar strings are coerced to native types when safe
+        (`true`/`false`, numeric literals, `null`), and `documents` payload passes through unchanged.
       properties:
+        action_type:
+          type: string
+          description: Optional canonical action type override when top-level alias `type` is used.
         run_id: { type: string }
         interrupt_id: { type: string }
         idempotency_key: { type: string }
@@ -1409,6 +1593,16 @@ components:
         form: { type: object }
         form_data: { type: object }
         fields: { type: object }
+        state_exclude_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
+        output_include_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
         files:
           type: array
           items: { type: object }
@@ -1429,13 +1623,55 @@ components:
 
     OrchestratorUserMessage:
       type: object
+      description: >
+        Inbound message envelope for `POST /orchestrator/messages`.
+        If `type=threads.custom_action`, runtime writes `text` to `inputs.action_type`
+        and flattens normalized `payload` fields into `inputs.*`.
       properties:
         id: { type: string }
-        text: { type: string }
+        type:
+          type: string
+          enum: [threads.add_user_message, threads.custom_action]
+          description: Optional message type. Default behavior is `threads.add_user_message`.
+        text:
+          type: string
+          description: >
+            User text for `threads.add_user_message`.
+            For `threads.custom_action`, this value is treated as `action_type`.
+        payload:
+          $ref: '#/components/schemas/OrchestratorCustomActionPayload'
       required: [id, text]
+
+    OrchestratorCustomActionPayload:
+      type: object
+      description: >
+        Optional payload for `message.type=threads.custom_action`.
+        Extraction order: `input` -> `form` -> `form_data` -> `fields` -> fallback top-level keys.
+        Wrapper keys are flattened, scalar strings are coerced to native types when safe
+        (`true`/`false`, numeric literals, `null`), and `documents` payload passes through unchanged.
+        Normalized fields are materialized into workflow inputs as `inputs.*`.
+      properties:
+        input: { type: object }
+        form: { type: object }
+        form_data: { type: object }
+        fields: { type: object }
+        state_exclude_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
+        output_include_paths:
+          type: array
+          description: Optional projection controls validated with the same rules as run start payload.
+          items:
+            $ref: '#/components/schemas/ProjectionPath'
+      additionalProperties: true
 
     OrchestratorMessageRequest:
       type: object
+      description: >
+        Unified routing request for direct or orchestrated mode.
+        `message.type=threads.custom_action` is additive and optional.
       properties:
         session_id: { type: string }
         user_id: { type: string }
@@ -1539,6 +1775,60 @@ components:
           items: { type: string }
       required: [type, text]
 
+    OrchestratorDecisionTraceCandidate:
+      type: object
+      properties:
+        workflow_id: { type: string }
+        score:
+          type: number
+          nullable: true
+        reason_codes:
+          type: array
+          items: { type: string }
+      required: [workflow_id, reason_codes]
+
+    OrchestratorDecisionTrace:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [direct, orchestrated]
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrchestratorDecisionTraceCandidate'
+        selected_action: { type: string }
+        selected_workflow_id:
+          type: string
+          nullable: true
+        reason_codes:
+          type: array
+          items: { type: string }
+        selection_reason:
+          type: string
+        switch_from_workflow_id:
+          type: string
+          nullable: true
+        switch_to_workflow_id:
+          type: string
+          nullable: true
+        switch_reason:
+          type: string
+          nullable: true
+      required: [mode, candidates, selected_action, reason_codes, selection_reason]
+
+    OrchestratorActionError:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+        category:
+          type: string
+          enum: [route, action]
+        action: { type: string }
+      required: [code, message, retryable, category, action]
+
     OrchestratorMessageResponse:
       type: object
       properties:
@@ -1566,6 +1856,12 @@ components:
           maximum: 1
         decision:
           $ref: '#/components/schemas/RoutingDecision'
+        decision_trace:
+          $ref: '#/components/schemas/OrchestratorDecisionTrace'
+        action_error:
+          allOf:
+            - $ref: '#/components/schemas/OrchestratorActionError'
+          nullable: true
         message:
           $ref: '#/components/schemas/OrchestratorResponseMessage'
         events:
@@ -1579,6 +1875,137 @@ components:
         correlation_id: { type: string }
       required: [decision_id, mode, chosen_action, message]
 
+    OrchestratorEvalReplayCase:
+      type: object
+      properties:
+        case_id:
+          type: string
+          nullable: true
+        message_text: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+        active_workflow_id:
+          type: string
+          nullable: true
+        expected_action:
+          type: string
+          nullable: true
+        expected_workflow_id:
+          type: string
+          nullable: true
+      required: [message_text]
+
+    OrchestratorEvalReplayRequest:
+      type: object
+      properties:
+        project_id: { type: string }
+        orchestrator_id:
+          type: string
+          nullable: true
+        session_id:
+          type: string
+          nullable: true
+        user_id:
+          type: string
+          nullable: true
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrchestratorEvalReplayCase'
+      required: [project_id, cases]
+
+    OrchestratorEvalReplayMetrics:
+      type: object
+      properties:
+        cases_with_expected_action: { type: integer }
+        cases_with_expected_workflow: { type: integer }
+        cases_with_exact_expectations: { type: integer }
+        matched_action: { type: integer }
+        matched_workflow_id: { type: integer }
+        matched_exact: { type: integer }
+        action_accuracy:
+          type: number
+          nullable: true
+        workflow_accuracy:
+          type: number
+          nullable: true
+        exact_match_rate:
+          type: number
+          nullable: true
+        average_confidence: { type: number }
+      required:
+        - cases_with_expected_action
+        - cases_with_expected_workflow
+        - cases_with_exact_expectations
+        - matched_action
+        - matched_workflow_id
+        - matched_exact
+        - average_confidence
+
+    OrchestratorEvalReplayCaseResult:
+      type: object
+      properties:
+        case_id: { type: string }
+        message_text: { type: string }
+        expected_action:
+          type: string
+          nullable: true
+        expected_workflow_id:
+          type: string
+          nullable: true
+        chosen_action: { type: string }
+        chosen_workflow_id:
+          type: string
+          nullable: true
+        confidence: { type: number }
+        decision:
+          $ref: '#/components/schemas/RoutingDecision'
+        decision_trace:
+          $ref: '#/components/schemas/OrchestratorDecisionTrace'
+        action_error:
+          allOf:
+            - $ref: '#/components/schemas/OrchestratorActionError'
+          nullable: true
+        matched_action:
+          type: boolean
+          nullable: true
+        matched_workflow_id:
+          type: boolean
+          nullable: true
+        matched_exact:
+          type: boolean
+          nullable: true
+        latency_ms: { type: integer }
+      required:
+        - case_id
+        - message_text
+        - chosen_action
+        - confidence
+        - decision
+        - decision_trace
+        - latency_ms
+
+    OrchestratorEvalReplayResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [offline_eval]
+        project_id: { type: string }
+        orchestrator_id: { type: string }
+        session_id: { type: string }
+        user_id: { type: string }
+        total_cases: { type: integer }
+        metrics:
+          $ref: '#/components/schemas/OrchestratorEvalReplayMetrics'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrchestratorEvalReplayCaseResult'
+        correlation_id: { type: string }
+      required: [mode, project_id, orchestrator_id, session_id, user_id, total_cases, metrics, items]
+
     WorkflowStackResponse:
       type: object
       properties:
@@ -1590,6 +2017,70 @@ components:
             $ref: '#/components/schemas/WorkflowStackItem'
         correlation_id: { type: string }
       required: [project_id, session_id, items]
+
+    OrchestratorContextScope:
+      type: string
+      enum: [session, thread]
+
+    OrchestratorContextGetRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        keys:
+          type: array
+          items: { type: string }
+      required: [scope, scope_id]
+
+    OrchestratorContextSetRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        values:
+          type: object
+          additionalProperties: true
+      required: [scope, scope_id, values]
+
+    OrchestratorContextUnsetRequest:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        keys:
+          type: array
+          items: { type: string }
+      required: [scope, scope_id, keys]
+
+    OrchestratorContextResponse:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/OrchestratorContextScope'
+        scope_id: { type: string }
+        project_id:
+          type: string
+          nullable: true
+        context:
+          type: object
+          additionalProperties: true
+        removed_keys:
+          type: array
+          items: { type: string }
+        correlation_id: { type: string }
+      required: [scope, scope_id, context]
 
     ProjectCreateRequest:
       type: object
@@ -1604,6 +2095,14 @@ components:
         settings:
           type: object
       required: [project_id, project_name]
+
+    ProjectUpdateRequest:
+      type: object
+      properties:
+        project_name:
+          type: string
+          description: Human-readable project display name.
+      required: [project_name]
 
     Project:
       type: object
@@ -1687,7 +2186,7 @@ components:
         orchestrator_id: { type: string }
         name: { type: string }
         routing_policy:
-          type: object
+          $ref: '#/components/schemas/RoutingPolicy'
         fallback_workflow_id:
           type: string
           nullable: true
@@ -1705,7 +2204,7 @@ components:
         orchestrator_id: { type: string }
         name: { type: string }
         routing_policy:
-          type: object
+          $ref: '#/components/schemas/RoutingPolicy'
         fallback_workflow_id:
           type: string
           nullable: true
@@ -1715,6 +2214,44 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [project_id, orchestrator_id, name, routing_policy, created_at, updated_at]
+
+    RoutingPolicy:
+      type: object
+      properties:
+        confidence_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        switch_margin:
+          type: number
+          minimum: 0
+          maximum: 1
+        max_disambiguation_turns:
+          type: integer
+          minimum: 0
+        top_k_candidates:
+          type: integer
+          minimum: 1
+          maximum: 100
+        sticky:
+          type: boolean
+          description: Keep active workflow unless explicit switch intent is detected.
+        allow_switch:
+          type: boolean
+          description: Global switch gate; when false, orchestrator will continue active workflow.
+        explicit_switch_only:
+          type: boolean
+          description: Switch is allowed only when user message explicitly requests switching.
+        cooldown_seconds:
+          type: integer
+          minimum: 0
+          description: Minimum seconds between successful workflow switches.
+        hysteresis_margin:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Additional margin added to `switch_margin` to reduce route flipping.
+      additionalProperties: true
 
     WorkflowDefinitionUpsertRequest:
       type: object
@@ -1834,7 +2371,10 @@ components:
           description: >
             Node-specific config object. For `set_state` nodes, use either legacy
             single assignment fields (`target`, `expression`) or batch
-            assignments via `assignments[]`.
+            assignments via `assignments[]`. For `integration_http` nodes configure
+            external API call settings and response mapping. Runtime egress policy
+            (allowed hosts/schemes/private-network guardrails) is controlled via
+            server environment (`INTEGRATION_HTTP_ALLOWED_*`).
           properties:
             target:
               type: string
@@ -1853,6 +2393,49 @@ components:
             capability_version:
               type: string
               description: Optional capability contract version pinned for this node execution.
+            url:
+              type: string
+              description: integration_http endpoint URL.
+            method:
+              type: string
+              enum: [GET, POST, PUT, PATCH, DELETE]
+            headers:
+              type: object
+              additionalProperties: { type: string }
+            auth:
+              type: object
+              properties:
+                type: { type: string, enum: [none, bearer, basic] }
+                token: { type: string }
+                token_env: { type: string }
+                username: { type: string }
+                password: { type: string }
+                username_env: { type: string }
+                password_env: { type: string }
+              additionalProperties: true
+            timeout_s:
+              type: number
+              minimum: 0.1
+            retry_attempts:
+              type: integer
+              minimum: 0
+            retry_backoff_s:
+              type: number
+              minimum: 0
+            request_body_expression:
+              type: string
+            response_state_target:
+              type: string
+            response_body_state_target:
+              type: string
+            fail_on_status:
+              type: boolean
+            allowed_statuses:
+              type: array
+              items:
+                type: integer
+                minimum: 100
+                maximum: 599
       required: [id, type]
 
     WorkflowEdge:
@@ -2254,6 +2837,9 @@ components:
             project_workflow_definition_upsert_template: { type: string }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
+            orchestrator_context_get: { type: string, format: uri }
+            orchestrator_context_set: { type: string, format: uri }
+            orchestrator_context_unset: { type: string, format: uri }
             handoff_create: { type: string, format: uri }
             handoff_replay_template: { type: string }
             run_ledger_template: { type: string }
@@ -2309,6 +2895,9 @@ components:
             project_workflow_definition_upsert_template: { type: string }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
+            orchestrator_context_get: { type: string, format: uri }
+            orchestrator_context_set: { type: string, format: uri }
+            orchestrator_context_unset: { type: string, format: uri }
             handoff_create: { type: string, format: uri }
             handoff_replay_template: { type: string }
             run_ledger_template: { type: string }

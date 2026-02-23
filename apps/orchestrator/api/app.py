@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import uuid
@@ -48,7 +49,13 @@ from apps.orchestrator.api.workflow_store import (
     create_workflow_store,
     no_inline_projection_defaults,
 )
-from apps.orchestrator.executors import AGENTS_AVAILABLE, AgentExecutor, MockAgentExecutor
+from apps.orchestrator.executors import (
+    AGENTS_AVAILABLE,
+    AgentExecutor,
+    IntegrationHTTPEgressPolicy,
+    IntegrationHTTPExecutor,
+    MockAgentExecutor,
+)
 from apps.orchestrator.orchestrator_runtime import (
     OrchestratorRuntimeError,
     ProjectConflictError,
@@ -155,6 +162,7 @@ def validate_runtime_security_env() -> None:
         "WORKCORE_API_AUTH_TOKEN",
         "WEBHOOK_DEFAULT_INBOUND_SECRET",
         "CORS_ALLOW_ORIGINS",
+        "INTEGRATION_HTTP_ALLOWED_HOSTS",
     )
     for name in required:
         if not (get_env(name) or "").strip():
@@ -169,6 +177,26 @@ def validate_runtime_security_env() -> None:
             "CORS_ALLOW_ORIGINS must not contain '*' for secure startup; "
             "set explicit origins or use WORKCORE_ALLOW_INSECURE_DEV=1 temporarily"
         )
+
+    allowed_hosts = get_env("INTEGRATION_HTTP_ALLOWED_HOSTS", "") or ""
+    host_rules = [item.strip() for item in allowed_hosts.split(",") if item.strip()]
+    if any(rule == "*" for rule in host_rules):
+        raise RuntimeError(
+            "INTEGRATION_HTTP_ALLOWED_HOSTS must not contain bare '*' for secure startup; "
+            "use explicit hostnames or wildcard subdomains (for example '*.example.com')"
+        )
+
+    deny_cidrs_raw = get_env("INTEGRATION_HTTP_DENY_CIDRS", "") or ""
+    for raw_item in deny_cidrs_raw.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        try:
+            ipaddress.ip_network(item, strict=False)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"INTEGRATION_HTTP_DENY_CIDRS contains invalid CIDR value '{item}'"
+            ) from exc
 
 
 class ApiContext:
@@ -266,7 +294,11 @@ class ApiContext:
                 )
 
             executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").strip().lower()
-            executors: Dict[str, Any] = {"agent_mock": MockAgentExecutor()}
+            integration_http_policy = IntegrationHTTPEgressPolicy.from_env(get_env)
+            executors: Dict[str, Any] = {
+                "agent_mock": MockAgentExecutor(),
+                "integration_http": IntegrationHTTPExecutor(egress_policy=integration_http_policy),
+            }
             if AGENTS_AVAILABLE:
                 executors["agent_live"] = AgentExecutor()
 
@@ -814,6 +846,21 @@ def create_app(
                         errors.append(
                             f"draft.nodes[{idx}] set_state requires target+expression or non-empty assignments[]"
                         )
+            if node_type == "integration_http":
+                if node_config is None:
+                    node_config = {}
+                if not isinstance(node_config, dict):
+                    errors.append(f"draft.nodes[{idx}].config must be an object for integration_http")
+                    continue
+                url = node_config.get("url")
+                if not isinstance(url, str) or not url.strip():
+                    errors.append(f"draft.nodes[{idx}].config.url is required for integration_http")
+                method = node_config.get("method")
+                if method is not None:
+                    if not isinstance(method, str) or method.strip().upper() not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+                        errors.append(
+                            f"draft.nodes[{idx}].config.method must be one of GET, POST, PUT, PATCH, DELETE"
+                        )
 
         for idx, edge in enumerate(edges_raw):
             if not isinstance(edge, dict):
@@ -980,6 +1027,62 @@ def create_app(
             request,
             {"items": [project_to_dict(project) for project in projects], "next_cursor": None},
         )
+
+    async def update_project(request: Request) -> JSONResponse:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+        project_id = str(request.path_params.get("project_id") or "").strip()
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+        project_name_raw = payload.get("project_name")
+        if not isinstance(project_name_raw, str) or not project_name_raw.strip():
+            return _error(request, "INVALID_ARGUMENT", "project_name is required", 400)
+
+        await ctx.ensure_orchestration()
+        if ctx.orchestration_store is None:
+            return _error(request, "INTERNAL", "orchestration store is unavailable", 500)
+
+        tenant = _tenant_id(request)
+        project = await ctx.orchestration_store.update_project(
+            project_id=project_id,
+            tenant_id=tenant,
+            project_name=project_name_raw.strip(),
+        )
+        if project is None:
+            return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)
+        return _json(request, project_to_dict(project))
+
+    async def delete_project(request: Request) -> Response:
+        project_id = str(request.path_params.get("project_id") or "").strip()
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+
+        await ctx.ensure_orchestration()
+        if ctx.orchestration_store is None:
+            return _error(request, "INTERNAL", "orchestration store is unavailable", 500)
+
+        await ctx.ensure_workflow_store()
+        if ctx.workflow_store is None:
+            return _error(request, "INTERNAL", "workflow store is unavailable", 500)
+
+        tenant = _tenant_id(request)
+        project = await ctx.orchestration_store.get_project(project_id, tenant_id=tenant)
+        if project is None:
+            return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)
+
+        workflows = await ctx.workflow_store.list_workflows(
+            limit=1,
+            tenant_id=tenant,
+            project_id=project_id,
+        )
+        if workflows:
+            return _error(request, "ERR_PROJECT_NOT_EMPTY", "project has workflows", 409)
+
+        deleted = await ctx.orchestration_store.delete_project(project_id=project_id, tenant_id=tenant)
+        if not deleted:
+            return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)
+        return Response(status_code=204)
 
     def _require_string_list(payload: Dict[str, Any], field: str) -> list[str]:
         raw = payload.get(field)
@@ -1839,6 +1942,25 @@ def create_app(
             {"items": [run_ledger_entry_to_dict(entry) for entry in entries], "next_cursor": None},
         )
 
+    def _parse_context_scope_payload(payload: Any) -> tuple[str, str, Optional[str]]:
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be an object")
+        scope_raw = payload.get("scope")
+        scope = scope_raw.strip().lower() if isinstance(scope_raw, str) else ""
+        if scope not in {"session", "thread"}:
+            raise ValueError("scope must be one of: session, thread")
+        scope_id_raw = payload.get("scope_id")
+        scope_id = scope_id_raw.strip() if isinstance(scope_id_raw, str) else ""
+        if not scope_id:
+            raise ValueError("scope_id is required")
+        project_id_raw = payload.get("project_id")
+        project_id: Optional[str] = None
+        if project_id_raw is not None:
+            if not isinstance(project_id_raw, str) or not project_id_raw.strip():
+                raise ValueError("project_id must be a non-empty string or null")
+            project_id = project_id_raw.strip()
+        return scope, scope_id, project_id
+
     async def orchestrator_message(request: Request) -> Response:
         async def _message_impl() -> Response:
             payload = await request.json()
@@ -1853,6 +1975,9 @@ def create_app(
             metadata["project_id"] = routed_request.project_id
             metadata["session_id"] = routed_request.session_id
             metadata["user_id"] = routed_request.user_id
+            metadata["message_type"] = routed_request.message_type
+            if routed_request.action_type:
+                metadata["action_type"] = routed_request.action_type
 
             tenant = _tenant_id(request)
             try:
@@ -1893,6 +2018,254 @@ def create_app(
         except Exception as exc:
             return _error(request, "INTERNAL", str(exc), 500)
         return _json(request, payload)
+
+    async def orchestrator_eval_replay(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception:
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+        if not isinstance(payload, dict):
+            return _error(request, "INVALID_ARGUMENT", "request body must be an object", 400)
+
+        project_id_raw = payload.get("project_id")
+        if not isinstance(project_id_raw, str) or not project_id_raw.strip():
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+        project_id = project_id_raw.strip()
+
+        orchestrator_id_raw = payload.get("orchestrator_id")
+        if orchestrator_id_raw is not None and (
+            not isinstance(orchestrator_id_raw, str) or not orchestrator_id_raw.strip()
+        ):
+            return _error(
+                request,
+                "INVALID_ARGUMENT",
+                "orchestrator_id must be a non-empty string or null",
+                400,
+            )
+        orchestrator_id = orchestrator_id_raw.strip() if isinstance(orchestrator_id_raw, str) else None
+
+        session_id_raw = payload.get("session_id")
+        if session_id_raw is None:
+            session_id = "eval_session"
+        elif isinstance(session_id_raw, str) and session_id_raw.strip():
+            session_id = session_id_raw.strip()
+        else:
+            return _error(request, "INVALID_ARGUMENT", "session_id must be a non-empty string", 400)
+
+        user_id_raw = payload.get("user_id")
+        if user_id_raw is None:
+            user_id = "eval_user"
+        elif isinstance(user_id_raw, str) and user_id_raw.strip():
+            user_id = user_id_raw.strip()
+        else:
+            return _error(request, "INVALID_ARGUMENT", "user_id must be a non-empty string", 400)
+
+        cases_raw = payload.get("cases")
+        if not isinstance(cases_raw, list) or not cases_raw:
+            return _error(request, "INVALID_ARGUMENT", "cases must be a non-empty array", 400)
+        if len(cases_raw) > 1000:
+            return _error(request, "INVALID_ARGUMENT", "cases must contain at most 1000 items", 400)
+
+        cases: list[dict[str, Any]] = []
+        for index, raw_case in enumerate(cases_raw):
+            if not isinstance(raw_case, dict):
+                return _error(request, "INVALID_ARGUMENT", f"cases[{index}] must be an object", 400)
+
+            message_text = raw_case.get("message_text")
+            if not isinstance(message_text, str) or not message_text.strip():
+                return _error(
+                    request,
+                    "INVALID_ARGUMENT",
+                    f"cases[{index}].message_text must be a non-empty string",
+                    400,
+                )
+            normalized_case: dict[str, Any] = {
+                "case_id": raw_case.get("case_id"),
+                "message_text": message_text.strip(),
+            }
+
+            metadata_raw = raw_case.get("metadata")
+            if metadata_raw is not None:
+                if not isinstance(metadata_raw, dict):
+                    return _error(request, "INVALID_ARGUMENT", f"cases[{index}].metadata must be an object", 400)
+                normalized_case["metadata"] = dict(metadata_raw)
+
+            for optional_field in ("active_workflow_id", "expected_action", "expected_workflow_id"):
+                if optional_field not in raw_case:
+                    continue
+                value = raw_case.get(optional_field)
+                if value is None:
+                    normalized_case[optional_field] = None
+                    continue
+                if not isinstance(value, str) or not value.strip():
+                    return _error(
+                        request,
+                        "INVALID_ARGUMENT",
+                        f"cases[{index}].{optional_field} must be a non-empty string or null",
+                        400,
+                    )
+                normalized_case[optional_field] = value.strip()
+
+            cases.append(normalized_case)
+
+        tenant = _tenant_id(request)
+        try:
+            runtime = await _require_orchestration()
+            result = await runtime.evaluate_routing_replay(
+                project_id=project_id,
+                orchestrator_id=orchestrator_id,
+                session_id=session_id,
+                user_id=user_id,
+                cases=cases,
+                tenant_id=tenant,
+            )
+        except OrchestratorRuntimeError as exc:
+            return _error(request, exc.code, exc.message, exc.status_code)
+        except Exception as exc:
+            return _error(request, "INTERNAL", str(exc), 500)
+
+        return _json(request, result)
+
+    async def orchestrator_context_get(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            scope, scope_id, project_id = _parse_context_scope_payload(payload)
+            keys_raw = payload.get("keys")
+            keys: Optional[list[str]]
+            if keys_raw is None:
+                keys = None
+            else:
+                if not isinstance(keys_raw, list):
+                    return _error(request, "INVALID_ARGUMENT", "keys must be an array", 422)
+                keys = []
+                for idx, key_raw in enumerate(keys_raw):
+                    if not isinstance(key_raw, str) or not key_raw.strip():
+                        return _error(
+                            request,
+                            "INVALID_ARGUMENT",
+                            f"keys[{idx}] must be a non-empty string",
+                            422,
+                        )
+                    keys.append(key_raw.strip())
+            await ctx.ensure_orchestration()
+            if ctx.orchestration_store is None:
+                return _error(request, "INTERNAL", "orchestration store unavailable", 500)
+            tenant = _tenant_id(request)
+            context_payload = await ctx.orchestration_store.get_context_values(
+                scope,
+                scope_id,
+                tenant_id=tenant,
+                project_id=project_id,
+                keys=keys,
+            )
+        except ValueError as exc:
+            return _error(request, "INVALID_ARGUMENT", str(exc), 422)
+        except Exception as exc:
+            return _error(request, "INTERNAL", str(exc), 500)
+        return _json(
+            request,
+            {
+                "scope": scope,
+                "scope_id": scope_id,
+                "project_id": project_id,
+                "context": context_payload,
+                "removed_keys": [],
+            },
+        )
+
+    async def orchestrator_context_set(request: Request) -> Response:
+        async def _set_impl() -> Response:
+            try:
+                payload = await request.json()
+                scope, scope_id, project_id = _parse_context_scope_payload(payload)
+                values_raw = payload.get("values")
+                if not isinstance(values_raw, dict):
+                    return _error(request, "INVALID_ARGUMENT", "values must be an object", 422)
+                values = {
+                    str(key): value
+                    for key, value in values_raw.items()
+                    if isinstance(key, str) and key.strip()
+                }
+                await ctx.ensure_orchestration()
+                if ctx.orchestration_store is None:
+                    return _error(request, "INTERNAL", "orchestration store unavailable", 500)
+                tenant = _tenant_id(request)
+                context_payload = await ctx.orchestration_store.set_context_values(
+                    scope,
+                    scope_id,
+                    values=values,
+                    tenant_id=tenant,
+                    project_id=project_id,
+                )
+            except ValueError as exc:
+                return _error(request, "INVALID_ARGUMENT", str(exc), 422)
+            except Exception as exc:
+                return _error(request, "INTERNAL", str(exc), 500)
+            return _json(
+                request,
+                {
+                    "scope": scope,
+                    "scope_id": scope_id,
+                    "project_id": project_id,
+                    "context": context_payload,
+                    "removed_keys": [],
+                },
+            )
+
+        return await _idempotent(request, "orchestrator_context_set", _set_impl)
+
+    async def orchestrator_context_unset(request: Request) -> Response:
+        async def _unset_impl() -> Response:
+            try:
+                payload = await request.json()
+                scope, scope_id, project_id = _parse_context_scope_payload(payload)
+                keys_raw = payload.get("keys")
+                if not isinstance(keys_raw, list) or not keys_raw:
+                    return _error(request, "INVALID_ARGUMENT", "keys must be a non-empty array", 422)
+                keys: list[str] = []
+                for idx, key_raw in enumerate(keys_raw):
+                    if not isinstance(key_raw, str) or not key_raw.strip():
+                        return _error(
+                            request,
+                            "INVALID_ARGUMENT",
+                            f"keys[{idx}] must be a non-empty string",
+                            422,
+                        )
+                    keys.append(key_raw.strip())
+                await ctx.ensure_orchestration()
+                if ctx.orchestration_store is None:
+                    return _error(request, "INTERNAL", "orchestration store unavailable", 500)
+                tenant = _tenant_id(request)
+                removed = await ctx.orchestration_store.unset_context_keys(
+                    scope,
+                    scope_id,
+                    keys=keys,
+                    tenant_id=tenant,
+                    project_id=project_id,
+                )
+                context_payload = await ctx.orchestration_store.get_context_values(
+                    scope,
+                    scope_id,
+                    tenant_id=tenant,
+                    project_id=project_id,
+                    keys=None,
+                )
+            except ValueError as exc:
+                return _error(request, "INVALID_ARGUMENT", str(exc), 422)
+            except Exception as exc:
+                return _error(request, "INTERNAL", str(exc), 500)
+            return _json(
+                request,
+                {
+                    "scope": scope,
+                    "scope_id": scope_id,
+                    "project_id": project_id,
+                    "context": context_payload,
+                    "removed_keys": removed,
+                },
+            )
+
+        return await _idempotent(request, "orchestrator_context_unset", _unset_impl)
 
     async def cancel_run(request: Request) -> Response:
         run_id = request.path_params["run_id"]
@@ -2164,7 +2537,11 @@ def create_app(
                 f"{base_url}/projects/{{project_id}}/workflow-definitions"
             ),
             "orchestrator_message": f"{base_url}/orchestrator/messages",
+            "orchestrator_eval_replay": f"{base_url}/orchestrator/eval/replay",
             "orchestrator_stack_template": f"{base_url}/orchestrator/sessions/{{session_id}}/stack?project_id={{project_id}}",
+            "orchestrator_context_get": f"{base_url}/orchestrator/context/get",
+            "orchestrator_context_set": f"{base_url}/orchestrator/context/set",
+            "orchestrator_context_unset": f"{base_url}/orchestrator/context/unset",
             "handoff_create": f"{base_url}/handoff/packages",
             "handoff_replay_template": f"{base_url}/handoff/packages/{{handoff_id}}/replay",
             "run_ledger_template": f"{base_url}/runs/{{run_id}}/ledger",
@@ -2290,7 +2667,11 @@ def create_app(
             "/capabilities",
             "/capabilities/{capability_id}/versions",
             "/orchestrator/messages",
+            "/orchestrator/eval/replay",
             "/orchestrator/sessions/{session_id}/stack",
+            "/orchestrator/context/get",
+            "/orchestrator/context/set",
+            "/orchestrator/context/unset",
             "/handoff/packages",
             "/handoff/packages/{handoff_id}/replay",
             "/runs/{run_id}/ledger",
@@ -2536,7 +2917,11 @@ def create_app(
             f"- Project orchestrator upsert endpoint template: {urls['project_orchestrator_upsert_template']}",
             f"- Project workflow-definition upsert endpoint template: {urls['project_workflow_definition_upsert_template']}",
             f"- Orchestrator message endpoint: {urls['orchestrator_message']}",
+            f"- Orchestrator eval replay endpoint: {urls['orchestrator_eval_replay']}",
             f"- Orchestrator stack endpoint template: {urls['orchestrator_stack_template']}",
+            f"- Orchestrator context.get endpoint: {urls['orchestrator_context_get']}",
+            f"- Orchestrator context.set endpoint: {urls['orchestrator_context_set']}",
+            f"- Orchestrator context.unset endpoint: {urls['orchestrator_context_unset']}",
             f"- Atomic handoff endpoint: {urls['handoff_create']}",
             f"- Handoff replay endpoint template: {urls['handoff_replay_template']}",
             f"- Run ledger endpoint template: {urls['run_ledger_template']}",
@@ -2571,10 +2956,12 @@ def create_app(
             "8. Configure project orchestrator via `POST /projects/{project_id}/orchestrators`.",
             "9. Run integration checks and ensure status=PASS.",
             "10. For project routing, call `POST /orchestrator/messages` with `project_id`, `session_id`, `user_id`, and `message`.",
-            "11. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
-            "12. For deterministic package transfer, use `POST /handoff/packages` and replay via `/handoff/packages/{handoff_id}/replay`.",
-            "13. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...` and `GET /runs/{run_id}/ledger`.",
-            "14. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
+            "11. For offline routing quality checks, call `POST /orchestrator/eval/replay` with labeled cases.",
+            "12. Use context API (`/orchestrator/context/get|set|unset`) for thread/session context hydration.",
+            "13. For direct workflow mode, set `workflow_id` in the same orchestrator request.",
+            "14. For deterministic package transfer, use `POST /handoff/packages` and replay via `/handoff/packages/{handoff_id}/replay`.",
+            "15. For diagnostics, call `GET /orchestrator/sessions/{session_id}/stack?project_id=...` and `GET /runs/{run_id}/ledger`.",
+            "16. If checks fail, inspect `/agent-integration-logs` and fix by correlation/trace context.",
             "",
             "## Special instructions and examples",
             "- Keep tenant scope consistent: use the same `X-Tenant-Id` for `/projects`, project-registry bootstrap, and `/orchestrator/messages`.",
@@ -3002,6 +3389,8 @@ def create_app(
         Route("/agent-integration-logs", agent_integration_logs),
         Route("/projects", list_projects, methods=["GET"]),
         Route("/projects", create_project, methods=["POST"]),
+        Route("/projects/{project_id}", update_project, methods=["PATCH"]),
+        Route("/projects/{project_id}", delete_project, methods=["DELETE"]),
         Route("/projects/{project_id}/orchestrators", upsert_project_orchestrator, methods=["POST"]),
         Route("/projects/{project_id}/workflow-definitions", upsert_project_workflow_definition, methods=["POST"]),
         Route("/capabilities", create_capability, methods=["POST"]),
@@ -3018,7 +3407,11 @@ def create_app(
         Route("/workflows/{workflow_id}/versions", list_workflow_versions, methods=["GET"]),
         Route("/workflows/{workflow_id}/runs", start_run, methods=["POST"]),
         Route("/orchestrator/messages", orchestrator_message, methods=["POST"]),
+        Route("/orchestrator/eval/replay", orchestrator_eval_replay, methods=["POST"]),
         Route("/orchestrator/sessions/{session_id}/stack", orchestrator_stack, methods=["GET"]),
+        Route("/orchestrator/context/get", orchestrator_context_get, methods=["POST"]),
+        Route("/orchestrator/context/set", orchestrator_context_set, methods=["POST"]),
+        Route("/orchestrator/context/unset", orchestrator_context_unset, methods=["POST"]),
         Route("/handoff/packages", create_handoff_package, methods=["POST"]),
         Route("/handoff/packages/{handoff_id}/replay", replay_handoff_package, methods=["POST"]),
         Route("/runs", list_runs, methods=["GET"]),

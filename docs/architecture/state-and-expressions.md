@@ -5,6 +5,7 @@ Status: Draft
 
 ## State model
 - inputs: validated workflow inputs.
+- inputs.context: optional persisted session context injected by orchestrator routing layer.
 - state: mutable runtime state.
 - node_outputs: map of node_id -> output.
 - For document payloads, use artifact references (`artifact_ref`) as default content carrier.
@@ -29,6 +30,7 @@ Example:
 - state.intent == "refund"
 - inputs.customer_text != ""
 - node_outputs["n2"].score > 0.8
+- inputs.context['profile_id'] != ""
 
 ## Type validation
 - Start node validates inputs against variables_schema.

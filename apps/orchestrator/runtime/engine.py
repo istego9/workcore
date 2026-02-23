@@ -429,6 +429,51 @@ class OrchestratorEngine:
         if node_run:
             node_run.output = result.output
 
+    def _handle_integration_http(self, run: Run, node: Node, emit) -> None:
+        executor = self.executors.get("integration_http")
+        if not executor:
+            raise RuntimeError("integration_http executor not configured")
+
+        context = self._context(run)
+        resolved_config = dict(node.config or {})
+        url_raw = resolved_config.get("url")
+        if isinstance(url_raw, str) and url_raw:
+            resolved_config["url"] = self._render_template(url_raw, context)
+        headers_raw = resolved_config.get("headers")
+        if isinstance(headers_raw, dict):
+            resolved_headers: Dict[str, str] = {}
+            for key, value in headers_raw.items():
+                if value is None:
+                    continue
+                rendered = self._render_template(str(value), context)
+                resolved_headers[str(key)] = rendered
+            resolved_config["headers"] = resolved_headers
+
+        request_body_expression = resolved_config.get("request_body_expression")
+        if request_body_expression is not None:
+            if not isinstance(request_body_expression, str) or not request_body_expression.strip():
+                raise RuntimeError("integration_http request_body_expression must be a non-empty string")
+            resolved_config["request_body"] = self._eval(request_body_expression, context)
+
+        resolved_node = Node(node.id, node.type, resolved_config)
+        result = executor(run, resolved_node, emit)
+        run.node_outputs[node.id] = result.output
+
+        response_state_target = resolved_config.get("response_state_target")
+        if isinstance(response_state_target, str) and response_state_target.strip():
+            self._set_path(run.state, response_state_target.strip(), deepcopy(result.output))
+
+        response_body_state_target = resolved_config.get("response_body_state_target")
+        if isinstance(response_body_state_target, str) and response_body_state_target.strip():
+            body_value = result.output
+            if isinstance(result.output, dict) and "body" in result.output:
+                body_value = result.output.get("body")
+            self._set_path(run.state, response_body_state_target.strip(), deepcopy(body_value))
+
+        node_run = run.node_runs.get(node.id)
+        if node_run:
+            node_run.output = result.output
+
     def _merge_agent_output_into_state(self, run: Run, node: Node, output: Any) -> None:
         state_target = node.config.get("state_target")
         if isinstance(state_target, str) and state_target.strip():

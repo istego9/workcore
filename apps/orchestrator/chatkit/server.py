@@ -23,6 +23,7 @@ from chatkit.types import (
 from apps.orchestrator.runtime.models import Interrupt, Run
 
 from .context import ChatKitContext
+from .custom_actions import normalize_custom_action_payload, resolve_canonical_action_type
 from .widgets import (
     APPROVE_ACTION,
     CANCEL_ACTION,
@@ -96,6 +97,12 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         context: ChatKitContext,
     ) -> AsyncIterator[ThreadStreamEvent]:
         payload = action.payload or {}
+        canonical_action_type = resolve_canonical_action_type(action.type, payload)
+        if not canonical_action_type:
+            yield ErrorEvent(message="unsupported action", allow_retry=False)
+            return
+        payload = dict(payload)
+        payload.setdefault("action_type", canonical_action_type)
         run_id = payload.get("run_id") or thread.metadata.get("run_id")
         interrupt_id = payload.get("interrupt_id")
 
@@ -121,29 +128,33 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
             yield NoticeEvent(level="info", message="Interrupt already resolved")
             return
 
-        idempotency = context.idempotency
-        scope = "chatkit_action"
-        idempotency_key = payload.get("idempotency_key") or payload.get("action_id")
-        if not idempotency_key:
-            idempotency_key = f"{run_id}:{interrupt_id}:{action.type}"
-        if idempotency:
-            started = await idempotency.start(idempotency_key, scope, tenant_id=context.tenant_id)
-            if not started:
-                yield NoticeEvent(level="info", message="Action already processed")
-                return
-
-        if action.type == APPROVE_ACTION:
+        if canonical_action_type == APPROVE_ACTION:
             input_data = {"approved": True}
-        elif action.type == REJECT_ACTION:
+        elif canonical_action_type == REJECT_ACTION:
             input_data = {"approved": False}
-        elif action.type == SUBMIT_ACTION:
-            input_data = self._input_from_payload(payload)
-        elif action.type == CANCEL_ACTION:
+        elif canonical_action_type == SUBMIT_ACTION:
+            try:
+                input_data = self._input_from_payload(payload)
+            except ValueError as exc:
+                yield ErrorEvent(message=str(exc), allow_retry=False)
+                return
+        elif canonical_action_type == CANCEL_ACTION:
             yield ErrorEvent(message="interrupt cancel is not supported", allow_retry=False)
             return
         else:
             yield ErrorEvent(message="unsupported action", allow_retry=False)
             return
+
+        idempotency = context.idempotency
+        scope = "chatkit_action"
+        idempotency_key = payload.get("idempotency_key") or payload.get("action_id")
+        if not idempotency_key:
+            idempotency_key = f"{run_id}:{interrupt_id}:{canonical_action_type}"
+        if idempotency:
+            started = await idempotency.start(idempotency_key, scope, tenant_id=context.tenant_id)
+            if not started:
+                yield NoticeEvent(level="info", message="Action already processed")
+                return
 
         files = payload.get("files")
         try:
@@ -340,19 +351,7 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
 
     @staticmethod
     def _input_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-        if isinstance(payload.get("input"), dict):
-            return payload["input"]
-        if isinstance(payload.get("form"), dict):
-            return payload["form"]
-        if isinstance(payload.get("form_data"), dict):
-            return payload["form_data"]
-        if isinstance(payload.get("fields"), dict):
-            return payload["fields"]
-        return {
-            key: value
-            for key, value in payload.items()
-            if key not in {"run_id", "interrupt_id", "files"}
-        }
+        return normalize_custom_action_payload(payload)
 
     @staticmethod
     def _files_from_message(message: UserMessageItem) -> List[Dict[str, Any]]:
