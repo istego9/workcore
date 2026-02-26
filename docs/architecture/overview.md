@@ -20,6 +20,7 @@ Status: Draft (Phase 0)
 - Webhooks Service: inbound triggers and outbound callbacks.
 - ChatKit Server: advanced integration, sessions/threads, widgets/actions.
 - Chat Frontend Shell: legacy ChatKit embed + optional forked chat UI (feature-flagged).
+- MCP Bridge Service: internal authenticated HTTP bridge for MCP node execution.
 - Integrations Layer: Agents SDK executor, MCP client, object storage.
 
 ## Core entities and IDs
@@ -65,6 +66,7 @@ Ordering guarantees:
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*
 - ChatKit Server: chat sessions/threads, widget/actions endpoints
 - Chat Frontend Shell: render chat timeline/composer/widgets over `/chatkit` contract
+- MCP Bridge Service: internal `/internal/mcp/call` + `/health`
 
 ## Persistence and storage
 - Postgres is the source of truth for workflow metadata, versions, runs, node_runs, interrupts, and delivery logs.
@@ -115,3 +117,4 @@ Ordering guarantees:
 - ADR-0007: Runtime run-state is persisted in Postgres.
 - ADR-0009: Artifact-reference defaults and run projection rollout.
 - ADR-0010: Frontend ChatKit fork boundary and compatibility strategy.
+- ADR-0011: Internal MCP HTTP bridge for runtime MCP execution.

@@ -131,6 +131,20 @@ Low-confidence handling:
   - hostname targets are DNS-resolved and resolved IPs are checked against private/local policies
   - optional CIDR deny overlay is enforced from `INTEGRATION_HTTP_DENY_CIDRS`
 
+## MCP bridge execution path
+- Node type: `mcp`
+- Runtime execution path:
+  - runtime -> `MCPExecutor` -> internal MCP bridge HTTP endpoint (`POST /internal/mcp/call`)
+  - bridge validates payload/auth and delegates to configured upstream tool transport
+- Required bridge client env for API/ChatKit runtime:
+  - `MCP_BRIDGE_BASE_URL`
+  - optional `MCP_BRIDGE_AUTH_TOKEN`
+- Bridge service auth:
+  - set `MCP_BRIDGE_AUTH_TOKEN` on bridge service and runtime clients to enforce bearer auth.
+- Fallback behavior:
+  - if bridge base URL is not configured, `mcp` nodes fail with explicit configuration error.
+  - non-`mcp` nodes continue to execute normally.
+
 ## Async runtime service boundary
 - Runtime service async entrypoints (`start_run`, `resume_interrupt`, `rerun_node`) offload blocking engine execution loops to worker threads.
 - Goal: keep API/chat event loop responsive even when node executors perform blocking network I/O or backoff sleeps.
@@ -153,6 +167,17 @@ Low-confidence handling:
 - Runtime validates pinned capability reference against tenant-scoped capability registry.
 - If capability pin is missing in registry, run start fails with explicit validation error.
 - Capability bindings are attached to run metadata to make chosen capability/version visible in downstream observability.
+- For data source nodes (`mcp`, `integration_http`) runtime can apply additive capability defaults from:
+  - `contract.constraints.mcp_defaults`
+  - `contract.constraints.integration_http_defaults`
+  - compatibility internal key: `contract.data_source_defaults.{mcp|integration_http}`
+- Default precedence:
+  - explicit `node.config` values
+  - capability defaults
+  - executor/runtime defaults
+- Secret guardrail:
+  - capability defaults must not include inline secret values (for example auth `token`, `password`, `username`);
+  - only env-reference fields (for example `*_env`) are allowed for secrets.
 
 ## Document payload mode and projections
 - Document page content should be provided via `documents[].pages[].artifact_ref` by default.

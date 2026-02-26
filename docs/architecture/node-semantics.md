@@ -49,8 +49,15 @@ Status: Draft
 
 ## MCP
 - Executed via self-hosted MCP client.
+- Default transport is internal MCP bridge (`POST /internal/mcp/call`).
+- If bridge is not configured, node fails with explicit configuration error.
 - Tool allowlist and auth via secrets manager.
 - Output is normalized to JSON and stored in node_runs.output.
+- Capability pin defaults:
+  - missing config fields may be filled from `contract.constraints.mcp_defaults`
+    (or compatibility key `contract.data_source_defaults.mcp`).
+  - explicit node config always wins.
+  - inline secret defaults are not allowed; only env refs (`*_env`) are allowed.
 
 ## Integration HTTP
 - Executes direct HTTP request from runtime (non-MCP).
@@ -58,6 +65,11 @@ Status: Draft
 - Optional request body can be produced from expression context (`inputs`, `state`, `node_outputs`).
 - Response envelope is stored in `node_runs.output` / `node_outputs[node_id]`.
 - Optional config paths can write response envelope/body into run state.
+- Capability pin defaults:
+  - missing config fields may be filled from `contract.constraints.integration_http_defaults`
+    (or compatibility key `contract.data_source_defaults.integration_http`).
+  - explicit node config always wins.
+  - inline secret defaults are not allowed; only env refs (`*_env`) are allowed.
 
 ## Output
 - Produces final run output (text or JSON).

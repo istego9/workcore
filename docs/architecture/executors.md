@@ -36,9 +36,14 @@ Status: Draft
 
 ## MCP executor
 - Uses a self-hosted MCP client via `call_tool`.
+- Default runtime wiring uses `MCPBridgeHttpClient` and calls internal bridge endpoint:
+  - `POST /internal/mcp/call`
+- Bridge client env:
+  - `MCP_BRIDGE_BASE_URL` (required for live MCP calls)
+  - `MCP_BRIDGE_AUTH_TOKEN` (optional bearer token, recommended)
 - Enforces allowlist per node or workflow.
 - Emits `tool_called` events for observability.
-- If no MCP executor is wired into runtime, MCP nodes fail with `MCP executor not configured`.
+- If bridge is not configured, MCP nodes fail with explicit configuration error and other node types continue to run.
 
 ## Integration HTTP executor
 - Executes direct HTTP requests for `integration_http` nodes.
@@ -55,6 +60,19 @@ Status: Draft
   - optional explicit CIDR deny overlay via `INTEGRATION_HTTP_DENY_CIDRS`
   - host rules support exact host and wildcard subdomain patterns (`*.example.com`)
 - If no integration HTTP executor is wired, `integration_http` nodes fail with `integration_http executor not configured`.
+
+## Capability defaults for data source nodes
+- Runtime can apply additive defaults from capability contracts for `mcp` and `integration_http`:
+  - `contract.constraints.mcp_defaults`
+  - `contract.constraints.integration_http_defaults`
+  - compatibility key: `contract.data_source_defaults.{mcp|integration_http}`
+- Precedence is deterministic:
+  - explicit `node.config` wins
+  - capability defaults fill missing fields only
+  - executor/runtime defaults apply last
+- Security rule:
+  - inline secrets are rejected in capability defaults (`token`, `password`, `username`);
+  - only env-backed references (`*_env`) are allowed.
 
 ## Runtime execution isolation
 - Runtime service entrypoints execute blocking engine loops in a worker thread to avoid stalling the main asyncio event loop.

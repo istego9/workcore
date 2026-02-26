@@ -16,7 +16,9 @@ Workflow execution API/runtime service (`apps/orchestrator`), including run stat
    - `curl -fsS http://127.0.0.1:8001/health`
 3. Builder local UI (if full dev stack):
    - `curl -fsS http://127.0.0.1:5183/`
-4. Colima storage health (local Docker on Colima):
+4. MCP bridge health (if MCP nodes are used):
+   - `curl -fsS http://127.0.0.1:8002/health`
+5. Colima storage health (local Docker on Colima):
    - `./scripts/colima_storage_check.sh`
 
 ## Logs to inspect
@@ -48,6 +50,7 @@ Tail commands:
 5. Idempotency conflicts on repeated run/action requests
 6. Colima VM ext4 storage issues (`/dev/vdb1`), which can surface as Postgres I/O errors
    - Example: `could not open file "global/pg_filenode.map": I/O error`
+7. MCP bridge misconfiguration (`MCP_BRIDGE_BASE_URL` missing in runtime or bridge upstream not configured)
 
 ## Remediation steps
 1. If Colima storage check fails, repair ext4 metadata and restart VM:
@@ -58,7 +61,10 @@ Tail commands:
    - `./scripts/dev_restart.sh`
 4. Re-run smoke checks:
    - `./scripts/dev_check.sh`
-5. Validate problematic workflow via API docs/schema and republish if needed.
+5. Validate MCP bridge env when MCP nodes fail:
+   - API/ChatKit runtime: `MCP_BRIDGE_BASE_URL`, `MCP_BRIDGE_AUTH_TOKEN`
+   - MCP bridge service: `MCP_BRIDGE_UPSTREAM_CALL_URL`, optional allowlists
+6. Validate problematic workflow via API docs/schema and republish if needed.
 
 ## Verification
 - Create/publish a smoke workflow.
