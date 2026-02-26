@@ -9,6 +9,7 @@ export const NODE_PALETTE: Array<{ type: NodeType; label: string; description: s
   { type: 'start', label: 'Start', description: 'Inputs and schema', tone: 'slate' },
   { type: 'agent', label: 'Agent', description: 'LLM task with tools', tone: 'indigo' },
   { type: 'mcp', label: 'MCP', description: 'Call MCP tool', tone: 'violet' },
+  { type: 'integration_http', label: 'Integration HTTP', description: 'Call external HTTP API', tone: 'pink' },
   { type: 'if_else', label: 'If / Else', description: 'Conditional routing', tone: 'amber' },
   { type: 'while', label: 'While', description: 'Loop with max iterations', tone: 'orange' },
   { type: 'set_state', label: 'Set State', description: 'Assign variables', tone: 'cyan' },
@@ -62,6 +63,21 @@ export const defaultNodeConfig = (type: NodeType): Record<string, any> => {
         arguments: {},
         timeout_s: 30,
         allowed_tools: []
+      };
+    case 'integration_http':
+      return {
+        url: '',
+        method: 'GET',
+        headers: {},
+        auth: { type: 'none' },
+        timeout_s: 10,
+        retry_attempts: 0,
+        retry_backoff_s: 0,
+        request_body_expression: '',
+        response_state_target: '',
+        response_body_state_target: '',
+        fail_on_status: true,
+        allowed_statuses: []
       };
     case 'if_else':
       return {
@@ -611,6 +627,45 @@ export const validateGraph = (nodes: BuilderNode[], edges: BuilderEdge[]): Valid
           id: `mcp-${node.id}`,
           level: 'warning',
           message: 'MCP needs server and tool.',
+          nodeId: node.id
+        });
+      }
+    }
+    if (node.type === 'integration_http') {
+      const url = typeof node.config?.url === 'string' ? node.config.url.trim() : '';
+      if (!url) {
+        issues.push({
+          id: `integration-http-url-${node.id}`,
+          level: 'error',
+          message: 'Integration HTTP needs a URL.',
+          nodeId: node.id
+        });
+      }
+      const methodRaw = node.config?.method;
+      if (
+        methodRaw !== undefined &&
+        (!isNonEmptyString(methodRaw) ||
+          !['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(methodRaw.trim().toUpperCase()))
+      ) {
+        issues.push({
+          id: `integration-http-method-${node.id}`,
+          level: 'error',
+          message: 'Integration HTTP method must be GET, POST, PUT, PATCH, or DELETE.',
+          nodeId: node.id
+        });
+      }
+      const allowedStatusesRaw = node.config?.allowed_statuses;
+      if (
+        allowedStatusesRaw !== undefined &&
+        (!Array.isArray(allowedStatusesRaw) ||
+          !allowedStatusesRaw.every(
+            (item) => typeof item === 'number' && Number.isInteger(item) && item >= 100 && item <= 599
+          ))
+      ) {
+        issues.push({
+          id: `integration-http-statuses-${node.id}`,
+          level: 'error',
+          message: 'Integration HTTP allowed_statuses must contain HTTP status codes (100-599).',
           nodeId: node.id
         });
       }

@@ -52,6 +52,50 @@ describe('validateGraph', () => {
     const issues = validateGraph([start, setter, end], [edge('start', 'set'), edge('set', 'end')]);
     expect(issues.some((issue) => issue.message.includes('assignments'))).toBe(true);
   });
+
+  it('flags integration_http when url is missing', () => {
+    const start = { ...createNode('start', { x: 0, y: 0 }), id: 'start' };
+    const integration = {
+      ...createNode('integration_http', { x: 120, y: 0 }),
+      id: 'http',
+      config: {
+        method: 'GET'
+      }
+    };
+    const end = { ...createNode('end', { x: 240, y: 0 }), id: 'end' };
+    const issues = validateGraph([start, integration, end], [edge('start', 'http'), edge('http', 'end')]);
+    expect(issues.some((issue) => issue.nodeId === 'http' && issue.message.includes('URL'))).toBe(true);
+  });
+
+  it('flags integration_http when method is invalid', () => {
+    const start = { ...createNode('start', { x: 0, y: 0 }), id: 'start' };
+    const integration = {
+      ...createNode('integration_http', { x: 120, y: 0 }),
+      id: 'http',
+      config: {
+        url: 'https://api.example.com/items',
+        method: 'FETCH'
+      }
+    };
+    const end = { ...createNode('end', { x: 240, y: 0 }), id: 'end' };
+    const issues = validateGraph([start, integration, end], [edge('start', 'http'), edge('http', 'end')]);
+    expect(issues.some((issue) => issue.nodeId === 'http' && issue.message.includes('method'))).toBe(true);
+  });
+
+  it('accepts integration_http with valid minimal config', () => {
+    const start = { ...createNode('start', { x: 0, y: 0 }), id: 'start' };
+    const integration = {
+      ...createNode('integration_http', { x: 120, y: 0 }),
+      id: 'http',
+      config: {
+        url: 'https://api.example.com/items',
+        method: 'GET'
+      }
+    };
+    const end = { ...createNode('end', { x: 240, y: 0 }), id: 'end' };
+    const issues = validateGraph([start, integration, end], [edge('start', 'http'), edge('http', 'end')]);
+    expect(issues.some((issue) => issue.nodeId === 'http' && issue.level === 'error')).toBe(false);
+  });
 });
 
 describe('autoLayoutNodes', () => {

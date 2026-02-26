@@ -2443,6 +2443,192 @@ export default function App() {
           </Stack>
         )}
 
+        {selectedNode.type === 'integration_http' && (
+          <Stack gap="sm">
+            <TextInput
+              label="URL"
+              value={config.url || ''}
+              onChange={(event) => updateNodeConfig(selectedNode.id, { url: event.currentTarget.value })}
+              placeholder="https://api.example.com/v1/resource"
+            />
+            <Select
+              label="Method"
+              data={['GET', 'POST', 'PUT', 'PATCH', 'DELETE']}
+              value={config.method || 'GET'}
+              onChange={(value) => updateNodeConfig(selectedNode.id, { method: value || 'GET' })}
+            />
+            <JsonEditor
+              label="Headers"
+              value={config.headers || {}}
+              onApply={(value) => updateNodeConfig(selectedNode.id, { headers: value })}
+            />
+            <Select
+              label="Auth type"
+              data={[
+                { value: 'none', label: 'None' },
+                { value: 'bearer', label: 'Bearer' },
+                { value: 'basic', label: 'Basic' }
+              ]}
+              value={config.auth?.type || 'none'}
+              onChange={(value) =>
+                updateNodeConfig(selectedNode.id, {
+                  auth: {
+                    ...(config.auth || {}),
+                    type: (value || 'none').toLowerCase()
+                  }
+                })
+              }
+            />
+            {(config.auth?.type || 'none') === 'bearer' && (
+              <Group grow>
+                <TextInput
+                  label="Token"
+                  value={config.auth?.token || ''}
+                  onChange={(event) =>
+                    updateNodeConfig(selectedNode.id, {
+                      auth: {
+                        ...(config.auth || {}),
+                        token: event.currentTarget.value
+                      }
+                    })
+                  }
+                />
+                <TextInput
+                  label="Token env"
+                  value={config.auth?.token_env || ''}
+                  onChange={(event) =>
+                    updateNodeConfig(selectedNode.id, {
+                      auth: {
+                        ...(config.auth || {}),
+                        token_env: event.currentTarget.value
+                      }
+                    })
+                  }
+                />
+              </Group>
+            )}
+            {(config.auth?.type || 'none') === 'basic' && (
+              <>
+                <Group grow>
+                  <TextInput
+                    label="Username"
+                    value={config.auth?.username || ''}
+                    onChange={(event) =>
+                      updateNodeConfig(selectedNode.id, {
+                        auth: {
+                          ...(config.auth || {}),
+                          username: event.currentTarget.value
+                        }
+                      })
+                    }
+                  />
+                  <TextInput
+                    label="Password"
+                    type="password"
+                    value={config.auth?.password || ''}
+                    onChange={(event) =>
+                      updateNodeConfig(selectedNode.id, {
+                        auth: {
+                          ...(config.auth || {}),
+                          password: event.currentTarget.value
+                        }
+                      })
+                    }
+                  />
+                </Group>
+                <Group grow>
+                  <TextInput
+                    label="Username env"
+                    value={config.auth?.username_env || ''}
+                    onChange={(event) =>
+                      updateNodeConfig(selectedNode.id, {
+                        auth: {
+                          ...(config.auth || {}),
+                          username_env: event.currentTarget.value
+                        }
+                      })
+                    }
+                  />
+                  <TextInput
+                    label="Password env"
+                    value={config.auth?.password_env || ''}
+                    onChange={(event) =>
+                      updateNodeConfig(selectedNode.id, {
+                        auth: {
+                          ...(config.auth || {}),
+                          password_env: event.currentTarget.value
+                        }
+                      })
+                    }
+                  />
+                </Group>
+              </>
+            )}
+            <Group grow>
+              <NumberInput
+                label="Timeout (s)"
+                value={config.timeout_s ?? 10}
+                min={0.1}
+                onChange={(value) => updateNodeConfig(selectedNode.id, { timeout_s: toNumber(value, 10) })}
+              />
+              <NumberInput
+                label="Retry attempts"
+                value={config.retry_attempts ?? 0}
+                min={0}
+                onChange={(value) => updateNodeConfig(selectedNode.id, { retry_attempts: toNumber(value, 0) })}
+              />
+            </Group>
+            <NumberInput
+              label="Retry backoff (s)"
+              value={config.retry_backoff_s ?? 0}
+              min={0}
+              onChange={(value) => updateNodeConfig(selectedNode.id, { retry_backoff_s: toNumber(value, 0) })}
+            />
+            <TextInput
+              label="Request body expression"
+              value={config.request_body_expression || ''}
+              onChange={(event) =>
+                updateNodeConfig(selectedNode.id, { request_body_expression: event.currentTarget.value })
+              }
+              placeholder="{'query': state.query}"
+            />
+            <TextInput
+              label="Response state target"
+              value={config.response_state_target || ''}
+              onChange={(event) =>
+                updateNodeConfig(selectedNode.id, { response_state_target: event.currentTarget.value })
+              }
+              placeholder="integrations.response"
+            />
+            <TextInput
+              label="Response body state target"
+              value={config.response_body_state_target || ''}
+              onChange={(event) =>
+                updateNodeConfig(selectedNode.id, { response_body_state_target: event.currentTarget.value })
+              }
+              placeholder="integrations.body"
+            />
+            <Switch
+              label="Fail on unexpected status"
+              checked={config.fail_on_status !== false}
+              onChange={(event) => updateNodeConfig(selectedNode.id, { fail_on_status: event.currentTarget.checked })}
+            />
+            <TextInput
+              label="Allowed statuses"
+              value={(config.allowed_statuses || []).join(', ')}
+              onChange={(event) =>
+                updateNodeConfig(selectedNode.id, {
+                  allowed_statuses: event.currentTarget.value
+                    .split(',')
+                    .map((item: string) => Number(item.trim()))
+                    .filter((item: number) => Number.isInteger(item) && item >= 100 && item <= 599)
+                })
+              }
+              placeholder="200, 201, 204"
+            />
+          </Stack>
+        )}
+
         {selectedNode.type === 'if_else' && (
           <Stack gap="sm">
             {(config.branches || []).map((branch: any, index: number) => (

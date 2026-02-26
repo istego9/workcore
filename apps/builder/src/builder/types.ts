@@ -2,6 +2,7 @@ export type NodeType =
   | 'start'
   | 'agent'
   | 'mcp'
+  | 'integration_http'
   | 'if_else'
   | 'while'
   | 'set_state'
