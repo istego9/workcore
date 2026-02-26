@@ -33,6 +33,7 @@ PUBLIC_BUILDER_HOST="${PUBLIC_BUILDER_HOST:-workcore.build}"
 PUBLIC_API_HOST="${PUBLIC_API_HOST:-api.workcore.build}"
 PUBLIC_CHATKIT_HOST="${PUBLIC_CHATKIT_HOST:-chatkit.workcore.build}"
 WORKCORE_ALLOW_INSECURE_DEV="${WORKCORE_ALLOW_INSECURE_DEV:-0}"
+WORKCORE_ALLOW_EDGE_PORTS="${WORKCORE_ALLOW_EDGE_PORTS:-0}"
 
 require_env() {
   local name="$1"
@@ -53,6 +54,21 @@ if [[ "${WORKCORE_ALLOW_INSECURE_DEV}" != "1" ]]; then
     echo "Set explicit origins or run with WORKCORE_ALLOW_INSECURE_DEV=1 for temporary local troubleshooting." >&2
     exit 1
   fi
+fi
+
+if [[ "${WORKCORE_ALLOW_EDGE_PORTS}" != "1" ]]; then
+  if [[ "${WORKCORE_HTTP_PORT}" == "80" || "${WORKCORE_HTTPS_PORT}" == "443" ]]; then
+    echo "Refusing to start WorkCore proxy on 80/443 in default mode." >&2
+    echo "Use WORKCORE_HTTP_PORT=8080 and WORKCORE_HTTPS_PORT=8443 (recommended)." >&2
+    echo "If you need direct 80/443 for temporary troubleshooting, run with WORKCORE_ALLOW_EDGE_PORTS=1." >&2
+    exit 1
+  fi
+fi
+
+if [[ -x "${ROOT}/scripts/colima_storage_check.sh" ]]; then
+  "${ROOT}/scripts/colima_storage_check.sh"
+else
+  bash "${ROOT}/scripts/colima_storage_check.sh"
 fi
 
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" build orchestrator builder

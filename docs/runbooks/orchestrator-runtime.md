@@ -16,6 +16,8 @@ Workflow execution API/runtime service (`apps/orchestrator`), including run stat
    - `curl -fsS http://127.0.0.1:8001/health`
 3. Builder local UI (if full dev stack):
    - `curl -fsS http://127.0.0.1:5183/`
+4. Colima storage health (local Docker on Colima):
+   - `./scripts/colima_storage_check.sh`
 
 ## Logs to inspect
 - `logs/orchestrator.log`
@@ -44,15 +46,19 @@ Tail commands:
 3. Invalid workflow draft structure reaching runtime
 4. External dependency failure (webhook target, model/tool endpoint)
 5. Idempotency conflicts on repeated run/action requests
+6. Colima VM ext4 storage issues (`/dev/vdb1`), which can surface as Postgres I/O errors
+   - Example: `could not open file "global/pg_filenode.map": I/O error`
 
 ## Remediation steps
-1. Re-apply migrations:
+1. If Colima storage check fails, repair ext4 metadata and restart VM:
+   - `./scripts/colima_repair_vdb1.sh`
+2. Re-apply migrations:
    - `./.venv/bin/python scripts/migrate.py`
-2. Restart local services:
+3. Restart local services:
    - `./scripts/dev_restart.sh`
-3. Re-run smoke checks:
+4. Re-run smoke checks:
    - `./scripts/dev_check.sh`
-4. Validate problematic workflow via API docs/schema and republish if needed.
+5. Validate problematic workflow via API docs/schema and republish if needed.
 
 ## Verification
 - Create/publish a smoke workflow.

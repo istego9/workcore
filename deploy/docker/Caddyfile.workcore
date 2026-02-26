@@ -18,22 +18,6 @@
     reverse_proxy {$CHATKIT_UPSTREAM_HOST:chatkit}:{$CHATKIT_UPSTREAM_PORT:8001}
   }
 
-  @oilvibes host {$PUBLIC_OILVIBES_HOST:oil.build}
-  handle @oilvibes {
-    handle /api/* {
-      reverse_proxy {$OILVIBES_API_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_API_UPSTREAM_PORT:4000}
-    }
-    handle_path /gis/* {
-      reverse_proxy {$OILVIBES_GIS_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_GIS_UPSTREAM_PORT:4030}
-    }
-    handle_path /reserves/* {
-      reverse_proxy {$OILVIBES_RESERVES_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_RESERVES_UPSTREAM_PORT:4090}
-    }
-    handle {
-      reverse_proxy {$OILVIBES_WEB_UPSTREAM_HOST:host.docker.internal}:{$OILVIBES_WEB_UPSTREAM_PORT:5174}
-    }
-  }
-
   # BEGIN TRACE ROUTE
   @trace host trace.build api.trace.build
   handle @trace {

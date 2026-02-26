@@ -91,8 +91,80 @@ if not re.search(r"(?m)^###\s+(Added|Changed|Deprecated|Removed)\s*$", entry):
 PY
 }
 
+check_local_edge_contracts() {
+  local py
+  py="python3"
+  if [[ -x "${ROOT}/.venv/bin/python" ]]; then
+    py="${ROOT}/.venv/bin/python"
+  fi
+
+  WORKCORE_ROOT="${ROOT}" "${py}" - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ["WORKCORE_ROOT"]).resolve()
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+docker_env_example = parse_env_file(root / ".env.docker.example")
+docker_env = parse_env_file(root / ".env.docker")
+
+forbidden_oilvibes_keys = (
+    "PUBLIC_OILVIBES_HOST",
+    "OILVIBES_WEB_UPSTREAM_HOST",
+    "OILVIBES_WEB_UPSTREAM_PORT",
+    "OILVIBES_API_UPSTREAM_HOST",
+    "OILVIBES_API_UPSTREAM_PORT",
+    "OILVIBES_GIS_UPSTREAM_HOST",
+    "OILVIBES_GIS_UPSTREAM_PORT",
+    "OILVIBES_RESERVES_UPSTREAM_HOST",
+    "OILVIBES_RESERVES_UPSTREAM_PORT",
+)
+
+for key in forbidden_oilvibes_keys:
+    if key in docker_env_example:
+        print(f".env.docker.example must not define deprecated OilVibes routing key: {key}", file=sys.stderr)
+        sys.exit(1)
+    if key in docker_env:
+        print(f".env.docker must not define deprecated OilVibes routing key: {key}", file=sys.stderr)
+        sys.exit(1)
+
+if docker_env.get("WORKCORE_HTTP_PORT") == "80":
+    print(".env.docker WORKCORE_HTTP_PORT must not be 80 in default profile", file=sys.stderr)
+    sys.exit(1)
+if docker_env.get("WORKCORE_HTTPS_PORT") == "443":
+    print(".env.docker WORKCORE_HTTPS_PORT must not be 443 in default profile", file=sys.stderr)
+    sys.exit(1)
+
+workcore_caddy = root / "deploy" / "docker" / "Caddyfile.workcore"
+if not workcore_caddy.exists():
+    print(f"missing required file: {workcore_caddy}", file=sys.stderr)
+    sys.exit(1)
+
+caddy_text = workcore_caddy.read_text(encoding="utf-8")
+for forbidden in ("@oilvibes", "oil.build", "OILVIBES_"):
+    if forbidden in caddy_text:
+        print(f"Caddyfile.workcore must not include OilVibes routing token: {forbidden}", file=sys.stderr)
+        sys.exit(1)
+PY
+}
+
 if command -v archctl >/dev/null 2>&1; then
   archctl validate
+  check_local_edge_contracts
   check_api_changelog_guard
   exit 0
 fi
@@ -175,6 +247,8 @@ def parse_env_file(path: Path) -> dict[str, str]:
 
 
 docker_env_example = parse_env_file(root / ".env.docker.example")
+docker_env_path = root / ".env.docker"
+docker_env = parse_env_file(docker_env_path) if docker_env_path.exists() else {}
 
 for required in (
     "WORKCORE_API_AUTH_TOKEN",
@@ -193,6 +267,45 @@ if docker_env_example.get("WORKCORE_HTTP_PORT") != "8080":
 if docker_env_example.get("WORKCORE_HTTPS_PORT") != "8443":
     print(".env.docker.example must set WORKCORE_HTTPS_PORT=8443", file=sys.stderr)
     sys.exit(1)
+
+forbidden_oilvibes_keys = (
+    "PUBLIC_OILVIBES_HOST",
+    "OILVIBES_WEB_UPSTREAM_HOST",
+    "OILVIBES_WEB_UPSTREAM_PORT",
+    "OILVIBES_API_UPSTREAM_HOST",
+    "OILVIBES_API_UPSTREAM_PORT",
+    "OILVIBES_GIS_UPSTREAM_HOST",
+    "OILVIBES_GIS_UPSTREAM_PORT",
+    "OILVIBES_RESERVES_UPSTREAM_HOST",
+    "OILVIBES_RESERVES_UPSTREAM_PORT",
+)
+
+for key in forbidden_oilvibes_keys:
+    if key in docker_env_example:
+        print(f".env.docker.example must not define deprecated OilVibes routing key: {key}", file=sys.stderr)
+        sys.exit(1)
+    if key in docker_env:
+        print(f".env.docker must not define deprecated OilVibes routing key: {key}", file=sys.stderr)
+        sys.exit(1)
+
+if docker_env:
+    if docker_env.get("WORKCORE_HTTP_PORT") == "80":
+        print(".env.docker WORKCORE_HTTP_PORT must not be 80 in default profile", file=sys.stderr)
+        sys.exit(1)
+    if docker_env.get("WORKCORE_HTTPS_PORT") == "443":
+        print(".env.docker WORKCORE_HTTPS_PORT must not be 443 in default profile", file=sys.stderr)
+        sys.exit(1)
+
+workcore_caddy = root / "deploy" / "docker" / "Caddyfile.workcore"
+if not workcore_caddy.exists():
+    print(f"missing required file: {workcore_caddy}", file=sys.stderr)
+    sys.exit(1)
+
+caddy_text = workcore_caddy.read_text(encoding="utf-8")
+for forbidden in ("@oilvibes", "oil.build", "OILVIBES_"):
+    if forbidden in caddy_text:
+        print(f"Caddyfile.workcore must not include OilVibes routing token: {forbidden}", file=sys.stderr)
+        sys.exit(1)
 
 cors_allow_origins = docker_env_example.get("CORS_ALLOW_ORIGINS", "")
 if "*" in cors_allow_origins:

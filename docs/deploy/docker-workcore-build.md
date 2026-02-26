@@ -50,6 +50,13 @@ Single-command helper (hosts + mkcert trust):
 ./scripts/docker_up.sh
 ```
 
+`docker_up.sh` enforces non-conflicting proxy ports by default:
+- `WORKCORE_HTTP_PORT=8080`
+- `WORKCORE_HTTPS_PORT=8443`
+
+Direct ownership of `80/443` is blocked unless you explicitly override with
+`WORKCORE_ALLOW_EDGE_PORTS=1` for temporary troubleshooting.
+
 `docker_up.sh` automatically generates local certs via `scripts/docker_certs.sh`:
 - Preferred: `mkcert` (trusted locally)
 - Fallback: self-signed `openssl` certificate
@@ -78,6 +85,10 @@ If your HQ21 edge proxy routes `workcore.build` domains to WorkCore (`host.docke
 - `https://workcore.build`
 - `https://api.workcore.build`
 - `https://chatkit.workcore.build`
+
+WorkCore proxy no longer owns OilVibes routing. `oil.build` must be routed by
+shared local-edge snippets (`~/.config/local-edge/caddy/sites/30-oilvibes.caddy`)
+through `hq21-caddy`.
 
 Without edge routing, use explicit ports:
 - `http://workcore.build:8080`
