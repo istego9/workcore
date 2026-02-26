@@ -7,6 +7,8 @@ from starlette.testclient import TestClient
 from chatkit.actions import Action
 from chatkit.server import StreamingResult
 from chatkit.types import (
+    InputTranscribeParams,
+    InputTranscribeReq,
     InferenceOptions,
     ThreadCreateParams,
     ThreadsCreateReq,
@@ -361,6 +363,69 @@ class ChatKitTests(unittest.TestCase):
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(with_tenant.status_code, 200)
+
+    def test_http_chatkit_transcribe_requires_configuration(self):
+        app = create_chatkit_app(self._workflow())
+        client = TestClient(app)
+        req = InputTranscribeReq(
+            params=InputTranscribeParams(
+                audio_base64="SGVsbG8=",
+                mime_type="audio/webm;codecs=opus",
+            )
+        )
+        response = client.post(
+            "/chatkit",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "ERR_TRANSCRIPTION_UNAVAILABLE")
+
+    def test_http_chatkit_transcribe_validates_mime_type(self):
+        async def fake_transcriber(audio_input, context):
+            return "ok"
+
+        app = create_chatkit_app(self._workflow(), transcriber=fake_transcriber)
+        client = TestClient(app)
+        req = InputTranscribeReq(
+            params=InputTranscribeParams(
+                audio_base64="SGVsbG8=",
+                mime_type="audio/wav",
+            )
+        )
+        response = client.post(
+            "/chatkit",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "ERR_INVALID_AUDIO_INPUT")
+
+    def test_http_chatkit_transcribe_returns_text(self):
+        captured = {}
+
+        async def fake_transcriber(audio_input, context):
+            captured["mime_type"] = audio_input.mime_type
+            captured["size"] = len(audio_input.data)
+            return "transcribed hello"
+
+        app = create_chatkit_app(self._workflow(), transcriber=fake_transcriber)
+        client = TestClient(app)
+        req = InputTranscribeReq(
+            params=InputTranscribeParams(
+                audio_base64="SGVsbG8=",
+                mime_type="audio/webm;codecs=opus",
+            )
+        )
+        response = client.post(
+            "/chatkit",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text"], "transcribed hello")
+        self.assertEqual(captured["mime_type"], "audio/webm;codecs=opus")
+        self.assertGreater(captured["size"], 0)
 
     async def _collect_events(self, request) -> list[dict]:
         ctx = ChatKitContext(

@@ -82,6 +82,12 @@ _WORKFLOW_AUTHORING_GUIDE_PATH = _ROOT_DIR / "docs" / "architecture" / "workflow
 _WORKFLOW_DRAFT_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "workflow-draft.schema.json"
 _WORKFLOW_EXPORT_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "workflow-export-v1.schema.json"
 _ROUTING_DECISION_SCHEMA_PATH = _ROOT_DIR / "docs" / "api" / "schemas" / "routing-decision.schema.json"
+_CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH = (
+    _ROOT_DIR / "docs" / "api" / "schemas" / "chatkit-input-transcribe-request.schema.json"
+)
+_CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH = (
+    _ROOT_DIR / "docs" / "api" / "schemas" / "chatkit-widget-extension.schema.json"
+)
 _AGENT_INTEGRATION_LOGGER = logging.getLogger("workcore.agent_integration")
 _DEFAULT_AGENT_INTEGRATION_LOG_LIMIT = 100
 _MAX_AGENT_INTEGRATION_LOG_LIMIT = 500
@@ -2532,6 +2538,12 @@ def create_app(
             "workflow_draft_schema": f"{base_url}/schemas/workflow-draft.schema.json",
             "workflow_export_schema": f"{base_url}/schemas/workflow-export-v1.schema.json",
             "routing_decision_schema": f"{base_url}/schemas/routing-decision.schema.json",
+            "chatkit_input_transcribe_schema": (
+                f"{base_url}/schemas/chatkit-input-transcribe-request.schema.json"
+            ),
+            "chatkit_widget_extension_schema": (
+                f"{base_url}/schemas/chatkit-widget-extension.schema.json"
+            ),
             "projects_list": f"{base_url}/projects",
             "projects_create": f"{base_url}/projects",
             "capabilities_create": f"{base_url}/capabilities",
@@ -2656,6 +2668,49 @@ def create_app(
                 "missing docs/api/schemas/routing-decision.schema.json",
             )
 
+        if _CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.exists():
+            try:
+                json.loads(_CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.read_text(encoding="utf-8"))
+                add_check("chatkit_transcribe_schema_valid_json", "ChatKit transcribe schema is valid JSON", True, "ok")
+            except Exception as exc:
+                add_check(
+                    "chatkit_transcribe_schema_valid_json",
+                    "ChatKit transcribe schema is valid JSON",
+                    False,
+                    str(exc),
+                )
+        else:
+            add_check(
+                "chatkit_transcribe_schema_valid_json",
+                "ChatKit transcribe schema is valid JSON",
+                False,
+                "missing docs/api/schemas/chatkit-input-transcribe-request.schema.json",
+            )
+
+        if _CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.exists():
+            try:
+                json.loads(_CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.read_text(encoding="utf-8"))
+                add_check(
+                    "chatkit_widget_extension_schema_valid_json",
+                    "ChatKit widget extension schema is valid JSON",
+                    True,
+                    "ok",
+                )
+            except Exception as exc:
+                add_check(
+                    "chatkit_widget_extension_schema_valid_json",
+                    "ChatKit widget extension schema is valid JSON",
+                    False,
+                    str(exc),
+                )
+        else:
+            add_check(
+                "chatkit_widget_extension_schema_valid_json",
+                "ChatKit widget extension schema is valid JSON",
+                False,
+                "missing docs/api/schemas/chatkit-widget-extension.schema.json",
+            )
+
         required_openapi_paths = (
             "/agent-integration-kit",
             "/agent-integration-kit.json",
@@ -2667,6 +2722,8 @@ def create_app(
             "/schemas/workflow-draft.schema.json",
             "/schemas/workflow-export-v1.schema.json",
             "/schemas/routing-decision.schema.json",
+            "/schemas/chatkit-input-transcribe-request.schema.json",
+            "/schemas/chatkit-widget-extension.schema.json",
             "/projects",
             "/projects/{project_id}/orchestrators",
             "/projects/{project_id}/workflow-definitions",
@@ -2899,6 +2956,68 @@ def create_app(
         )
         return JSONResponse(payload)
 
+    async def chatkit_input_transcribe_schema(request: Request) -> Response:
+        if not _CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.chatkit_input_transcribe_schema.read",
+                "ChatKit transcribe schema is missing",
+                level="WARNING",
+                status_code=404,
+            )
+            return PlainTextResponse("chatkit transcribe schema not found", status_code=404)
+        try:
+            payload = json.loads(_CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _integration_log(
+                request,
+                "integration.chatkit_input_transcribe_schema.read",
+                "ChatKit transcribe schema JSON is invalid",
+                level="ERROR",
+                status_code=500,
+                context={"error": str(exc)},
+            )
+            return PlainTextResponse("chatkit transcribe schema is invalid", status_code=500)
+        _integration_log(
+            request,
+            "integration.chatkit_input_transcribe_schema.read",
+            "ChatKit transcribe schema returned",
+            status_code=200,
+            context={"top_level_keys": len(payload) if isinstance(payload, dict) else 0},
+        )
+        return JSONResponse(payload)
+
+    async def chatkit_widget_extension_schema(request: Request) -> Response:
+        if not _CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.chatkit_widget_extension_schema.read",
+                "ChatKit widget extension schema is missing",
+                level="WARNING",
+                status_code=404,
+            )
+            return PlainTextResponse("chatkit widget extension schema not found", status_code=404)
+        try:
+            payload = json.loads(_CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _integration_log(
+                request,
+                "integration.chatkit_widget_extension_schema.read",
+                "ChatKit widget extension schema JSON is invalid",
+                level="ERROR",
+                status_code=500,
+                context={"error": str(exc)},
+            )
+            return PlainTextResponse("chatkit widget extension schema is invalid", status_code=500)
+        _integration_log(
+            request,
+            "integration.chatkit_widget_extension_schema.read",
+            "ChatKit widget extension schema returned",
+            status_code=200,
+            context={"top_level_keys": len(payload) if isinstance(payload, dict) else 0},
+        )
+        return JSONResponse(payload)
+
     async def agent_integration_kit(request: Request) -> PlainTextResponse:
         urls = _public_doc_urls(request)
         updated_at = datetime.now(timezone.utc).isoformat()
@@ -2916,6 +3035,8 @@ def create_app(
             f"- Workflow draft schema: {urls['workflow_draft_schema']}",
             f"- Workflow export schema: {urls['workflow_export_schema']}",
             f"- Routing decision schema: {urls['routing_decision_schema']}",
+            f"- ChatKit input.transcribe schema: {urls['chatkit_input_transcribe_schema']}",
+            f"- Chat fork widget extension schema: {urls['chatkit_widget_extension_schema']}",
             f"- Project list endpoint: {urls['projects_list']}",
             f"- Project create endpoint: {urls['projects_create']}",
             f"- Capability registry create endpoint: {urls['capabilities_create']}",
@@ -3068,11 +3189,35 @@ def create_app(
                 status_code=404,
             )
             return _error(request, "NOT_FOUND", "routing decision schema not found", 404)
+        if not _CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "ChatKit transcribe schema is missing for kit JSON",
+                level="WARNING",
+                status_code=404,
+            )
+            return _error(request, "NOT_FOUND", "chatkit transcribe schema not found", 404)
+        if not _CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.exists():
+            _integration_log(
+                request,
+                "integration.kit_json.read",
+                "ChatKit widget extension schema is missing for kit JSON",
+                level="WARNING",
+                status_code=404,
+            )
+            return _error(request, "NOT_FOUND", "chatkit widget extension schema not found", 404)
 
         try:
             draft_schema = json.loads(_WORKFLOW_DRAFT_SCHEMA_PATH.read_text(encoding="utf-8"))
             export_schema = json.loads(_WORKFLOW_EXPORT_SCHEMA_PATH.read_text(encoding="utf-8"))
             routing_schema = json.loads(_ROUTING_DECISION_SCHEMA_PATH.read_text(encoding="utf-8"))
+            chatkit_transcribe_schema = json.loads(
+                _CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.read_text(encoding="utf-8")
+            )
+            chatkit_widget_extension_schema = json.loads(
+                _CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.read_text(encoding="utf-8")
+            )
         except Exception as exc:
             _integration_log(
                 request,
@@ -3099,6 +3244,8 @@ def create_app(
                 "workflow_draft": draft_schema,
                 "workflow_export_v1": export_schema,
                 "routing_decision": routing_schema,
+                "chatkit_input_transcribe_request": chatkit_transcribe_schema,
+                "chatkit_widget_extension": chatkit_widget_extension_schema,
             },
         }
         _integration_log(
@@ -3387,6 +3534,8 @@ def create_app(
         Route("/schemas/workflow-draft.schema.json", workflow_draft_schema),
         Route("/schemas/workflow-export-v1.schema.json", workflow_export_schema),
         Route("/schemas/routing-decision.schema.json", routing_decision_schema),
+        Route("/schemas/chatkit-input-transcribe-request.schema.json", chatkit_input_transcribe_schema),
+        Route("/schemas/chatkit-widget-extension.schema.json", chatkit_widget_extension_schema),
         Route("/agent-integration-kit", agent_integration_kit),
         Route("/agent-integration-kit.json", agent_integration_kit_json),
         Route("/agent-integration-test", agent_integration_test),

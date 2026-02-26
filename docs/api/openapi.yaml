@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.18.0
+  version: 0.19.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -90,6 +90,30 @@ paths:
     get:
       tags: [orchestrator]
       summary: JSON Schema for strict orchestrator routing decisions
+      security: []
+      responses:
+        '200':
+          description: JSON Schema document
+          content:
+            application/json:
+              schema:
+                type: object
+  /schemas/chatkit-input-transcribe-request.schema.json:
+    get:
+      tags: [chatkit]
+      summary: JSON Schema for ChatKit input.transcribe request payload
+      security: []
+      responses:
+        '200':
+          description: JSON Schema document
+          content:
+            application/json:
+              schema:
+                type: object
+  /schemas/chatkit-widget-extension.schema.json:
+    get:
+      tags: [chatkit]
+      summary: JSON Schema for fork frontend widget extension payloads
       security: []
       responses:
         '200':
@@ -214,6 +238,7 @@ paths:
         Strict multi-tenant mode requires `X-Tenant-Id` on every request.
         For interactive operations (`threads.create`, `threads.add_user_message`, `threads.custom_action`)
         the response is streamed as SSE where each `data:` line is a JSON ChatKit stream event.
+        For `input.transcribe` requests, the response is non-streaming JSON with transcription text.
       requestBody:
         required: true
         content:
@@ -268,15 +293,28 @@ paths:
                         run_id: run_01
                         interrupt_id: intr_01
                         idempotency_key: action_approve_01
+              input_transcribe:
+                summary: Transcribe audio payload to text
+                value:
+                  metadata:
+                    external_user_id: user_42
+                    external_session_id: session_abc
+                  type: input.transcribe
+                  params:
+                    audio_base64: SGVsbG8=
+                    mime_type: audio/webm;codecs=opus
       responses:
         '200':
           description: >
             ChatKit response (JSON or SSE stream). For stream responses each `data:` line
-            is a JSON object matching `ChatKitStreamEvent`.
+            is a JSON object matching `ChatKitStreamEvent`. For `input.transcribe`,
+            response payload matches `ChatKitTranscriptionResult`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ChatKitJsonResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ChatKitJsonResponse'
+                  - $ref: '#/components/schemas/ChatKitTranscriptionResult'
             text/event-stream:
               schema:
                 type: string
@@ -1442,7 +1480,8 @@ components:
         - $ref: '#/components/schemas/ChatKitThreadCreateRequest'
         - $ref: '#/components/schemas/ChatKitAddUserMessageRequest'
         - $ref: '#/components/schemas/ChatKitCustomActionRequest'
-      description: Supported interactive ChatKit request types for external clients.
+        - $ref: '#/components/schemas/ChatKitInputTranscribeRequest'
+      description: Supported ChatKit request types for external clients.
 
     ChatKitRequestMetadata:
       type: object
@@ -1510,6 +1549,36 @@ components:
               $ref: '#/components/schemas/ChatKitAction'
           required: [thread_id, action]
       required: [type, params]
+
+    ChatKitInputTranscribeRequest:
+      type: object
+      properties:
+        metadata:
+          $ref: '#/components/schemas/ChatKitRequestMetadata'
+        type:
+          type: string
+          enum: [input.transcribe]
+        params:
+          $ref: '#/components/schemas/ChatKitInputTranscribeParams'
+      required: [type, params]
+
+    ChatKitInputTranscribeParams:
+      type: object
+      properties:
+        audio_base64:
+          type: string
+          description: Base64 encoded audio payload.
+        mime_type:
+          type: string
+          description: Audio MIME type, for example `audio/webm;codecs=opus`.
+      required: [audio_base64, mime_type]
+
+    ChatKitTranscriptionResult:
+      type: object
+      description: Non-streaming transcription result for `input.transcribe`.
+      properties:
+        text: { type: string }
+      required: [text]
 
     ChatKitUserInput:
       type: object

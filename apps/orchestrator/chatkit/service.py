@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import json
-from typing import Any
+from typing import Any, Optional
 
 import asyncpg
 from minio import Minio
@@ -21,7 +21,11 @@ from apps.orchestrator.chatkit.idempotency import IdempotencyStore
 from apps.orchestrator.chatkit.runtime_service import ChatKitRuntimeService
 from apps.orchestrator.chatkit.object_store import MinioAttachmentStore
 from apps.orchestrator.chatkit.pg_store import PostgresChatKitStore
-from apps.orchestrator.chatkit.server import WorkflowChatKitServer
+from apps.orchestrator.chatkit.server import (
+    InvalidTranscriptionInputError,
+    TranscriptionUnavailableError,
+    WorkflowChatKitServer,
+)
 from apps.orchestrator.executors import (
     AGENTS_AVAILABLE,
     AgentExecutor,
@@ -32,6 +36,48 @@ from apps.orchestrator.executors import (
 from apps.orchestrator.runtime import Edge, Node, SimpleEvaluator, Workflow, CelEvaluator
 from apps.orchestrator.streaming import EventPublisher, InMemoryEventBus, InMemoryEventStore
 from apps.orchestrator.runtime.env import get_env
+
+
+def _audio_filename_from_media_type(media_type: str) -> str:
+    normalized = media_type.strip().lower()
+    if normalized == "audio/ogg":
+        return "input.ogg"
+    if normalized == "audio/mp4":
+        return "input.m4a"
+    return "input.webm"
+
+
+def _build_transcriber(cfg: ChatKitConfig):
+    api_key = cfg.stt_api_key
+    if not api_key:
+        return None
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=api_key, timeout=cfg.stt_timeout_seconds)
+
+    async def _transcriber(audio_input, _context):
+        response = await client.audio.transcriptions.create(
+            model=cfg.stt_model,
+            file=(
+                _audio_filename_from_media_type(audio_input.media_type),
+                audio_input.data,
+                audio_input.mime_type,
+            ),
+        )
+        text: Optional[str] = None
+        if isinstance(response, dict):
+            text = response.get("text")
+        else:
+            text = getattr(response, "text", None)
+            if text is None and hasattr(response, "model_dump"):
+                dumped = response.model_dump()
+                if isinstance(dumped, dict):
+                    text = dumped.get("text")
+        if not isinstance(text, str):
+            raise RuntimeError("transcription response is missing text")
+        return text
+
+    return _transcriber
 
 
 async def load_workflow_from_db(
@@ -172,7 +218,13 @@ def create_service_app() -> Starlette:
             executors=executors,
         )
 
-        app.state.server = WorkflowChatKitServer(store, attachment_store)
+        app.state.server = WorkflowChatKitServer(
+            store,
+            attachment_store,
+            transcriber=_build_transcriber(cfg),
+            stt_allowed_media_types=set(cfg.stt_allowed_media_types),
+            stt_max_audio_bytes=cfg.stt_max_audio_bytes,
+        )
         app.state.context = ChatKitContext(
             service=service,
             run_store=PostgresRunStore(pool),
@@ -220,7 +272,18 @@ def create_service_app() -> Starlette:
             tenant_id=tenant_id,
             request_metadata=metadata,
         )
-        result = await request.app.state.server.process(body, ctx)
+        try:
+            result = await request.app.state.server.process(body, ctx)
+        except InvalidTranscriptionInputError as exc:
+            return JSONResponse(
+                {"error": {"code": "ERR_INVALID_AUDIO_INPUT", "message": str(exc)}},
+                status_code=422,
+            )
+        except TranscriptionUnavailableError as exc:
+            return JSONResponse(
+                {"error": {"code": "ERR_TRANSCRIPTION_UNAVAILABLE", "message": str(exc)}},
+                status_code=503,
+            )
         if isinstance(result, StreamingResult):
             return StreamingResponse(result, media_type="text/event-stream")
         if isinstance(result, NonStreamingResult):

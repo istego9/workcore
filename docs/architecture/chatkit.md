@@ -7,6 +7,7 @@ Status: Draft
 - Advanced integration server for ChatKit (self-hosted).
 - Thread/session storage, message streaming, widgets/actions for interrupts.
 - Mapping between ChatKit threads and workflow runs.
+- Forked frontend chat shell (optional) compatible with the same `/chatkit` contract.
 
 ## Endpoints
 - `POST /chatkit` — ChatKit Server endpoint (streaming + non-streaming requests).
@@ -23,6 +24,9 @@ Status: Draft
   - Sends widget actions (`interrupt.approve`, `interrupt.reject`, `interrupt.submit`, `interrupt.cancel`).
   - Canonical field is `action.action_type`; backward-compatible alias `action.type` is still accepted.
   - Runtime currently rejects `interrupt.cancel` with an explicit error event.
+- `input.transcribe`:
+  - Accepts `params.audio_base64` + `params.mime_type`.
+  - Returns non-streaming JSON payload `{ "text": "<transcript>" }`.
 
 ## Thread ↔ Run mapping
 - `thread.metadata.run_id` stores the active run.
@@ -48,6 +52,17 @@ Status: Draft
 - Widget definitions live in `apps/orchestrator/chatkit/templates/*.widget`.
 - Runtime uses `WidgetTemplate.from_file(...)` to build dynamic widgets.
 - Edit templates with ChatKit Studio or by hand (JSON + Jinja data fields).
+
+## Fork frontend boundary (Variant D)
+- Legacy mode:
+  - Builder embeds `openai-chatkit` page (`chatkit.html`).
+- Fork mode:
+  - Builder embeds `chat-fork.html` React shell behind feature flag.
+  - Shell keeps parity with existing widget/action semantics and `/chatkit` payloads.
+  - Extension renderer adds:
+    - chart mapping to Nivo adapters,
+    - `DataTable` extension component (read-only MVP),
+    - safe fallback card for unknown widget component types.
 
 ## Action types
 - Canonical action types:
@@ -111,8 +126,15 @@ Action payload fields consumed by runtime:
 - Webhook fallback: subscribe to outbound webhook events (`interrupt_created`, `run_completed`, `run_failed`, `node_failed`) for offline or delayed consumer scenarios.
 - Persist `thread_id`, `run_id`, and open `interrupt_id` in the external system so retries and reconnects stay idempotent.
 
+## STT dictation flow (MVP)
+- Frontend captures short audio snippets through browser `MediaRecorder`.
+- Frontend sends `input.transcribe` to `POST /chatkit`.
+- Backend validates mime/size guardrails and calls configured transcriber.
+- Response text is inserted into composer draft; user confirms send manually.
+
 ## Next steps
-- Add action idempotency and richer widget schemas.
+- Expand widget extension schema for richer table interactions (sorting/filter/pagination) in Phase 2.
+- Evaluate voice mode (beyond dictation) separately from MVP.
 - Wire RBAC controls for tenant-aware ChatKit operations.
 
 ## Local E2E

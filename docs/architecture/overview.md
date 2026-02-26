@@ -19,6 +19,7 @@ Status: Draft (Phase 0)
 - Handoff Service: atomic workflow package intake and deterministic replay bootstrap.
 - Webhooks Service: inbound triggers and outbound callbacks.
 - ChatKit Server: advanced integration, sessions/threads, widgets/actions.
+- Chat Frontend Shell: legacy ChatKit embed + optional forked chat UI (feature-flagged).
 - Integrations Layer: Agents SDK executor, MCP client, object storage.
 
 ## Core entities and IDs
@@ -63,6 +64,7 @@ Ordering guarantees:
 - Streaming Service: /runs/{run_id}/stream (SSE)
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*
 - ChatKit Server: chat sessions/threads, widget/actions endpoints
+- Chat Frontend Shell: render chat timeline/composer/widgets over `/chatkit` contract
 
 ## Persistence and storage
 - Postgres is the source of truth for workflow metadata, versions, runs, node_runs, interrupts, and delivery logs.
@@ -112,3 +114,4 @@ Ordering guarantees:
 - ADR-0006: Vite + Mantine for the builder UI.
 - ADR-0007: Runtime run-state is persisted in Postgres.
 - ADR-0009: Artifact-reference defaults and run projection rollout.
+- ADR-0010: Frontend ChatKit fork boundary and compatibility strategy.

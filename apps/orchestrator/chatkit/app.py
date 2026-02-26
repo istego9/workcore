@@ -12,7 +12,11 @@ from chatkit.server import NonStreamingResult, StreamingResult
 from apps.orchestrator.api.store import InMemoryRunStore
 from apps.orchestrator.chatkit.context import ChatKitContext
 from apps.orchestrator.chatkit.runtime_service import ChatKitRuntimeService
-from apps.orchestrator.chatkit.server import WorkflowChatKitServer
+from apps.orchestrator.chatkit.server import (
+    InvalidTranscriptionInputError,
+    TranscriptionUnavailableError,
+    WorkflowChatKitServer,
+)
 from apps.orchestrator.chatkit.store import InMemoryAttachmentStore, InMemoryChatKitStore
 from apps.orchestrator.executors import IntegrationHTTPEgressPolicy, IntegrationHTTPExecutor
 from apps.orchestrator.runtime.env import get_env
@@ -25,10 +29,11 @@ def create_app(
     store: InMemoryChatKitStore | None = None,
     attachment_store: InMemoryAttachmentStore | None = None,
     run_store: InMemoryRunStore | None = None,
+    transcriber=None,
 ) -> Starlette:
     chat_store = store or InMemoryChatKitStore()
     attachment_store = attachment_store or InMemoryAttachmentStore(chat_store.attachments)
-    server = WorkflowChatKitServer(chat_store, attachment_store)
+    server = WorkflowChatKitServer(chat_store, attachment_store, transcriber=transcriber)
 
     event_store = InMemoryEventStore()
     event_bus = InMemoryEventBus()
@@ -76,7 +81,18 @@ def create_app(
             tenant_id=tenant_id,
             request_metadata=metadata,
         )
-        result = await server.process(body, ctx)
+        try:
+            result = await server.process(body, ctx)
+        except InvalidTranscriptionInputError as exc:
+            return JSONResponse(
+                {"error": {"code": "ERR_INVALID_AUDIO_INPUT", "message": str(exc)}},
+                status_code=422,
+            )
+        except TranscriptionUnavailableError as exc:
+            return JSONResponse(
+                {"error": {"code": "ERR_TRANSCRIPTION_UNAVAILABLE", "message": str(exc)}},
+                status_code=503,
+            )
         if isinstance(result, StreamingResult):
             return StreamingResponse(result, media_type="text/event-stream")
         if isinstance(result, NonStreamingResult):

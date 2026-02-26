@@ -4,6 +4,36 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-02-26
+
+### API diff vs previous version
+- Previous API version: `0.18.0`
+- Current API version: `0.19.0`
+- Compatibility: additive (`/chatkit` now documents optional `input.transcribe` non-stream request type)
+
+### Added
+- New additive ChatKit request contract:
+  - `type: input.transcribe`
+  - `params.audio_base64`
+  - `params.mime_type`
+- New ChatKit response schema:
+  - `ChatKitTranscriptionResult` (`{ text: string }`)
+- New JSON schema endpoints:
+  - `/schemas/chatkit-input-transcribe-request.schema.json`
+  - `/schemas/chatkit-widget-extension.schema.json`
+
+### Changed
+- `/chatkit` endpoint documentation now explicitly covers mixed response mode:
+  - SSE stream for interactive `threads.*` operations
+  - JSON response for `input.transcribe`
+- `ChatKitRequest` union now includes transcribe request shape.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-02-20
 
 ### API diff vs previous version

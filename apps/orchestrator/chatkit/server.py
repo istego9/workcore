@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from inspect import isawaitable
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from chatkit.actions import Action
 from chatkit.server import ChatKitServer
 from chatkit.types import (
+    AudioInput,
     AssistantMessageContent,
     AssistantMessageItem,
     ErrorEvent,
@@ -16,6 +17,7 @@ from chatkit.types import (
     ThreadItemDoneEvent,
     ThreadMetadata,
     ThreadStreamEvent,
+    TranscriptionResult,
     UserMessageItem,
     WidgetItem,
 )
@@ -33,8 +35,31 @@ from .widgets import (
     interaction_widget,
 )
 
+Transcriber = Callable[[AudioInput, ChatKitContext], Awaitable[TranscriptionResult] | TranscriptionResult]
+
+
+class TranscriptionUnavailableError(RuntimeError):
+    pass
+
+
+class InvalidTranscriptionInputError(ValueError):
+    pass
+
 
 class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
+    def __init__(
+        self,
+        store,
+        attachment_store=None,
+        transcriber: Optional[Transcriber] = None,
+        stt_allowed_media_types: Optional[set[str]] = None,
+        stt_max_audio_bytes: int = 10 * 1024 * 1024,
+    ):
+        super().__init__(store, attachment_store)
+        self._transcriber = transcriber
+        self._stt_allowed_media_types = stt_allowed_media_types or {"audio/webm", "audio/ogg", "audio/mp4"}
+        self._stt_max_audio_bytes = max(1, int(stt_max_audio_bytes))
+
     async def respond(
         self,
         thread: ThreadMetadata,
@@ -255,6 +280,29 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         if last_event_id:
             thread.metadata["last_event_id"] = last_event_id
             await self.store.save_thread(thread, context=context)
+
+    async def transcribe(self, audio_input: AudioInput, context: ChatKitContext) -> TranscriptionResult:
+        media_type = (audio_input.media_type or "").strip().lower()
+        if media_type not in self._stt_allowed_media_types:
+            raise InvalidTranscriptionInputError(
+                f"unsupported audio media type: {media_type or audio_input.mime_type}"
+            )
+        if not audio_input.data:
+            raise InvalidTranscriptionInputError("audio payload is empty")
+        if len(audio_input.data) > self._stt_max_audio_bytes:
+            raise InvalidTranscriptionInputError(
+                f"audio payload exceeds maximum size ({self._stt_max_audio_bytes} bytes)"
+            )
+        if self._transcriber is None:
+            raise TranscriptionUnavailableError("input.transcribe is not configured")
+        result = await self._await_if_needed(self._transcriber(audio_input, context))
+        if isinstance(result, TranscriptionResult):
+            return result
+        if isinstance(result, dict) and isinstance(result.get("text"), str):
+            return TranscriptionResult(text=result["text"])
+        if isinstance(result, str):
+            return TranscriptionResult(text=result)
+        raise TranscriptionUnavailableError("transcriber returned invalid response")
 
     def _assistant_message(self, thread: ThreadMetadata, context: ChatKitContext, text: str) -> ThreadItemDoneEvent:
         item = AssistantMessageItem(

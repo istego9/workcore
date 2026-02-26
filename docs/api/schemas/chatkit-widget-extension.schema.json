@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChatForkWidgetExtension",
+  "description": "Additive extension components rendered by fork frontend while preserving ChatKit widget compatibility.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/dataTable"
+    },
+    {
+      "$ref": "#/definitions/chart"
+    }
+  ],
+  "definitions": {
+    "dataTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["DataTable"]
+        },
+        "title": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "key": { "type": "string" },
+              "label": { "type": "string" },
+              "align": { "type": "string", "enum": ["left", "center", "right"] }
+            },
+            "required": ["key", "label"]
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": ["type", "columns", "rows"]
+    },
+    "chart": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["Chart"]
+        },
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": ["type", "data", "series"]
+    }
+  }
+}

@@ -19,6 +19,11 @@ class ChatKitConfig:
     upload_expires_seconds: int
     create_bucket: bool
     idempotency_ttl_seconds: int
+    stt_model: str
+    stt_api_key: Optional[str]
+    stt_timeout_seconds: int
+    stt_max_audio_bytes: int
+    stt_allowed_media_types: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "ChatKitConfig":
@@ -39,6 +44,19 @@ class ChatKitConfig:
         upload_expires_seconds = int(get_env("CHATKIT_UPLOAD_EXPIRES_SECONDS", "3600"))
         create_bucket = get_env("CHATKIT_OBJECT_CREATE_BUCKET", "false").lower() in {"1", "true", "yes"}
         idempotency_ttl_seconds = int(get_env("CHATKIT_IDEMPOTENCY_TTL_SECONDS", "300"))
+        stt_model = get_env("CHATKIT_STT_MODEL", "gpt-4o-mini-transcribe")
+        stt_api_key = get_env("CHATKIT_STT_API_KEY") or get_env("OPENAI_API_KEY")
+        stt_timeout_seconds = int(get_env("CHATKIT_STT_TIMEOUT_SECONDS", "30"))
+        stt_max_audio_bytes = int(get_env("CHATKIT_STT_MAX_AUDIO_BYTES", str(10 * 1024 * 1024)))
+        stt_allowed_raw = get_env(
+            "CHATKIT_STT_ALLOWED_MEDIA_TYPES",
+            "audio/webm,audio/ogg,audio/mp4",
+        )
+        stt_allowed_media_types = tuple(
+            item.strip().lower()
+            for item in stt_allowed_raw.split(",")
+            if item.strip()
+        )
 
         return cls(
             database_url=database_url,
@@ -52,4 +70,9 @@ class ChatKitConfig:
             upload_expires_seconds=upload_expires_seconds,
             create_bucket=create_bucket,
             idempotency_ttl_seconds=idempotency_ttl_seconds,
+            stt_model=stt_model,
+            stt_api_key=stt_api_key,
+            stt_timeout_seconds=stt_timeout_seconds,
+            stt_max_audio_bytes=stt_max_audio_bytes,
+            stt_allowed_media_types=stt_allowed_media_types,
         )
