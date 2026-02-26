@@ -115,9 +115,18 @@ const inferChatkitApiUrl = () => {
 
 const appOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
 const CHATKIT_PAGE = import.meta.env.VITE_CHATKIT_PAGE || `${appOrigin}/chatkit.html`;
+const CHAT_FORK_PAGE = import.meta.env.VITE_CHAT_FORK_PAGE || `${appOrigin}/chat-fork.html`;
 const CHATKIT_API_URL = import.meta.env.VITE_CHATKIT_API_URL || inferChatkitApiUrl();
 const CHATKIT_DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY || '';
 const CHATKIT_AUTH_TOKEN = import.meta.env.VITE_CHATKIT_AUTH_TOKEN || '';
+const CHAT_FRONTEND_MODE = (import.meta.env.VITE_CHAT_FRONTEND_MODE || 'chatkit').toLowerCase();
+const resolveChatPage = () => {
+  if (typeof window === 'undefined') return CHATKIT_PAGE;
+  const override = new URLSearchParams(window.location.search).get('chat_ui');
+  if (override === 'fork') return CHAT_FORK_PAGE;
+  if (override === 'chatkit') return CHATKIT_PAGE;
+  return CHAT_FRONTEND_MODE === 'fork' ? CHAT_FORK_PAGE : CHATKIT_PAGE;
+};
 const EXPORT_SCHEMA_VERSION = 'workflow_export_v1';
 
 type StatusState = { tone: keyof typeof statusTone; label: string; detail?: string };
@@ -1988,7 +1997,7 @@ export default function App() {
 
   const chatkitUrl = useMemo(() => {
     if (!workflowId) return '';
-    const url = new URL(CHATKIT_PAGE, window.location.origin);
+    const url = new URL(resolveChatPage(), window.location.origin);
     url.searchParams.set('api_url', CHATKIT_API_URL);
     if (CHATKIT_DOMAIN_KEY) {
       url.searchParams.set('domain_key', CHATKIT_DOMAIN_KEY);
@@ -2003,10 +2012,13 @@ export default function App() {
     if (projectId.trim()) {
       url.searchParams.set('project_id', projectId.trim());
     }
+    if (tenantId.trim()) {
+      url.searchParams.set('tenant_id', tenantId.trim());
+    }
     url.searchParams.set('auto', '1');
     url.searchParams.set('auto_start', '1');
     return url.toString();
-  }, [workflowId, activeVersionId, projectId]);
+  }, [workflowId, activeVersionId, projectId, tenantId]);
 
   const chatkitEmbedUrl = useMemo(() => {
     if (!chatkitUrl) return '';
