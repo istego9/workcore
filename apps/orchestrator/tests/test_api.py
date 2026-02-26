@@ -170,6 +170,33 @@ class ApiTests(unittest.TestCase):
         version_id = publish_response.json()["version_id"]
         return workflow_id, version_id
 
+    def _create_mcp_workflow(self, headers=None, client=None):
+        active_client = client or self.client
+        headers = self._with_project(headers)
+        draft = {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "mcp_1",
+                    "type": "mcp",
+                    "config": {"server": "local", "tool": "echo", "arguments": {"ping": True}},
+                },
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [
+                {"source": "start", "target": "mcp_1"},
+                {"source": "mcp_1", "target": "end"},
+            ],
+            "variables_schema": {},
+        }
+        response = active_client.post("/workflows", json={"name": "MCP workflow", "draft": draft}, headers=headers)
+        self.assertEqual(response.status_code, 201)
+        workflow_id = response.json()["workflow_id"]
+        publish_response = active_client.post(f"/workflows/{workflow_id}/publish", headers=headers)
+        self.assertEqual(publish_response.status_code, 200)
+        version_id = publish_response.json()["version_id"]
+        return workflow_id, version_id
+
     def _bootstrap_project(
         self,
         project_id: str,
@@ -1329,6 +1356,46 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json().get("mode"), "test")
+
+    def test_start_run_mcp_node_fails_with_explicit_bridge_configuration_error(self):
+        workflow_id, _ = self._create_mcp_workflow()
+        response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}},
+            headers=self._with_project(),
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload.get("status"), "FAILED")
+        mcp_run = next((item for item in payload.get("node_runs") or [] if item.get("node_id") == "mcp_1"), None)
+        self.assertIsNotNone(mcp_run)
+        self.assertIn("MCP bridge is not configured", str(mcp_run.get("last_error")))
+
+    def test_start_run_mcp_node_succeeds_with_mocked_bridge_client(self):
+        class FakeMCPClient:
+            def call_tool(self, server, tool, arguments, timeout_s, auth=None, metadata=None):
+                return {
+                    "server": server,
+                    "tool": tool,
+                    "arguments": arguments,
+                    "timeout_s": timeout_s,
+                    "metadata": metadata or {},
+                }
+
+        with mock.patch("apps.orchestrator.api.app.mcp_client_from_env", return_value=FakeMCPClient()):
+            client = TestClient(create_app(workflow_store=InMemoryWorkflowStore()))
+            workflow_id, _ = self._create_mcp_workflow(headers={"X-Project-Id": "proj_mcp_ok"}, client=client)
+            response = client.post(
+                f"/workflows/{workflow_id}/runs",
+                json={"inputs": {}},
+                headers={"X-Project-Id": "proj_mcp_ok"},
+            )
+            self.assertEqual(response.status_code, 201)
+            payload = response.json()
+            self.assertEqual(payload.get("status"), "COMPLETED")
+            mcp_run = next((item for item in payload.get("node_runs") or [] if item.get("node_id") == "mcp_1"), None)
+            self.assertIsNotNone(mcp_run)
+            self.assertEqual((mcp_run.get("output") or {}).get("tool"), "echo")
 
     def test_start_run_live_mode_overrides_default_mock_executor(self):
         class FakeLiveExecutor:

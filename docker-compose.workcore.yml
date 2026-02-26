@@ -40,6 +40,34 @@ services:
       postgres:
         condition: service_healthy
 
+  mcp-bridge:
+    image: workcore-local/orchestrator:dev
+    command: uvicorn apps.orchestrator.mcp_bridge.service:app --host 0.0.0.0 --port 8002
+    restart: unless-stopped
+    environment:
+      MCP_BRIDGE_AUTH_TOKEN: ${MCP_BRIDGE_AUTH_TOKEN:-dev_mcp_bridge_token}
+      MCP_BRIDGE_UPSTREAM_CALL_URL: ${MCP_BRIDGE_UPSTREAM_CALL_URL:-}
+      MCP_BRIDGE_UPSTREAM_AUTH_TOKEN: ${MCP_BRIDGE_UPSTREAM_AUTH_TOKEN:-}
+      MCP_BRIDGE_UPSTREAM_TIMEOUT_SECONDS: ${MCP_BRIDGE_UPSTREAM_TIMEOUT_SECONDS:-30}
+      MCP_BRIDGE_MAX_TIMEOUT_SECONDS: ${MCP_BRIDGE_MAX_TIMEOUT_SECONDS:-120}
+      MCP_BRIDGE_MAX_ARGUMENTS_BYTES: ${MCP_BRIDGE_MAX_ARGUMENTS_BYTES:-1048576}
+      MCP_BRIDGE_ALLOWED_SERVERS: ${MCP_BRIDGE_ALLOWED_SERVERS:-}
+      MCP_BRIDGE_ALLOWED_TOOLS: ${MCP_BRIDGE_ALLOWED_TOOLS:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=2)"
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
   orchestrator:
     image: workcore-local/orchestrator:dev
     build:
@@ -57,11 +85,17 @@ services:
       WORKCORE_API_AUTH_TOKEN: ${WORKCORE_API_AUTH_TOKEN:-}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://workcore.build,https://workcore.build,http://workcore.build:8080,https://workcore.build:8443,http://hq21.build,https://hq21.build}
       INTEGRATION_HTTP_ALLOWED_HOSTS: ${INTEGRATION_HTTP_ALLOWED_HOSTS:-}
+      MCP_BRIDGE_BASE_URL: ${MCP_BRIDGE_BASE_URL:-http://mcp-bridge:8002}
+      MCP_BRIDGE_AUTH_TOKEN: ${MCP_BRIDGE_AUTH_TOKEN:-dev_mcp_bridge_token}
+      MCP_BRIDGE_REQUEST_TIMEOUT_SECONDS: ${MCP_BRIDGE_REQUEST_TIMEOUT_SECONDS:-30}
+      MCP_BRIDGE_MAX_RESPONSE_BYTES: ${MCP_BRIDGE_MAX_RESPONSE_BYTES:-2097152}
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      mcp-bridge:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -94,6 +128,10 @@ services:
       CHATKIT_OBJECT_CREATE_BUCKET: "true"
       CHATKIT_IDEMPOTENCY_TTL_SECONDS: ${CHATKIT_IDEMPOTENCY_TTL_SECONDS:-300}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://workcore.build,https://workcore.build,http://workcore.build:8080,https://workcore.build:8443,http://hq21.build,https://hq21.build}
+      MCP_BRIDGE_BASE_URL: ${MCP_BRIDGE_BASE_URL:-http://mcp-bridge:8002}
+      MCP_BRIDGE_AUTH_TOKEN: ${MCP_BRIDGE_AUTH_TOKEN:-dev_mcp_bridge_token}
+      MCP_BRIDGE_REQUEST_TIMEOUT_SECONDS: ${MCP_BRIDGE_REQUEST_TIMEOUT_SECONDS:-30}
+      MCP_BRIDGE_MAX_RESPONSE_BYTES: ${MCP_BRIDGE_MAX_RESPONSE_BYTES:-2097152}
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,6 +139,8 @@ services:
         condition: service_started
       migrate:
         condition: service_completed_successfully
+      mcp-bridge:
+        condition: service_healthy
     healthcheck:
       test:
         [

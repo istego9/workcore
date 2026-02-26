@@ -18,7 +18,7 @@ from apps.orchestrator.chatkit.server import (
     WorkflowChatKitServer,
 )
 from apps.orchestrator.chatkit.store import InMemoryAttachmentStore, InMemoryChatKitStore
-from apps.orchestrator.executors import IntegrationHTTPEgressPolicy, IntegrationHTTPExecutor
+from apps.orchestrator.executors import IntegrationHTTPEgressPolicy, IntegrationHTTPExecutor, MCPExecutor, mcp_client_from_env
 from apps.orchestrator.runtime.env import get_env
 from apps.orchestrator.runtime import SimpleEvaluator
 from apps.orchestrator.streaming import EventPublisher, InMemoryEventBus, InMemoryEventStore
@@ -53,7 +53,10 @@ def create_app(
         bus=event_bus,
         evaluator=SimpleEvaluator(),
         workflow_loader=loader,
-        executors={"integration_http": IntegrationHTTPExecutor(egress_policy=integration_http_policy)},
+        executors={
+            "integration_http": IntegrationHTTPExecutor(egress_policy=integration_http_policy),
+            "mcp": MCPExecutor(mcp_client_from_env(get_env)),
+        },
     )
 
     base_run_store = run_store or InMemoryRunStore()

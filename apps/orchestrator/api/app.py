@@ -54,7 +54,9 @@ from apps.orchestrator.executors import (
     AgentExecutor,
     IntegrationHTTPEgressPolicy,
     IntegrationHTTPExecutor,
+    MCPExecutor,
     MockAgentExecutor,
+    mcp_client_from_env,
 )
 from apps.orchestrator.orchestrator_runtime import (
     OrchestratorRuntimeError,
@@ -301,9 +303,11 @@ class ApiContext:
 
             executor_mode = (get_env("AGENT_EXECUTOR_MODE") or "").strip().lower()
             integration_http_policy = IntegrationHTTPEgressPolicy.from_env(get_env)
+            mcp_client = mcp_client_from_env(get_env)
             executors: Dict[str, Any] = {
                 "agent_mock": MockAgentExecutor(),
                 "integration_http": IntegrationHTTPExecutor(egress_policy=integration_http_policy),
+                "mcp": MCPExecutor(mcp_client),
             }
             if AGENTS_AVAILABLE:
                 executors["agent_live"] = AgentExecutor()

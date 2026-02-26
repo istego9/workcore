@@ -265,3 +265,137 @@ class MultiWorkflowRuntimeService:
         max_retries = retry_policy.get("max_retries")
         if node.config.get("max_retries") is None and isinstance(max_retries, int):
             node.config["max_retries"] = max_retries
+
+        node_type = getattr(node, "type", "")
+        if node_type == "mcp":
+            defaults = MultiWorkflowRuntimeService._extract_data_source_defaults(contract, constraints, "mcp")
+            MultiWorkflowRuntimeService._apply_mcp_defaults(node.config, defaults)
+        elif node_type == "integration_http":
+            defaults = MultiWorkflowRuntimeService._extract_data_source_defaults(
+                contract,
+                constraints,
+                "integration_http",
+            )
+            MultiWorkflowRuntimeService._apply_integration_http_defaults(node.config, defaults)
+
+    @staticmethod
+    def _extract_data_source_defaults(
+        contract: Dict[str, Any],
+        constraints: Dict[str, Any],
+        node_type: str,
+    ) -> Dict[str, Any]:
+        defaults: Dict[str, Any] = {}
+        constraints_key = f"{node_type}_defaults"
+        constraints_defaults = constraints.get(constraints_key)
+        if isinstance(constraints_defaults, dict):
+            defaults.update(constraints_defaults)
+
+        compatibility_defaults = contract.get("data_source_defaults")
+        if isinstance(compatibility_defaults, dict):
+            compat_node_defaults = compatibility_defaults.get(node_type)
+            if isinstance(compat_node_defaults, dict):
+                for key, value in compat_node_defaults.items():
+                    defaults.setdefault(key, value)
+        return defaults
+
+    @staticmethod
+    def _apply_mcp_defaults(node_config: Dict[str, Any], defaults: Dict[str, Any]) -> None:
+        if not isinstance(defaults, dict) or not defaults:
+            return
+
+        for key in ("server", "tool"):
+            value = defaults.get(key)
+            if isinstance(value, str) and value.strip() and MultiWorkflowRuntimeService._is_missing(node_config.get(key)):
+                node_config[key] = value.strip()
+
+        timeout_value = defaults.get("timeout_s")
+        if MultiWorkflowRuntimeService._is_missing(node_config.get("timeout_s")) and isinstance(timeout_value, (int, float)):
+            node_config["timeout_s"] = float(timeout_value)
+
+        arguments_value = defaults.get("arguments")
+        if MultiWorkflowRuntimeService._is_missing(node_config.get("arguments")) and isinstance(arguments_value, dict):
+            node_config["arguments"] = dict(arguments_value)
+
+        allowed_tools_value = defaults.get("allowed_tools")
+        if MultiWorkflowRuntimeService._is_missing(node_config.get("allowed_tools")) and isinstance(allowed_tools_value, list):
+            tools = [item.strip() for item in allowed_tools_value if isinstance(item, str) and item.strip()]
+            node_config["allowed_tools"] = tools
+
+        auth_value = defaults.get("auth")
+        if MultiWorkflowRuntimeService._is_missing(node_config.get("auth")) and isinstance(auth_value, dict):
+            node_config["auth"] = MultiWorkflowRuntimeService._sanitize_auth_defaults(auth_value)
+
+    @staticmethod
+    def _apply_integration_http_defaults(node_config: Dict[str, Any], defaults: Dict[str, Any]) -> None:
+        if not isinstance(defaults, dict) or not defaults:
+            return
+
+        for key in (
+            "url",
+            "method",
+            "request_body_expression",
+            "response_state_target",
+            "response_body_state_target",
+        ):
+            value = defaults.get(key)
+            if isinstance(value, str) and value.strip() and MultiWorkflowRuntimeService._is_missing(node_config.get(key)):
+                node_config[key] = value.strip()
+
+        for key in ("timeout_s", "retry_attempts", "retry_backoff_s"):
+            value = defaults.get(key)
+            if MultiWorkflowRuntimeService._is_missing(node_config.get(key)) and isinstance(value, (int, float)):
+                node_config[key] = value
+
+        if "fail_on_status" in defaults and MultiWorkflowRuntimeService._is_missing(node_config.get("fail_on_status")):
+            fail_on_status_value = defaults.get("fail_on_status")
+            if isinstance(fail_on_status_value, bool):
+                node_config["fail_on_status"] = fail_on_status_value
+
+        allowed_statuses_value = defaults.get("allowed_statuses")
+        if MultiWorkflowRuntimeService._is_missing(node_config.get("allowed_statuses")) and isinstance(allowed_statuses_value, list):
+            statuses = [int(item) for item in allowed_statuses_value if isinstance(item, int)]
+            node_config["allowed_statuses"] = statuses
+
+        headers_value = defaults.get("headers")
+        if MultiWorkflowRuntimeService._is_missing(node_config.get("headers")) and isinstance(headers_value, dict):
+            sanitized_headers: Dict[str, str] = {}
+            for key, value in headers_value.items():
+                if not isinstance(key, str) or not key.strip():
+                    continue
+                if value is None:
+                    continue
+                sanitized_headers[key] = str(value)
+            node_config["headers"] = sanitized_headers
+
+        auth_value = defaults.get("auth")
+        if MultiWorkflowRuntimeService._is_missing(node_config.get("auth")) and isinstance(auth_value, dict):
+            node_config["auth"] = MultiWorkflowRuntimeService._sanitize_auth_defaults(auth_value)
+
+    @staticmethod
+    def _sanitize_auth_defaults(value: Dict[str, Any]) -> Dict[str, Any]:
+        forbidden_secret_fields = ("token", "password", "username")
+        for field in forbidden_secret_fields:
+            candidate = value.get(field)
+            if isinstance(candidate, str) and candidate.strip():
+                raise ValueError(
+                    f"capability defaults auth.{field} must not contain inline secret values; use {field}_env"
+                )
+        payload: Dict[str, Any] = {}
+        auth_type = value.get("type")
+        if isinstance(auth_type, str) and auth_type.strip():
+            payload["type"] = auth_type.strip().lower()
+        for key in ("token_env", "username_env", "password_env"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                payload[key] = item.strip()
+        return payload
+
+    @staticmethod
+    def _is_missing(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        if isinstance(value, (list, dict, tuple, set)):
+            return len(value) == 0
+        return False
