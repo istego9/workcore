@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -12,6 +13,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from apps.orchestrator.runtime.env import get_env, load_env
+
+_LOGGER = logging.getLogger("workcore.mcp_bridge")
 
 
 class BridgeConfigError(RuntimeError):
@@ -294,11 +297,23 @@ def create_app(
             if isawaitable(result):
                 result = await result
         except BridgeConfigError as exc:
+            _LOGGER.warning(
+                "mcp_bridge_unconfigured server=%s tool=%s error=%s",
+                server,
+                tool,
+                str(exc),
+            )
             return JSONResponse(
                 {"error": {"code": "PRECONDITION_FAILED", "message": str(exc)}},
                 status_code=503,
             )
         except Exception as exc:
+            _LOGGER.error(
+                "mcp_bridge_call_failed server=%s tool=%s error=%s",
+                server,
+                tool,
+                str(exc),
+            )
             return JSONResponse(
                 {"error": {"code": "INTERNAL", "message": str(exc)}},
                 status_code=502,
@@ -309,6 +324,7 @@ def create_app(
                 {"error": {"code": "INTERNAL", "message": "tool caller returned non-object result"}},
                 status_code=502,
             )
+        _LOGGER.info("mcp_bridge_call_ok server=%s tool=%s", server, tool)
         return JSONResponse({"result": result})
 
     routes = [
