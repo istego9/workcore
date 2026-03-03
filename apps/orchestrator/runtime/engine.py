@@ -78,7 +78,22 @@ class OrchestratorEngine:
         if run.status == COMPLETED:
             events.append(self._event("run_completed", run))
         if run.status == FAILED:
-            events.append(self._event("run_failed", run))
+            diagnostics = self._run_failure_diagnostics(run)
+            payload: Dict[str, Any] = {}
+            if diagnostics["error"]:
+                payload["error"] = diagnostics["error"]
+            if diagnostics["trace_id"]:
+                payload["trace_id"] = diagnostics["trace_id"]
+            if diagnostics["node_id"]:
+                payload["node_id"] = diagnostics["node_id"]
+            events.append(
+                self._event(
+                    "run_failed",
+                    run,
+                    node_id=diagnostics["node_id"],
+                    payload=payload or None,
+                )
+            )
         if run.status == WAITING:
             events.append(self._event("run_waiting_for_input", run))
 
@@ -167,6 +182,12 @@ class OrchestratorEngine:
                 if elapsed > timeout_value:
                     raise TimeoutError(f"Node {node.id} exceeded timeout ({elapsed:.2f}s)")
             events.extend(emitted)
+            if run.status == FAILED:
+                fallback_error = self._extract_error_from_events(emitted) or f"Node {node.id} failed without explicit error"
+                node_run.status = ERROR
+                if not node_run.last_error:
+                    node_run.last_error = fallback_error
+                return events
             if run.status != WAITING:
                 node_run.status = RESOLVED
                 events.append(self._event("node_completed", run, node.id))
@@ -677,6 +698,54 @@ class OrchestratorEngine:
             payload=payload,
             metadata=dict(run.metadata or {}),
         )
+
+    @staticmethod
+    def _error_text_from_payload(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(payload, dict):
+            return None
+        for key in ("error", "message", "reason"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                nested = value.get("message")
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()
+        return None
+
+    def _extract_error_from_events(self, events: List[Event]) -> Optional[str]:
+        for event in reversed(events):
+            if event.type not in {"node_failed", "run_failed"}:
+                continue
+            error = self._error_text_from_payload(event.payload)
+            if error:
+                return error
+        return None
+
+    def _run_failure_diagnostics(self, run: Run) -> Dict[str, Optional[str]]:
+        node_id: Optional[str] = None
+        error: Optional[str] = None
+        trace_id: Optional[str] = None
+        node_runs = list(run.node_runs.values())
+        for node_run in reversed(node_runs):
+            if node_run.last_error:
+                node_id = node_run.node_id
+                error = node_run.last_error
+                trace_id = node_run.trace_id
+                break
+        if node_id is None:
+            for node_run in reversed(node_runs):
+                if node_run.status == ERROR:
+                    node_id = node_run.node_id
+                    trace_id = node_run.trace_id
+                    break
+        if error is None:
+            error = "Run failed without explicit error"
+        return {
+            "node_id": node_id,
+            "error": error,
+            "trace_id": trace_id,
+        }
 
     @staticmethod
     def _new_id(prefix: str) -> str:

@@ -2177,6 +2177,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["interrupt_id"], interrupt_id)
         self.assertEqual(payload["status"], "CANCELLED")
 
+        run_after_cancel = self.client.get(f"/runs/{run_id}", headers=self._with_project())
+        self.assertEqual(run_after_cancel.status_code, 200)
+        cancelled_run = run_after_cancel.json()
+        ask_run = next((item for item in cancelled_run.get("node_runs", []) if item.get("node_id") == "ask"), None)
+        self.assertIsNotNone(ask_run)
+        self.assertEqual(ask_run.get("status"), "ERROR")
+        self.assertEqual(ask_run.get("last_error"), "interrupt_cancelled")
+
+        ledger_response = self.client.get(f"/runs/{run_id}/ledger", headers=self._with_project())
+        self.assertEqual(ledger_response.status_code, 200)
+        run_failed_entries = [item for item in ledger_response.json()["items"] if item.get("event_type") == "run_failed"]
+        self.assertTrue(run_failed_entries)
+        self.assertEqual(run_failed_entries[-1].get("step_id"), "ask")
+        self.assertEqual((run_failed_entries[-1].get("payload") or {}).get("error"), "interrupt_cancelled")
+
     def test_error_envelope_contains_correlation_id(self):
         response = self.client.get("/workflows/missing", headers=self._with_project())
         self.assertEqual(response.status_code, 404)

@@ -208,6 +208,75 @@ def _artifact_refs(payload: Any) -> List[str]:
     return unique
 
 
+def _as_text(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized or None
+    return None
+
+
+def _error_from_payload(payload: Dict[str, Any]) -> Optional[str]:
+    for key in ("error", "message", "reason"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+        if isinstance(value, dict):
+            nested = value.get("message")
+            if isinstance(nested, str):
+                normalized = nested.strip()
+                if normalized:
+                    return normalized
+    return None
+
+
+def _fallback_failed_node(run: Run) -> Optional[Any]:
+    node_runs = list((run.node_runs or {}).values())
+    for node_run in reversed(node_runs):
+        if node_run.last_error:
+            return node_run
+    for node_run in reversed(node_runs):
+        if node_run.status == "ERROR":
+            return node_run
+    return None
+
+
+def _enrich_run_failed_payload(
+    run: Run,
+    payload: Dict[str, Any],
+    event_node_id: Optional[str],
+) -> tuple[Dict[str, Any], Optional[str]]:
+    enriched = dict(payload or {})
+    metadata = run.metadata if isinstance(run.metadata, dict) else {}
+
+    resolved_node_id = _as_text(event_node_id) or _as_text(enriched.get("node_id"))
+    resolved_error = _error_from_payload(enriched)
+    resolved_trace = _as_text(enriched.get("trace_id"))
+
+    fallback_node = _fallback_failed_node(run)
+    if fallback_node is not None:
+        if resolved_node_id is None:
+            resolved_node_id = _as_text(getattr(fallback_node, "node_id", None))
+        if resolved_error is None:
+            resolved_error = _as_text(getattr(fallback_node, "last_error", None))
+        if resolved_trace is None:
+            resolved_trace = _as_text(getattr(fallback_node, "trace_id", None))
+
+    if resolved_node_id is not None:
+        enriched["node_id"] = resolved_node_id
+    if resolved_error is not None:
+        enriched["error"] = resolved_error
+    if resolved_trace is not None:
+        enriched["trace_id"] = resolved_trace
+
+    correlation_id = _as_text(metadata.get("correlation_id"))
+    if correlation_id is not None and _as_text(enriched.get("correlation_id")) is None:
+        enriched["correlation_id"] = correlation_id
+
+    return enriched, resolved_node_id
+
+
 def runtime_events_to_ledger_entries(run: Run, events: List[RuntimeEvent]) -> List[RunLedgerEntry]:
     metadata = run.metadata or {}
     tenant = str(metadata.get("tenant_id") or "local")
@@ -219,6 +288,11 @@ def runtime_events_to_ledger_entries(run: Run, events: List[RuntimeEvent]) -> Li
     for event in events:
         payload_raw = event.payload if isinstance(event.payload, dict) else {}
         payload = dict(payload_raw or {})
+        step_id = event.node_id
+        if event.type == "run_failed":
+            payload, resolved_node_id = _enrich_run_failed_payload(run, payload, event.node_id)
+            if step_id is None:
+                step_id = resolved_node_id
         node_binding = bindings.get(event.node_id or "") if isinstance(bindings, dict) else None
         if not isinstance(node_binding, dict):
             node_binding = {}
@@ -231,7 +305,7 @@ def runtime_events_to_ledger_entries(run: Run, events: List[RuntimeEvent]) -> Li
                 run_id=run.id,
                 workflow_id=run.workflow_id,
                 version_id=run.version_id,
-                step_id=event.node_id,
+                step_id=step_id,
                 capability_id=node_binding.get("capability_id") if isinstance(node_binding.get("capability_id"), str) else None,
                 capability_version=node_binding.get("capability_version")
                 if isinstance(node_binding.get("capability_version"), str)

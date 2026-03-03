@@ -583,6 +583,37 @@ class RuntimeEngineTests(unittest.TestCase):
         self.assertEqual(run.status, "FAILED")
         self.assertTrue(any(evt.type == "node_failed" for evt in events))
 
+    def test_fallback_error_when_executor_marks_run_failed_without_exception(self):
+        nodes = [
+            Node("start", "start"),
+            Node("agent", "agent"),
+            Node("end", "end"),
+        ]
+        edges = [
+            Edge("start", "agent"),
+            Edge("agent", "end"),
+        ]
+
+        def failing_executor_without_exception(run, node, emit):
+            run.status = "FAILED"
+            from apps.orchestrator.executors.types import ExecutorResult
+
+            return ExecutorResult(output={"ok": False})
+
+        engine = self._engine(nodes, edges, executors={"agent": failing_executor_without_exception})
+        run = engine.start_run({})
+        events = engine.execute_until_blocked(run)
+
+        self.assertEqual(run.status, "FAILED")
+        self.assertEqual(run.node_runs["agent"].status, "ERROR")
+        self.assertIn("failed without explicit error", run.node_runs["agent"].last_error)
+        self.assertFalse(any(evt.type == "node_completed" and evt.node_id == "agent" for evt in events))
+        run_failed_events = [evt for evt in events if evt.type == "run_failed"]
+        self.assertEqual(len(run_failed_events), 1)
+        self.assertEqual(run_failed_events[0].node_id, "agent")
+        self.assertEqual(run_failed_events[0].payload.get("node_id"), "agent")
+        self.assertEqual(run_failed_events[0].payload.get("error"), run.node_runs["agent"].last_error)
+
     def test_integration_http_maps_response_to_state(self):
         nodes = [
             Node("start", "start"),

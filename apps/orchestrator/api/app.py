@@ -2412,20 +2412,24 @@ def create_app(
                 return _error(request, "NOT_FOUND", "interrupt not found", 404)
             interrupt.status = "CANCELLED"
             run.status = "FAILED"
+            node_run = run.node_runs.get(interrupt.node_id)
+            if node_run is not None:
+                node_run.status = "ERROR"
+                node_run.last_error = "interrupt_cancelled"
             runtime = await _require_runtime()
-            await runtime._publish_with_snapshot(
-                run,
-                [
-                    RuntimeEvent(
-                        type="run_failed",
-                        run_id=run.id,
-                        workflow_id=run.workflow_id,
-                        version_id=run.version_id,
-                        node_id=interrupt.node_id,
-                        payload={"reason": "interrupt_cancelled"},
-                    )
-                ],
-            )
+            cancel_events = [
+                RuntimeEvent(
+                    type="run_failed",
+                    run_id=run.id,
+                    workflow_id=run.workflow_id,
+                    version_id=run.version_id,
+                    node_id=interrupt.node_id,
+                    payload={"reason": "interrupt_cancelled", "error": "interrupt_cancelled"},
+                    metadata=dict(run.metadata or {}),
+                )
+            ]
+            await runtime._publish_with_snapshot(run, cancel_events)
+            await runtime._notify_hooks(run, cancel_events)
             await _run_store_save(run, tenant_id=tenant)
             return _json(request, interrupt_to_dict(interrupt))
 
