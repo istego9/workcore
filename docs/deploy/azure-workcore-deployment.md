@@ -41,12 +41,15 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 
 ## Target architecture
 - Edge ingress: Azure Front Door Standard + WAF
-- UI: Azure Static Web Apps
+- UI: Azure Static Web Apps (regional exception: hosted in `West Europe`, because SWA is unavailable in `UAE North`)
 - Runtime:
   - `orchestrator` in Azure Container Apps (`min=1`, `max=1`)
   - `chatkit` in Azure Container Apps (`min=1`, `max=1`)
   - `mcp-bridge` internal-only Container App (`min=1`, `max=1`)
   - `minio` internal-only Container App with Azure Files volume (`min=1`, `max=1`)
+- Networking:
+  - dedicated PostgreSQL delegated subnet (`snet-postgres-flex`)
+  - dedicated Container Apps delegated subnet (`snet-containerapps`, `Microsoft.App/environments`)
 - Data:
   - Azure Database for PostgreSQL Flexible Server (`B2s`, private access)
   - Key Vault for secrets (RBAC)
@@ -56,6 +59,18 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
   - Azure Monitor alerts + action group
 - Model layer:
   - Azure OpenAI in `UAE North` only
+
+## Domain strategy (dual API domain)
+- Primary API domain: `api.hq21.tech`
+- Secondary API domain: `api.runwcr.com`
+- Rollout policy:
+  - Primary is enabled in Front Door from first deployment.
+  - Secondary is created but enabled only after smoke validation (controlled by deploy input `enable_secondary_api_domain`).
+- Front Door routing:
+  - `route-api-primary` -> orchestrator origin group
+  - `route-api-secondary` -> orchestrator origin group (optional cutover route)
+- DNS:
+  - both API hostnames must CNAME to Front Door endpoint hostname.
 
 ## Runtime data flow
 1. User opens `workcore.<domain>` through Front Door.
@@ -101,8 +116,13 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 2. Build/push images to ACR.
 3. Deploy runtime revisions.
 4. Run migrations job.
-5. Run smoke/e2e checks against Azure domains.
-6. Cut traffic through Front Door routes.
+5. Deploy Front Door with `api.hq21.tech` as primary API route.
+6. Run smoke/e2e checks against primary API domain.
+7. Enable secondary API route (`api.runwcr.com`) and run secondary-domain smoke.
+8. Keep both routes active or use secondary as staged cutover endpoint.
+
+## Existing environment migration note
+- If Container Apps environment was created before VNet integration, recreate it after deleting dependent apps/jobs so private PostgreSQL DNS resolves from runtime containers.
 
 ## Rollback
 1. Revert to previous Container Apps revision.
@@ -118,3 +138,14 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 - `cd apps/builder && npm run test:unit`
 - `cd apps/builder && npm run test:e2e` (smoke against Azure URL)
 - `./scripts/dev_check.sh` (local regression baseline)
+
+## Automation and operator commands
+- Preflight dual-domain readiness:
+  - `./deploy/azure/scripts/preflight_dual_api_domains.sh`
+- Full deploy via GitHub workflow:
+  - `.github/workflows/deploy-azure.yml`
+- Direct Front Door apply:
+  - `./deploy/azure/scripts/deploy_frontdoor.sh`
+    - `API_PRIMARY_DOMAIN=api.hq21.tech`
+    - `API_SECONDARY_DOMAIN=api.runwcr.com`
+    - `ENABLE_SECONDARY_API_DOMAIN=false|true`

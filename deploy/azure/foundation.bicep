@@ -27,6 +27,9 @@ param minioShareName string = 'minio-data'
 @description('Static Web App name.')
 param staticWebAppName string
 
+@description('Static Web App region (Static Web Apps is not available in UAE North).')
+param staticWebAppLocation string = 'westeurope'
+
 @description('Azure OpenAI account name (globally unique).')
 param azureOpenAIAccountName string
 
@@ -41,6 +44,12 @@ param postgresSubnetName string = 'snet-postgres-flex'
 
 @description('Delegated subnet CIDR for PostgreSQL Flexible Server.')
 param postgresSubnetPrefix string = '10.42.1.0/24'
+
+@description('Delegated subnet name for Container Apps environment infrastructure.')
+param containerAppsSubnetName string = 'snet-containerapps'
+
+@description('Delegated subnet CIDR for Container Apps environment infrastructure.')
+param containerAppsSubnetPrefix string = '10.42.2.0/23'
 
 @description('Private DNS zone name for PostgreSQL Flexible Server private access.')
 param postgresPrivateDnsZoneName string = 'private.postgres.database.azure.com'
@@ -185,11 +194,26 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
           privateLinkServiceNetworkPolicies: 'Enabled'
         }
       }
+      {
+        name: containerAppsSubnetName
+        properties: {
+          addressPrefix: containerAppsSubnetPrefix
+          delegations: [
+            {
+              name: 'container-apps-delegation'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
     ]
   }
 }
 
 var postgresSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, postgresSubnetName)
+var containerAppsSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, containerAppsSubnetName)
 
 resource postgresPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   name: postgresPrivateDnsZoneName
@@ -267,13 +291,17 @@ resource containerAppsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
         sharedKey: logAnalyticsSharedKey
       }
     }
+    vnetConfiguration: {
+      infrastructureSubnetId: containerAppsSubnetId
+      internal: false
+    }
     zoneRedundant: false
   }
 }
 
 resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = {
   name: staticWebAppName
-  location: location
+  location: staticWebAppLocation
   tags: tags
   sku: {
     name: 'Standard'

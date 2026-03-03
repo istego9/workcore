@@ -16,16 +16,33 @@ on:
         type: boolean
         required: true
         default: true
+      enable_secondary_api_domain:
+        description: Enable the secondary API domain route (api.runwcr.com cutover)
+        type: boolean
+        required: true
+        default: false
       workcore_domain:
         description: Optional workcore custom domain (for Front Door)
         required: false
         default: ''
-      api_domain:
-        description: Optional api custom domain (for Front Door)
-        required: false
-        default: ''
+      api_primary_domain:
+        description: Primary API custom domain
+        required: true
+        default: api.hq21.tech
+      api_secondary_domain:
+        description: Secondary API custom domain (activated by enable_secondary_api_domain)
+        required: true
+        default: api.runwcr.com
       chatkit_domain:
         description: Optional chatkit custom domain (for Front Door)
+        required: false
+        default: ''
+      cors_allow_origins:
+        description: Optional CORS allowlist for orchestrator/chatkit (comma-separated)
+        required: false
+        default: ''
+      integration_http_allowed_hosts:
+        description: Optional integration HTTP allowed hosts (comma-separated)
         required: false
         default: ''
 
@@ -41,9 +58,12 @@ env:
   STORAGE_ACCOUNT_NAME: stworkcoreproduaen
   MINIO_SHARE_NAME: minio-data
   SWA_NAME: swa-workcore-prod-uaen
+  SWA_LOCATION: westeurope
   AOAI_ACCOUNT_NAME: aoai-workcore-prod-uaen
   VNET_NAME: vnet-workcore-prod-uaen
   POSTGRES_SUBNET_NAME: snet-postgres-flex
+  CONTAINERAPPS_SUBNET_NAME: snet-containerapps
+  CONTAINERAPPS_SUBNET_PREFIX: 10.42.2.0/23
   POSTGRES_SERVER_NAME: pg-workcore-prod-uaen
   POSTGRES_DB_NAME: workflow
   POSTGRES_ADMIN_LOGIN: workcoreadmin
@@ -123,6 +143,8 @@ jobs:
           AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
           AZ_LOCATION: ${{ inputs.location }}
           WORKCORE_IMAGE: ${{ steps.build.outputs.image_ref }}
+          CORS_ALLOW_ORIGINS: ${{ inputs.cors_allow_origins }}
+          INTEGRATION_HTTP_ALLOWED_HOSTS: ${{ inputs.integration_http_allowed_hosts }}
         run: ./deploy/azure/scripts/deploy_apps.sh
 
       - name: Deploy Front Door + WAF
@@ -130,6 +152,8 @@ jobs:
         env:
           AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
           WORKCORE_DOMAIN: ${{ inputs.workcore_domain }}
-          API_DOMAIN: ${{ inputs.api_domain }}
+          API_PRIMARY_DOMAIN: ${{ inputs.api_primary_domain }}
+          API_SECONDARY_DOMAIN: ${{ inputs.api_secondary_domain }}
+          ENABLE_SECONDARY_API_DOMAIN: ${{ inputs.enable_secondary_api_domain }}
           CHATKIT_DOMAIN: ${{ inputs.chatkit_domain }}
         run: ./deploy/azure/scripts/deploy_frontdoor.sh

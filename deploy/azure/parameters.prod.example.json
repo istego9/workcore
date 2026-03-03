@@ -26,6 +26,9 @@
     "staticWebAppName": {
       "value": "swa-workcore-prod-uaen"
     },
+    "staticWebAppLocation": {
+      "value": "westeurope"
+    },
     "azureOpenAIAccountName": {
       "value": "aoai-workcore-prod-uaen"
     },
@@ -34,6 +37,12 @@
     },
     "postgresSubnetName": {
       "value": "snet-postgres-flex"
+    },
+    "containerAppsSubnetName": {
+      "value": "snet-containerapps"
+    },
+    "containerAppsSubnetPrefix": {
+      "value": "10.42.2.0/23"
     },
     "postgresServerName": {
       "value": "pg-workcore-prod-uaen"

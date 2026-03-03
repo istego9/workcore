@@ -51,6 +51,8 @@ MCP_BRIDGE_AUTH_TOKEN="$(get_secret_or_default mcp-bridge-auth-token)"
 AZURE_OPENAI_ENDPOINT="$(get_secret_or_default azure-openai-endpoint)"
 AZURE_OPENAI_API_KEY="$(get_secret_or_default azure-openai-api-key)"
 AZURE_OPENAI_API_VERSION="$(get_secret_or_default azure-openai-api-version 2025-01-01-preview)"
+CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS:-https://workcore.example.com,https://api.example.com,https://chatkit.example.com}"
+INTEGRATION_HTTP_ALLOWED_HOSTS="${INTEGRATION_HTTP_ALLOWED_HOSTS:-api.openai.com,*.openai.azure.com}"
 
 require_non_empty() {
   local value="$1"
@@ -119,12 +121,7 @@ properties:
       - name: mcp-bridge
         image: ${WORKCORE_IMAGE}
         command:
-          - uvicorn
-          - apps.orchestrator.mcp_bridge.service:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - "8002"
+          - /app/deploy/azure/apps/run_mcp_bridge.sh
         env:
           - name: MCP_BRIDGE_AUTH_TOKEN
             secretRef: mcp-bridge-auth-token
@@ -162,8 +159,6 @@ properties:
         args:
           - server
           - /data
-          - --console-address
-          - :9001
         env:
           - name: MINIO_ROOT_USER
             secretRef: minio-root-user
@@ -190,7 +185,140 @@ apply_container_app() {
   if az containerapp show --resource-group "${AZ_RESOURCE_GROUP}" --name "${name}" >/dev/null 2>&1; then
     az containerapp update --resource-group "${AZ_RESOURCE_GROUP}" --name "${name}" --yaml "${manifest}" --output none
   else
-    az containerapp create --resource-group "${AZ_RESOURCE_GROUP}" --yaml "${manifest}" --output none
+    case "${name}" in
+      "${MCP_BRIDGE_APP_NAME}")
+        az containerapp create \
+          --resource-group "${AZ_RESOURCE_GROUP}" \
+          --name "${MCP_BRIDGE_APP_NAME}" \
+          --environment "${ACA_ENV_NAME}" \
+          --image "${WORKCORE_IMAGE}" \
+          --ingress internal \
+          --target-port 8002 \
+          --min-replicas 1 \
+          --max-replicas 1 \
+          --cpu 0.5 \
+          --memory 1Gi \
+          --registry-server "${ACR_LOGIN_SERVER}" \
+          --registry-username "${ACR_USERNAME}" \
+          --registry-password "${ACR_PASSWORD}" \
+          --secrets mcp-bridge-auth-token="${MCP_BRIDGE_AUTH_TOKEN}" \
+          --env-vars MCP_BRIDGE_AUTH_TOKEN=secretref:mcp-bridge-auth-token \
+          --command /app/deploy/azure/apps/run_mcp_bridge.sh \
+          --output none
+        ;;
+      "${MINIO_APP_NAME}")
+        az containerapp create \
+          --resource-group "${AZ_RESOURCE_GROUP}" \
+          --name "${MINIO_APP_NAME}" \
+          --environment "${ACA_ENV_NAME}" \
+          --image minio/minio:latest \
+          --ingress internal \
+          --target-port 9000 \
+          --min-replicas 1 \
+          --max-replicas 1 \
+          --cpu 0.5 \
+          --memory 1Gi \
+          --secrets minio-root-user="${MINIO_ROOT_USER}" minio-root-password="${MINIO_ROOT_PASSWORD}" \
+          --env-vars MINIO_ROOT_USER=secretref:minio-root-user MINIO_ROOT_PASSWORD=secretref:minio-root-password \
+          --command minio \
+          --args server /data \
+          --output none
+        ;;
+      "${ORCHESTRATOR_APP_NAME}")
+        az containerapp create \
+          --resource-group "${AZ_RESOURCE_GROUP}" \
+          --name "${ORCHESTRATOR_APP_NAME}" \
+          --environment "${ACA_ENV_NAME}" \
+          --image "${WORKCORE_IMAGE}" \
+          --ingress external \
+          --target-port 8000 \
+          --min-replicas 1 \
+          --max-replicas 1 \
+          --cpu 1.0 \
+          --memory 2Gi \
+          --registry-server "${ACR_LOGIN_SERVER}" \
+          --registry-username "${ACR_USERNAME}" \
+          --registry-password "${ACR_PASSWORD}" \
+          --secrets \
+            db-url="${DATABASE_URL}" \
+            api-auth-token="${WORKCORE_API_AUTH_TOKEN}" \
+            webhook-inbound-secret="${WEBHOOK_DEFAULT_INBOUND_SECRET}" \
+            azure-openai-api-key="${AZURE_OPENAI_API_KEY}" \
+            mcp-bridge-auth-token="${MCP_BRIDGE_AUTH_TOKEN}" \
+          --env-vars \
+            DATABASE_URL=secretref:db-url \
+            CHATKIT_DATABASE_URL=secretref:db-url \
+            WORKCORE_API_AUTH_TOKEN=secretref:api-auth-token \
+            WEBHOOK_DEFAULT_INBOUND_SECRET=secretref:webhook-inbound-secret \
+            WEBHOOK_DEFAULT_INTEGRATION_KEY=default \
+            CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS}" \
+            INTEGRATION_HTTP_ALLOWED_HOSTS="${INTEGRATION_HTTP_ALLOWED_HOSTS}" \
+            STREAMING_STORE_BACKEND=postgres \
+            WEBHOOK_STORE_BACKEND=postgres \
+            STREAMING_BACKEND=memory \
+            AGENT_EXECUTOR_MODE=live \
+            OPENAI_API=responses \
+            OPENAI_MODEL=wf-agent \
+            ORCHESTRATOR_MODEL_ID=wf-router \
+            AZURE_OPENAI_ENDPOINT="${AZURE_OPENAI_ENDPOINT}" \
+            AZURE_OPENAI_API_VERSION="${AZURE_OPENAI_API_VERSION}" \
+            AZURE_OPENAI_API_KEY=secretref:azure-openai-api-key \
+            MCP_BRIDGE_BASE_URL="${MCP_BRIDGE_BASE_URL}" \
+            MCP_BRIDGE_AUTH_TOKEN=secretref:mcp-bridge-auth-token \
+          --command /app/deploy/azure/apps/run_orchestrator_api.sh \
+          --output none
+        ;;
+      "${CHATKIT_APP_NAME}")
+        az containerapp create \
+          --resource-group "${AZ_RESOURCE_GROUP}" \
+          --name "${CHATKIT_APP_NAME}" \
+          --environment "${ACA_ENV_NAME}" \
+          --image "${WORKCORE_IMAGE}" \
+          --ingress external \
+          --target-port 8001 \
+          --min-replicas 1 \
+          --max-replicas 1 \
+          --cpu 1.0 \
+          --memory 2Gi \
+          --registry-server "${ACR_LOGIN_SERVER}" \
+          --registry-username "${ACR_USERNAME}" \
+          --registry-password "${ACR_PASSWORD}" \
+          --secrets \
+            db-url="${CHATKIT_DATABASE_URL}" \
+            chatkit-auth-token="${CHATKIT_AUTH_TOKEN}" \
+            minio-root-user="${MINIO_ROOT_USER}" \
+            minio-root-password="${MINIO_ROOT_PASSWORD}" \
+            azure-openai-api-key="${AZURE_OPENAI_API_KEY}" \
+            mcp-bridge-auth-token="${MCP_BRIDGE_AUTH_TOKEN}" \
+          --env-vars \
+            CHATKIT_DATABASE_URL=secretref:db-url \
+            CHATKIT_AUTH_TOKEN=secretref:chatkit-auth-token \
+            CHATKIT_OBJECT_ENDPOINT="${MINIO_ENDPOINT}" \
+            CHATKIT_OBJECT_ACCESS_KEY=secretref:minio-root-user \
+            CHATKIT_OBJECT_SECRET_KEY=secretref:minio-root-password \
+            CHATKIT_OBJECT_BUCKET=chatkit \
+            CHATKIT_OBJECT_SECURE=true \
+            CHATKIT_OBJECT_PREFIX=chatkit \
+            CHATKIT_OBJECT_CREATE_BUCKET=true \
+            CHATKIT_STT_MODEL=wf-stt \
+            CHATKIT_STT_API_KEY=secretref:azure-openai-api-key \
+            AZURE_OPENAI_ENDPOINT="${AZURE_OPENAI_ENDPOINT}" \
+            AZURE_OPENAI_API_VERSION="${AZURE_OPENAI_API_VERSION}" \
+            AZURE_OPENAI_API_KEY=secretref:azure-openai-api-key \
+            MCP_BRIDGE_BASE_URL="${MCP_BRIDGE_BASE_URL}" \
+            MCP_BRIDGE_AUTH_TOKEN=secretref:mcp-bridge-auth-token \
+            CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS}" \
+          --command /app/deploy/azure/apps/run_chatkit.sh \
+          --output none
+        ;;
+      *)
+        echo "Unknown container app '${name}' for bootstrap create" >&2
+        exit 1
+        ;;
+    esac
+
+    # Update with full manifest to enforce desired shape (including volumes).
+    az containerapp update --resource-group "${AZ_RESOURCE_GROUP}" --name "${name}" --yaml "${manifest}" --output none
   fi
 }
 
@@ -237,12 +365,7 @@ properties:
       - name: orchestrator
         image: ${WORKCORE_IMAGE}
         command:
-          - uvicorn
-          - apps.orchestrator.api.service:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - "8000"
+          - /app/deploy/azure/apps/run_orchestrator_api.sh
         env:
           - name: DATABASE_URL
             secretRef: db-url
@@ -255,9 +378,9 @@ properties:
           - name: WEBHOOK_DEFAULT_INTEGRATION_KEY
             value: default
           - name: CORS_ALLOW_ORIGINS
-            value: https://workcore.example.com,https://api.example.com,https://chatkit.example.com
+            value: ${CORS_ALLOW_ORIGINS}
           - name: INTEGRATION_HTTP_ALLOWED_HOSTS
-            value: api.openai.com,*.openai.azure.com
+            value: ${INTEGRATION_HTTP_ALLOWED_HOSTS}
           - name: STREAMING_STORE_BACKEND
             value: postgres
           - name: WEBHOOK_STORE_BACKEND
@@ -326,12 +449,7 @@ properties:
       - name: chatkit
         image: ${WORKCORE_IMAGE}
         command:
-          - uvicorn
-          - apps.orchestrator.chatkit.service:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - "8001"
+          - /app/deploy/azure/apps/run_chatkit.sh
         env:
           - name: CHATKIT_DATABASE_URL
             secretRef: db-url
@@ -366,7 +484,7 @@ properties:
           - name: MCP_BRIDGE_AUTH_TOKEN
             secretRef: mcp-bridge-auth-token
           - name: CORS_ALLOW_ORIGINS
-            value: https://workcore.example.com,https://api.example.com,https://chatkit.example.com
+            value: ${CORS_ALLOW_ORIGINS}
         resources:
           cpu: 1.0
           memory: 2Gi
@@ -379,43 +497,30 @@ echo "[apps] deploying orchestrator/chatkit"
 apply_container_app "${ORCHESTRATOR_APP_NAME}" "${TMP_DIR}/orchestrator.yaml"
 apply_container_app "${CHATKIT_APP_NAME}" "${TMP_DIR}/chatkit.yaml"
 
-write_manifest "${TMP_DIR}/migrate-job.yaml" <<EOF_JOB
-name: ${MIGRATE_JOB_NAME}
-type: Microsoft.App/jobs
-location: ${AZ_LOCATION}
-properties:
-  environmentId: ${ACA_ENV_ID}
-  configuration:
-    triggerType: Manual
-    replicaRetryLimit: 1
-    replicaTimeout: 900
-    secrets:
-      - name: acr-password
-        value: ${ACR_PASSWORD}
-      - name: db-url
-        value: ${DATABASE_URL}
-    registries:
-      - server: ${ACR_LOGIN_SERVER}
-        username: ${ACR_USERNAME}
-        passwordSecretRef: acr-password
-  template:
-    containers:
-      - name: migrate
-        image: ${WORKCORE_IMAGE}
-        command:
-          - python
-          - scripts/migrate.py
-        env:
-          - name: DATABASE_URL
-            secretRef: db-url
-    initContainers: []
-EOF_JOB
-
 if az containerapp job show --resource-group "${AZ_RESOURCE_GROUP}" --name "${MIGRATE_JOB_NAME}" >/dev/null 2>&1; then
-  az containerapp job update --resource-group "${AZ_RESOURCE_GROUP}" --name "${MIGRATE_JOB_NAME}" --yaml "${TMP_DIR}/migrate-job.yaml" --output none
-else
-  az containerapp job create --resource-group "${AZ_RESOURCE_GROUP}" --yaml "${TMP_DIR}/migrate-job.yaml" --output none
+  az containerapp job delete --resource-group "${AZ_RESOURCE_GROUP}" --name "${MIGRATE_JOB_NAME}" --yes --output none
 fi
+
+az containerapp job create \
+  --resource-group "${AZ_RESOURCE_GROUP}" \
+  --name "${MIGRATE_JOB_NAME}" \
+  --environment "${ACA_ENV_NAME}" \
+  --trigger-type Manual \
+  --replica-timeout 900 \
+  --replica-retry-limit 1 \
+  --replica-completion-count 1 \
+  --parallelism 1 \
+  --image "${WORKCORE_IMAGE}" \
+  --cpu 0.5 \
+  --memory 1Gi \
+  --registry-server "${ACR_LOGIN_SERVER}" \
+  --registry-username "${ACR_USERNAME}" \
+  --registry-password "${ACR_PASSWORD}" \
+  --secrets db-url="${DATABASE_URL}" \
+  --env-vars DATABASE_URL=secretref:db-url \
+  --command python \
+  --args scripts/migrate.py \
+  --output none
 
 echo "[apps] running migration job"
 az containerapp job start --resource-group "${AZ_RESOURCE_GROUP}" --name "${MIGRATE_JOB_NAME}" --output none
