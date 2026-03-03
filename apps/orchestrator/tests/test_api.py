@@ -2251,6 +2251,10 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Current API version", markdown_response.text)
         self.assertIn("Special instructions and examples", markdown_response.text)
         self.assertIn("set_state.assignments[]", markdown_response.text)
+        self.assertIn("Chat Frontend Integration (Fork)", markdown_response.text)
+        self.assertIn("Option A: embed chat-fork frontend in an external app", markdown_response.text)
+        self.assertIn("Option B: headless integration against ChatKit API", markdown_response.text)
+        self.assertIn("input.transcribe", markdown_response.text)
         self.assertIn("Example: project bootstrap + registry binding", markdown_response.text)
         self.assertIn("Example: orchestrator message", markdown_response.text)
 

@@ -4,6 +4,33 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-03-02
+
+### API diff vs previous version
+- Previous API version: `0.19.0`
+- Current API version: `0.20.0`
+- Compatibility: additive (Chat fork widget extension schema now supports full Nivo chart type registry via `chart_type` + `nivo_props`)
+
+### Added
+- `chatkit-widget-extension` schema now documents `Chart.chart_type` with full Nivo chart registry:
+  - `bar`, `line`, `pie`, `area-bump`, `bump`
+  - `boxplot`, `bullet`, `calendar`, `chord`, `circle-packing`
+  - `funnel`, `geo`, `heatmap`, `icicle`, `marimekko`
+  - `network`, `parallel-coordinates`, `polar-bar`, `radar`, `radial-bar`
+  - `sankey`, `scatterplot`, `stream`, `sunburst`, `swarmplot`
+  - `tree`, `treemap`, `waffle`
+- `chatkit-widget-extension` schema now documents `Chart.nivo_props` for pass-through renderer configuration.
+
+### Changed
+- `chatkit-widget-extension` `Chart.data` contract now allows both object and array payloads (for hierarchy/network/chart-specific shapes).
+- `chatkit-widget-extension` no longer requires `data` + `series` for all charts; required fields are now chart-type-specific.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-02-26
 
 ### API diff vs previous version

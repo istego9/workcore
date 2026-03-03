@@ -88,6 +88,10 @@ export type WidgetComponent = {
   required?: boolean;
   submit?: boolean;
   style?: string;
+  chart_type?: string;
+  chartType?: string;
+  nivo_props?: Record<string, unknown>;
+  nivoProps?: Record<string, unknown>;
   data?: Array<Record<string, string | number>>;
   series?: Array<Record<string, unknown>>;
   xAxis?: string | Record<string, unknown>;

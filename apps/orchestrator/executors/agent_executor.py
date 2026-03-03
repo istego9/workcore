@@ -90,6 +90,8 @@ class AgentNodeConfig:
 
 
 class AgentExecutor:
+    _page_text_max_len = None
+
     def __init__(self, tool_registry: Optional[Dict[str, Any]] = None) -> None:
         if not AGENTS_AVAILABLE:
             raise RuntimeError("openai-agents is not installed")
@@ -299,6 +301,9 @@ class AgentExecutor:
     @classmethod
     def _summarize_document_page(cls, page: Dict[str, Any]) -> Dict[str, Any]:
         summary: Dict[str, Any] = {}
+        text = cls._extract_text_snippet(page, cls._page_text_max_len)
+        if text:
+            summary["text"] = text
         page_number = page.get("page_number")
         if isinstance(page_number, int):
             summary["page_number"] = page_number
@@ -319,16 +324,24 @@ class AgentExecutor:
         return summary
 
     @classmethod
+    def _extract_text_snippet(cls, page: Dict[str, Any], max_len: Optional[int]) -> Optional[str]:
+        for field in ("text", "ocr_text", "markdown"):
+            value = cls._as_optional_text(page.get(field))
+            if not value:
+                continue
+            if max_len is None or max_len <= 0 or len(value) <= max_len:
+                return value
+            return value[: max_len - 3] + "..."
+        return None
+
+    @classmethod
     def _extract_preview_text(cls, pages: List[Any], max_len: int = 180) -> Optional[str]:
         for raw_page in pages:
             if not isinstance(raw_page, dict):
                 continue
-            for field in ("text", "ocr_text", "markdown"):
-                value = cls._as_optional_text(raw_page.get(field))
-                if value:
-                    if len(value) <= max_len:
-                        return value
-                    return value[: max_len - 3] + "..."
+            value = cls._extract_text_snippet(raw_page, None)
+            if value:
+                return value[:max_len]
         return None
 
     @staticmethod

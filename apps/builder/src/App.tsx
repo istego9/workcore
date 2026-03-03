@@ -75,6 +75,7 @@ import {
   computeZoomedOffset
 } from './builder/viewport';
 import { normalizeProjectId } from './project-switcher';
+import { normalizeSchemaTypeLabel } from './template-variable-types';
 import { shouldAutoCreateWorkflow } from './workflow-auto-create';
 import './styles.css';
 
@@ -758,33 +759,36 @@ function TemplateTextarea({
                       <Text size="xs" tt="uppercase" fw={600} c="dimmed">
                         {group}
                       </Text>
-                      {items.map((item) => (
-                        <Group
-                          key={item.key}
-                          justify="space-between"
-                          wrap="nowrap"
-                          className="variable-item"
-                          data-var-value={item.value}
-                          onClick={() => {
-                            insertVariable(item.value);
-                            setOpened(false);
-                          }}
-                        >
-                          <Group gap="xs" wrap="nowrap">
-                            <Badge variant="light" color="blue">
-                              {item.label}
-                            </Badge>
-                            <Text size="xs" c="dimmed">
-                              {item.value}
-                            </Text>
+                      {items.map((item) => {
+                        const typeLabel = normalizeSchemaTypeLabel(item.type);
+                        return (
+                          <Group
+                            key={item.key}
+                            justify="space-between"
+                            wrap="nowrap"
+                            className="variable-item"
+                            data-var-value={item.value}
+                            onClick={() => {
+                              insertVariable(item.value);
+                              setOpened(false);
+                            }}
+                          >
+                            <Group gap="xs" wrap="nowrap">
+                              <Badge variant="light" color="blue">
+                                {item.label}
+                              </Badge>
+                              <Text size="xs" c="dimmed">
+                                {item.value}
+                              </Text>
+                            </Group>
+                            {typeLabel && (
+                              <Badge variant="outline" color="gray">
+                                {typeLabel.toUpperCase()}
+                              </Badge>
+                            )}
                           </Group>
-                          {item.type && (
-                            <Badge variant="outline" color="gray">
-                              {item.type.toUpperCase()}
-                            </Badge>
-                          )}
-                        </Group>
-                      ))}
+                        );
+                      })}
                     </Stack>
                   ))}
                 </Stack>
@@ -994,19 +998,19 @@ export default function App() {
           label,
           value: pathExpression('inputs', item.segments),
           group: 'Workflow inputs',
-          type: item.type
+          type: normalizeSchemaTypeLabel(item.type)
         });
         options.push({
           key: `state-${label}`,
           label,
           value: pathExpression('state', item.segments),
           group: 'State',
-          type: item.type
+          type: normalizeSchemaTypeLabel(item.type)
         });
       });
     } else if (schemaKeys.length > 0) {
       schemaKeys.forEach((key) => {
-        const type = schemaProps[key]?.type;
+        const type = normalizeSchemaTypeLabel(schemaProps[key]?.type);
         options.push({
           key: `input-${key}`,
           label: key,
@@ -1054,7 +1058,7 @@ export default function App() {
             label,
             value: pathExpression(`node_outputs['${node.id}']`, item.segments),
             group: 'Node outputs',
-            type: item.type
+            type: normalizeSchemaTypeLabel(item.type)
           });
         });
       }

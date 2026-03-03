@@ -273,9 +273,96 @@ class AgentExecutorLoopTests(unittest.TestCase):
         self.assertEqual(page.get("artifact_ref"), "artf_1")
         self.assertTrue(page.get("has_image_base64"))
         self.assertNotIn("image_base64", page)
-        self.assertNotIn("text", page)
+        self.assertEqual(page.get("text"), "hello world")
         self.assertEqual(payload.get("state"), run.state)
         self.assertEqual(payload.get("node_outputs"), run.node_outputs)
+
+    def test_call_includes_text_snippet_for_all_document_pages_when_missing_user_input(self):
+        executor = CaptureConfigAgentExecutor()
+        run = SimpleNamespace(
+            id="run_missing_user_input_pages",
+            inputs={
+                "documents": [
+                    {
+                        "doc_id": "doc_1",
+                        "pages": [
+                            {"page_number": 1, "text": "PAGE1_ALPHA"},
+                            {"page_number": 2, "text": "PAGE2_BETA_UNIQUE_92731"},
+                        ],
+                    }
+                ]
+            },
+            state={},
+            node_outputs={},
+        )
+        node = SimpleNamespace(
+            id="agent_missing_user_input_pages",
+            config={
+                "instructions": "Return JSON",
+                "output_format": "json_schema",
+                "output_schema": {
+                    "type": "object",
+                    "required": ["ok"],
+                    "properties": {"ok": {"type": "boolean"}},
+                    "additionalProperties": False,
+                },
+                "emit_partial": False,
+            },
+        )
+        executor(run, node, emit=lambda *_: None)
+
+        captured = executor.captured_config
+        self.assertIsNotNone(captured)
+        payload = json.loads(captured.user_input or "{}")
+        pages = ((payload.get("input", {}).get("documents") or [{}])[0].get("pages")) or []
+        self.assertEqual(len(pages), 2)
+        self.assertEqual(pages[0].get("text"), "PAGE1_ALPHA")
+        self.assertEqual(pages[1].get("text"), "PAGE2_BETA_UNIQUE_92731")
+
+    def test_call_includes_full_text_when_long_and_no_truncation_limit(self):
+        executor = CaptureConfigAgentExecutor()
+        long_tail = " ".join([f"field-{idx:03d}" for idx in range(1, 60)])
+        raw_text = "HEADER " + long_tail + " TARGET_MARKER 1010901234"
+        run = SimpleNamespace(
+            id="run_missing_user_input_long",
+            inputs={
+                "documents": [
+                    {
+                        "doc_id": "doc_1",
+                        "pages": [
+                            {"page_number": 1, "text": raw_text},
+                        ],
+                    }
+                ]
+            },
+            state={},
+            node_outputs={},
+        )
+        node = SimpleNamespace(
+            id="agent_missing_user_input_long",
+            config={
+                "instructions": "Return JSON",
+                "output_format": "json_schema",
+                "output_schema": {
+                    "type": "object",
+                    "required": ["ok"],
+                    "properties": {"ok": {"type": "boolean"}},
+                    "additionalProperties": False,
+                },
+                "emit_partial": False,
+            },
+        )
+        executor(run, node, emit=lambda *_: None)
+
+        captured = executor.captured_config
+        self.assertIsNotNone(captured)
+        payload = json.loads(captured.user_input or "{}")
+        pages = ((payload.get("input", {}).get("documents") or [{}])[0].get("pages")) or []
+        self.assertEqual(len(pages), 1)
+        summarized_text = pages[0].get("text") or ""
+        self.assertIn("TARGET_MARKER 1010901234", summarized_text)
+        self.assertEqual(summarized_text, raw_text)
+        self.assertGreater(len(summarized_text), 180)
 
     def test_call_keeps_empty_input_when_user_input_is_missing_for_text_mode(self):
         executor = CaptureConfigAgentExecutor()
