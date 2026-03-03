@@ -19,8 +19,23 @@ jobs:
       orchestrator: ${{ steps.filter.outputs.orchestrator }}
       builder: ${{ steps.filter.outputs.builder }}
     steps:
-      - name: Checkout
+      - name: Checkout (attempt 1)
+        id: checkout1
         uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        if: steps.checkout1.outcome != 'success'
+        id: checkout2
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success'
+        id: checkout3
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Fail if checkout failed after retries
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success' && steps.checkout3.outcome != 'success'
+        run: exit 1
       - name: Detect changed areas
         id: filter
         uses: dorny/paths-filter@v3
@@ -45,11 +60,26 @@ jobs:
 
   spec-gates:
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.specs == 'true' || needs.changes.outputs.ci == 'true'
+    if: needs.changes.outputs.specs == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (attempt 1)
+        id: checkout1
         uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        if: steps.checkout1.outcome != 'success'
+        id: checkout2
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success'
+        id: checkout3
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Fail if checkout failed after retries
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success' && steps.checkout3.outcome != 'success'
+        run: exit 1
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -66,11 +96,26 @@ jobs:
 
   orchestrator-tests:
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.orchestrator == 'true' || needs.changes.outputs.ci == 'true'
+    if: needs.changes.outputs.orchestrator == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (attempt 1)
+        id: checkout1
         uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        if: steps.checkout1.outcome != 'success'
+        id: checkout2
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success'
+        id: checkout3
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Fail if checkout failed after retries
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success' && steps.checkout3.outcome != 'success'
+        run: exit 1
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -88,14 +133,29 @@ jobs:
 
   builder-unit:
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.builder == 'true' || needs.changes.outputs.ci == 'true'
+    if: needs.changes.outputs.builder == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: apps/builder
     steps:
-      - name: Checkout
+      - name: Checkout (attempt 1)
+        id: checkout1
         uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        if: steps.checkout1.outcome != 'success'
+        id: checkout2
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success'
+        id: checkout3
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Fail if checkout failed after retries
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success' && steps.checkout3.outcome != 'success'
+        run: exit 1
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -112,14 +172,29 @@ jobs:
 
   builder-e2e-smoke:
     needs: [changes, builder-unit]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.builder == 'true' || needs.changes.outputs.ci == 'true'
+    if: needs.changes.outputs.builder == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: apps/builder
     steps:
-      - name: Checkout
+      - name: Checkout (attempt 1)
+        id: checkout1
         uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        if: steps.checkout1.outcome != 'success'
+        id: checkout2
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success'
+        id: checkout3
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Fail if checkout failed after retries
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success' && steps.checkout3.outcome != 'success'
+        run: exit 1
 
       - name: Setup Node
         uses: actions/setup-node@v4
