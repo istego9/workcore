@@ -8,6 +8,12 @@ Operational integration guidance for HQ21 backend/client teams using WorkCore wo
 - Usage guide: `docs/api/reference.md`
 - Conventions: `docs/api/conventions.md`
 
+## Gateway endpoints
+- Primary API host: `https://api.hq21.tech`
+- Optional alias host: `https://api.runwcr.com`
+- Both hosts route to the same backend gateway path (Cloudflare/Front Door). Treat alias as hostname-level routing option, not a separate runtime mode.
+- Contract, headers, auth, and payload semantics are identical across both hosts.
+
 ## Required headers and identity propagation
 For all workflow/run operations send:
 - `X-Tenant-Id`
@@ -70,7 +76,8 @@ Do not auto-retry:
    - rollback draft to active version (`POST /workflows/{workflow_id}/rollback`)
    - republish corrected version
 2. If run fails:
-   - inspect run outputs/errors and events
+   - inspect `GET /runs/{run_id}` with focus on `node_runs[].last_error`
+   - inspect `GET /runs/{run_id}/ledger` for `node_failed`/`run_failed` payload diagnostics (`step_id`, `payload.error`)
    - rerun specific node when safe (`POST /runs/{run_id}/rerun-node`)
 3. If integration outage occurs:
    - pause external trigger/source

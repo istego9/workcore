@@ -1,7 +1,7 @@
 # Azure Deploy Runbook (Codex-First)
 
 Date: 2026-03-04  
-Scope: WorkCore runtime on Azure (`api.hq21.tech`) with optional secondary route (`api.runwcr.com`).
+Scope: WorkCore runtime on Azure with primary gateway `api.hq21.tech` and optional alias `api.runwcr.com`.
 
 ## 1. What this runbook is for
 
@@ -15,13 +15,8 @@ This runbook reflects production incident fixes validated on:
 
 ### Primary-only
 - Purpose: safest default rollout.
-- Effect: deploy infra/apps/frontdoor with `api.hq21.tech` active and secondary route disabled.
+- Effect: deploy infra/apps/frontdoor with `api.hq21.tech` active and optional alias route disabled.
 - Use when: normal production deploys.
-
-### Secondary route enabled
-- Purpose: expose `api.runwcr.com` as an additional route to the same backend.
-- Effect: enables secondary Front Door API route, no separate runtime stack.
-- Use when: DNS/cutover tests or dual-domain operations are explicitly needed.
 
 ### Catalog
 - Purpose: preflight inventory/audit of CI, Azure auth, secrets, and runtime config before deploy.
@@ -32,6 +27,11 @@ This runbook reflects production incident fixes validated on:
 - Purpose: return to last known good revision quickly.
 - Effect: redeploy previous `main` commit/ref and keep Primary-only unless explicitly needed.
 - Use when: post-deploy regressions, runtime instability, or failed external E2E.
+
+### Gateway aliases (not modes)
+- Primary gateway: `api.hq21.tech`
+- Optional alias: `api.runwcr.com`
+- Important: alias points to the same backend path (Cloudflare/Front Door). It is not a separate runtime mode or contour.
 
 ## 3. Required baseline (one-time + drift checks)
 
@@ -80,15 +80,9 @@ Monitor:
 ./scripts/codex_ci_cd.sh view <run-id> --log
 ```
 
-## 5. Secondary route deploy
+## 5. Gateway alias health check (optional)
 
-```bash
-./scripts/codex_ci_cd.sh deploy-azure \
-  --ref main \
-  --enable-secondary-api-domain true
-```
-
-Validate both domains after completion:
+Deployment stays Primary-only. If alias routing is already enabled, validate hosts:
 - `https://api.hq21.tech/health`
 - `https://api.runwcr.com/health`
 
@@ -150,7 +144,7 @@ Expected:
 ```
 
 3. Re-run insurance verification (section 7).
-4. Keep secondary route disabled during incident stabilization.
+4. Keep alias routing unchanged during stabilization unless DNS/Front Door change is explicitly required.
 
 ## 9. Known failure signatures and fast fixes
 
@@ -177,4 +171,3 @@ Expected:
 ### `BadRequest ... Responses API is enabled only for api-version 2025-03-01-preview and later`
 - Cause: outdated `AZURE_OPENAI_API_VERSION`.
 - Fix: set `2025-03-01-preview` in Key Vault + container apps + deploy defaults.
-

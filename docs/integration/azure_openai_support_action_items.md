@@ -52,4 +52,5 @@ No changes planned:
 - Rollback: remove Azure env vars and keep OpenAI env vars only.
 
 ## 8) Outstanding TODOs/questions
-- TODO: Confirm target `AZURE_OPENAI_API_VERSION` per environment (kept explicit via env var).
+- Resolved: for Responses API flows, set `AZURE_OPENAI_API_VERSION` to `2025-03-01-preview` or later.
+- Keep the version explicit via env var and enforce it consistently in Key Vault + runtime env.
