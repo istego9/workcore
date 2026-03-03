@@ -155,6 +155,12 @@ curl -sS "$BASE_URL/runs/<run_id>" \
   -H "X-Project-Id: $PROJECT_ID"
 ```
 
+Diagnostic fields in failed runs:
+- `error` / `last_error` (top-level message)
+- `failed_node_id` (top-level node source)
+- `node_runs[]` (canonical node details)
+- `node_states[]` (backward-compatible alias of `node_runs[]`)
+
 ### 5.6 Diagnose failed runs (mandatory for incidents)
 1. Inspect run node diagnostics:
 ```bash
@@ -172,6 +178,9 @@ curl -sS "$BASE_URL/runs/<run_id>/ledger?limit=200" \
   -H "X-Project-Id: $PROJECT_ID" \
 | jq '.items[] | {timestamp, event_type, status, step_id, error: .payload.error}'
 ```
+
+Ledger compatibility note:
+- each entry includes both `step_id` and `node_id` (same value for node-scoped events).
 
 ## 6. SSE streaming and reconnect
 Run progress stream:

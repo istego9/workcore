@@ -76,8 +76,10 @@ Do not auto-retry:
    - rollback draft to active version (`POST /workflows/{workflow_id}/rollback`)
    - republish corrected version
 2. If run fails:
-   - inspect `GET /runs/{run_id}` with focus on `node_runs[].last_error`
-   - inspect `GET /runs/{run_id}/ledger` for `node_failed`/`run_failed` payload diagnostics (`step_id`, `payload.error`)
+   - inspect `GET /runs/{run_id}` with focus on:
+     - top-level `error`, `last_error`, `failed_node_id`
+     - `node_runs[].last_error` (or `node_states[]` alias for legacy clients)
+   - inspect `GET /runs/{run_id}/ledger` for `node_failed`/`run_failed` payload diagnostics (`step_id`/`node_id`, `payload.error`)
    - rerun specific node when safe (`POST /runs/{run_id}/rerun-node`)
 3. If integration outage occurs:
    - pause external trigger/source
