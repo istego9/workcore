@@ -28,7 +28,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
 
         await publisher.publish(events)
 
-        stored = store.list_events("run_1")
+        stored = await store.list_events("run_1")
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0].type, "node_completed")
         self.assertEqual(stored[0].sequence, 1)

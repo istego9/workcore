@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "uaenorth"
+    },
+    "acrName": {
+      "value": "acrworkcoreproduaen"
+    },
+    "keyVaultName": {
+      "value": "kv-workcore-prod-uaen"
+    },
+    "logAnalyticsName": {
+      "value": "law-workcore-prod-uaen"
+    },
+    "containerAppsEnvName": {
+      "value": "cae-workcore-prod-uaen"
+    },
+    "storageAccountName": {
+      "value": "stworkcoreproduaen"
+    },
+    "minioShareName": {
+      "value": "minio-data"
+    },
+    "staticWebAppName": {
+      "value": "swa-workcore-prod-uaen"
+    },
+    "azureOpenAIAccountName": {
+      "value": "aoai-workcore-prod-uaen"
+    },
+    "vnetName": {
+      "value": "vnet-workcore-prod-uaen"
+    },
+    "postgresSubnetName": {
+      "value": "snet-postgres-flex"
+    },
+    "postgresServerName": {
+      "value": "pg-workcore-prod-uaen"
+    },
+    "postgresAdminLogin": {
+      "value": "workcoreadmin"
+    },
+    "postgresAdminPassword": {
+      "value": "REPLACE_WITH_SECURE_SECRET"
+    },
+    "postgresDatabaseName": {
+      "value": "workflow"
+    },
+    "postgresSkuName": {
+      "value": "Standard_B2s"
+    },
+    "postgresSkuTier": {
+      "value": "Burstable"
+    },
+    "postgresBackupRetentionDays": {
+      "value": 14
+    }
+  }
+}

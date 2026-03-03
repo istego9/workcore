@@ -7,12 +7,13 @@ from typing import Any, Dict, Optional
 from apps.orchestrator.runtime.engine import OrchestratorEngine
 from apps.orchestrator.runtime.models import Event as RuntimeEvent, Run
 from apps.orchestrator.streaming import (
+    EventStore,
     EventPublisher,
     InMemoryEventBus,
-    InMemoryEventStore,
     KafkaConfig,
     KafkaEventBus,
     EventEnvelope,
+    create_event_store,
     now_ts,
     new_event_id,
 )
@@ -25,13 +26,19 @@ from .config import RuntimeConfig
 class OrchestratorService:
     engine: OrchestratorEngine
     publisher: EventPublisher
-    store: InMemoryEventStore
+    store: EventStore
     bus: object
 
     @classmethod
-    def create(cls, engine: OrchestratorEngine, config: Optional[RuntimeConfig] = None) -> "OrchestratorService":
+    def create(
+        cls,
+        engine: OrchestratorEngine,
+        config: Optional[RuntimeConfig] = None,
+        event_store: Optional[EventStore] = None,
+        event_store_pool: Optional[object] = None,
+    ) -> "OrchestratorService":
         cfg = config or RuntimeConfig.from_env()
-        store = InMemoryEventStore()
+        store = event_store or create_event_store(cfg.streaming.store_backend, pool=event_store_pool)
         if cfg.streaming.backend == "kafka":
             bus = KafkaEventBus(
                 KafkaConfig(
@@ -61,8 +68,8 @@ class OrchestratorService:
     ) -> Run:
         run = self.engine.start_run(inputs, mode=mode, metadata=metadata)
         events = await asyncio.to_thread(self.engine.execute_until_blocked, run)
-        await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
+        await self._publish_with_snapshot(run, events)
         return run
 
     async def resume_interrupt(
@@ -73,22 +80,22 @@ class OrchestratorService:
         files: Optional[list] = None,
     ) -> Run:
         events = await asyncio.to_thread(self.engine.resume_interrupt, run, interrupt_id, input_data, files)
-        await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
+        await self._publish_with_snapshot(run, events)
         return run
 
     async def rerun_node(self, run: Run, node_id: str, scope: str) -> Run:
         await asyncio.to_thread(self.engine.rerun_node, run, node_id, scope)
         events = await asyncio.to_thread(self.engine.execute_until_blocked, run)
-        await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
+        await self._publish_with_snapshot(run, events)
         return run
 
     async def _publish_with_snapshot(self, run: Run, events: list[RuntimeEvent]) -> None:
         published = await self.publisher.publish(events)
-        last_event = published[-1] if published else self.store.last_event(run.id)
+        last_event = published[-1] if published else await self.store.last_event(run.id)
         last_event_id = last_event.id if last_event else None
-        last_sequence = last_event.sequence if last_event else self.store.last_sequence(run.id)
+        last_sequence = last_event.sequence if last_event else await self.store.last_sequence(run.id)
         run_metadata = run.metadata or {}
         projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, run_metadata)
         snapshot = EventEnvelope(
@@ -116,7 +123,7 @@ class OrchestratorService:
             project_id=str(run_metadata.get("project_id")) if run_metadata.get("project_id") else None,
             import_run_id=str(run_metadata.get("import_run_id")) if run_metadata.get("import_run_id") else None,
         )
-        self.store.set_snapshot(run.id, snapshot)
+        await self.store.set_snapshot(run.id, snapshot)
 
     async def _notify_hooks(self, run: Run, events: list[RuntimeEvent]) -> None:
         hook = getattr(self, "event_hook", None)

@@ -238,7 +238,7 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         reuse_last: bool,
     ) -> AsyncIterator[ThreadStreamEvent]:
         after_id = thread.metadata.get("last_event_id") if reuse_last else None
-        events = context.service.store.list_events(run.id, after_id)
+        events = await context.service.store.list_events(run.id, after_id)
 
         message_buffer: List[str] = []
         last_event_id: Optional[str] = None

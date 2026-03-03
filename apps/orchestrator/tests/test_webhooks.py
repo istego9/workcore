@@ -7,6 +7,7 @@ from starlette.testclient import TestClient
 
 from apps.orchestrator.api import create_app
 from apps.orchestrator.api.workflow_store import InMemoryWorkflowStore
+from apps.orchestrator.webhooks.service import WebhookService
 from apps.orchestrator.webhooks.signing import sign_payload
 
 
@@ -88,6 +89,11 @@ class WebhooksTests(unittest.TestCase):
         data = response.json()
         self.assertIn("subscription_id", data)
         self.assertNotIn("secret", data)
+
+class WebhookBackendSelectionTests(unittest.TestCase):
+    def test_postgres_backend_requires_pool(self):
+        with self.assertRaises(RuntimeError):
+            WebhookService.create(store_backend="postgres", pool=None)
 
 
 if __name__ == "__main__":

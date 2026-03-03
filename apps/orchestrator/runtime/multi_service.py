@@ -11,11 +11,12 @@ from apps.orchestrator.runtime.models import Event as RuntimeEvent, Run, Workflo
 from apps.orchestrator.runtime.projection import project_run_payload_for_transport
 from apps.orchestrator.streaming import (
     EventEnvelope,
+    EventStore,
     EventPublisher,
     InMemoryEventBus,
-    InMemoryEventStore,
     KafkaConfig,
     KafkaEventBus,
+    create_event_store,
     new_event_id,
     now_ts,
 )
@@ -30,7 +31,7 @@ CapabilityResolver = Callable[[str, str, str], Awaitable[Optional[Dict[str, Any]
 @dataclass
 class MultiWorkflowRuntimeService:
     publisher: EventPublisher
-    store: InMemoryEventStore
+    store: EventStore
     bus: object
     evaluator: Any
     workflow_loader: WorkflowLoader
@@ -46,9 +47,11 @@ class MultiWorkflowRuntimeService:
         evaluator: Any | None = None,
         executors: Optional[Dict[str, Any]] = None,
         resolve_capability: Optional[CapabilityResolver] = None,
+        event_store: Optional[EventStore] = None,
+        event_store_pool: Optional[object] = None,
     ) -> "MultiWorkflowRuntimeService":
         cfg = config or RuntimeConfig.from_env()
-        store = InMemoryEventStore()
+        store = event_store or create_event_store(cfg.streaming.store_backend, pool=event_store_pool)
         if cfg.streaming.backend == "kafka":
             bus = KafkaEventBus(
                 KafkaConfig(
@@ -104,8 +107,8 @@ class MultiWorkflowRuntimeService:
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
         run = engine.start_run(inputs, mode=mode, metadata=run_metadata)
         events = await asyncio.to_thread(engine.execute_until_blocked, run)
-        await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
+        await self._publish_with_snapshot(run, events)
         return run
 
     async def resume_interrupt(
@@ -126,8 +129,8 @@ class MultiWorkflowRuntimeService:
             run.metadata.setdefault("capability_bindings", capability_bindings)
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
         events = await asyncio.to_thread(engine.resume_interrupt, run, interrupt_id, input_data, files)
-        await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
+        await self._publish_with_snapshot(run, events)
         return run
 
     async def rerun_node(self, run: Run, node_id: str, scope: str) -> Run:
@@ -143,8 +146,8 @@ class MultiWorkflowRuntimeService:
         engine = OrchestratorEngine(workflow, self.evaluator, self.executors)
         await asyncio.to_thread(engine.rerun_node, run, node_id, scope)
         events = await asyncio.to_thread(engine.execute_until_blocked, run)
-        await self._publish_with_snapshot(run, events)
         await self._notify_hooks(run, events)
+        await self._publish_with_snapshot(run, events)
         return run
 
     async def _load_workflow(
@@ -184,9 +187,9 @@ class MultiWorkflowRuntimeService:
 
     async def _publish_with_snapshot(self, run: Run, events: list[RuntimeEvent]) -> None:
         published = await self.publisher.publish(events)
-        last_event = published[-1] if published else self.store.last_event(run.id)
+        last_event = published[-1] if published else await self.store.last_event(run.id)
         last_event_id = last_event.id if last_event else None
-        last_sequence = last_event.sequence if last_event else self.store.last_sequence(run.id)
+        last_sequence = last_event.sequence if last_event else await self.store.last_sequence(run.id)
         run_metadata = run.metadata or {}
         projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, run_metadata)
         snapshot = EventEnvelope(
@@ -214,7 +217,7 @@ class MultiWorkflowRuntimeService:
             project_id=str(run_metadata.get("project_id")) if run_metadata.get("project_id") else None,
             import_run_id=str(run_metadata.get("import_run_id")) if run_metadata.get("import_run_id") else None,
         )
-        self.store.set_snapshot(run.id, snapshot)
+        await self.store.set_snapshot(run.id, snapshot)
 
     async def _notify_hooks(self, run: Run, events: list[RuntimeEvent]) -> None:
         if self.event_hook:

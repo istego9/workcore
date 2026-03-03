@@ -16,6 +16,8 @@ Inbound webhooks (`POST /webhooks/inbound/{integration_key}`) and outbound subsc
    - `curl -i -X POST "http://127.0.0.1:8000/webhooks/inbound/<integration_key>" -H "Content-Type: application/json" -d '{}'`
 3. Subscription list:
    - `GET /webhooks/subscriptions` with tenant/auth headers
+4. Backend mode check:
+   - `echo "$WEBHOOK_STORE_BACKEND"` (should be `postgres` in Azure profile)
 
 ## Logs and data to inspect
 - `logs/orchestrator.log`
@@ -25,12 +27,19 @@ Inbound webhooks (`POST /webhooks/inbound/{integration_key}`) and outbound subsc
 Example query:
 - `psql "$DATABASE_URL" -c "select id, event_type, status, attempt_count, next_retry_at, last_error from webhook_deliveries order by created_at desc limit 50;"`
 
+Additional queries:
+- Active subscriptions:
+  - `psql "$DATABASE_URL" -c "select id, url, event_types, is_active from webhook_subscriptions where is_active = true order by created_at desc;"`
+- Inbound keys:
+  - `psql "$DATABASE_URL" -c "select integration_key, is_active, updated_at from webhook_inbound_keys order by updated_at desc;"`
+
 ## Common root causes
 1. Invalid or missing webhook signature headers.
 2. Clock skew beyond timestamp tolerance in signature verification.
 3. Inactive/misconfigured subscription URL.
 4. Target endpoint timeout or persistent `5xx`.
 5. Idempotency key reuse with mismatched payload hash.
+6. Volatile webhook backend in production (`WEBHOOK_STORE_BACKEND=memory`).
 
 ## Remediation steps
 1. Verify inbound signing inputs:
@@ -43,6 +52,7 @@ Example query:
    - `./scripts/dev_restart.sh`
 5. Re-run webhook tests:
    - `./.venv/bin/python -m pytest apps/orchestrator/tests/test_webhooks.py -q`
+6. For durable mode, restart orchestrator and confirm failed deliveries continue retrying from DB.
 
 ## Verification
 - Send signed inbound webhook and confirm accepted response.
@@ -53,3 +63,4 @@ Example query:
 - Continuous outbound failure for critical tenants
 - Replay attack or signature verification bypass suspicion
 - Data inconsistency from duplicate webhook processing
+- Dispatcher fails to recover pending retries after process restart

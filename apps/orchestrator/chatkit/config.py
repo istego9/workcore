@@ -45,7 +45,11 @@ class ChatKitConfig:
         create_bucket = get_env("CHATKIT_OBJECT_CREATE_BUCKET", "false").lower() in {"1", "true", "yes"}
         idempotency_ttl_seconds = int(get_env("CHATKIT_IDEMPOTENCY_TTL_SECONDS", "300"))
         stt_model = get_env("CHATKIT_STT_MODEL", "gpt-4o-mini-transcribe")
-        stt_api_key = get_env("CHATKIT_STT_API_KEY") or get_env("OPENAI_API_KEY")
+        stt_api_key = (
+            get_env("CHATKIT_STT_API_KEY")
+            or get_env("AZURE_OPENAI_API_KEY")
+            or get_env("OPENAI_API_KEY")
+        )
         stt_timeout_seconds = int(get_env("CHATKIT_STT_TIMEOUT_SECONDS", "30"))
         stt_max_audio_bytes = int(get_env("CHATKIT_STT_MAX_AUDIO_BYTES", str(10 * 1024 * 1024)))
         stt_allowed_raw = get_env(

@@ -65,7 +65,7 @@ from apps.orchestrator.orchestrator_runtime import (
     create_orchestration_store,
 )
 from apps.orchestrator.project_router import ProjectRouter, ProjectRouterError, RoutingRequest
-from apps.orchestrator.runtime import Edge, MultiWorkflowRuntimeService, Node, Workflow
+from apps.orchestrator.runtime import Edge, MultiWorkflowRuntimeService, Node, RuntimeConfig, Workflow
 from apps.orchestrator.runtime.env import get_env
 from apps.orchestrator.runtime.models import Event as RuntimeEvent
 from apps.orchestrator.runtime.projection import (
@@ -73,9 +73,11 @@ from apps.orchestrator.runtime.projection import (
     STATE_EXCLUDE_PATHS_KEY,
     normalize_projection_paths,
 )
+from apps.orchestrator.streaming import create_event_store
 from apps.orchestrator.streaming.sse import _event_stream
 from apps.orchestrator.workflow_engine_adapter import WorkflowEngineAdapter, WorkflowEngineAdapterError
 from apps.orchestrator.webhooks.service import WebhookService
+from apps.orchestrator.webhooks.store import PostgresWebhookStore
 
 _ROOT_DIR = Path(__file__).resolve().parents[3]
 _OPENAPI_SPEC_PATH = _ROOT_DIR / "docs" / "api" / "openapi.yaml"
@@ -239,9 +241,10 @@ class ApiContext:
         self._handoff_store_owned = False
         self._orchestration_store_owned = False
         self._runtime_started = False
-        self.webhooks = WebhookService.create()
-        if default_inbound_secret:
-            self.webhooks.register_inbound_key(default_integration_key, default_inbound_secret)
+        self._default_inbound_secret = default_inbound_secret
+        self._default_integration_key = default_integration_key
+        self._webhooks_seeded = False
+        self.webhooks = WebhookService.create(store_backend="memory")
         if self.runtime:
             self.runtime.event_hook = self._handle_runtime_events
             self.runtime.resolve_capability = self._resolve_capability
@@ -286,8 +289,31 @@ class ApiContext:
             self.handoff_store = await create_handoff_store(self.workflow_store)
             self._handoff_store_owned = True
 
+    async def ensure_webhooks(self) -> None:
+        await self.ensure_run_store()
+        desired_backend = (get_env("WEBHOOK_STORE_BACKEND", "memory") or "memory").strip().lower()
+        pool = getattr(self.run_store, "pool", None)
+        if desired_backend == "postgres":
+            if not isinstance(self.webhooks.store, PostgresWebhookStore):
+                self.webhooks = WebhookService.create(
+                    store_backend="postgres",
+                    pool=pool,
+                )
+                self._webhooks_seeded = False
+        elif isinstance(self.webhooks.store, PostgresWebhookStore):
+            self.webhooks = WebhookService.create(store_backend="memory")
+            self._webhooks_seeded = False
+        if self._default_inbound_secret and not self._webhooks_seeded:
+            await self.webhooks.register_inbound_key(
+                self._default_integration_key,
+                self._default_inbound_secret,
+            )
+            self._webhooks_seeded = True
+
     async def ensure_runtime(self) -> None:
         if self.runtime is None:
+            await self.ensure_run_store()
+            await self.ensure_webhooks()
 
             async def loader(
                 workflow_id: str,
@@ -320,10 +346,17 @@ class ApiContext:
             elif executors.get("agent_live"):
                 executors["agent"] = executors["agent_live"]
 
+            runtime_config = RuntimeConfig.from_env()
+            event_store = create_event_store(
+                runtime_config.streaming.store_backend,
+                pool=getattr(self.run_store, "pool", None),
+            )
             self.runtime = MultiWorkflowRuntimeService.create(
                 loader,
+                config=runtime_config,
                 executors=executors,
                 resolve_capability=self._resolve_capability,
+                event_store=event_store,
             )
             self.runtime.event_hook = self._handle_runtime_events
 
@@ -525,6 +558,7 @@ def create_app(
     async def lifespan(app: Starlette):
         await ctx.ensure_workflow_store()
         await ctx.ensure_run_store()
+        await ctx.ensure_webhooks()
         await ctx.ensure_artifact_store()
         await ctx.ensure_idempotency()
         await ctx.ensure_runtime()
@@ -2440,7 +2474,7 @@ def create_app(
         return _json(request, response, status_code=status)
 
     async def list_outbound(request: Request) -> JSONResponse:
-        subs = ctx.webhooks.list_outbound()
+        subs = await ctx.webhooks.list_outbound()
         return _json(
             request,
             {
@@ -2466,7 +2500,7 @@ def create_app(
         secret = payload.get("secret")
         if not url or not isinstance(event_types, list) or not event_types:
             return _error(request, "INVALID_ARGUMENT", "url and event_types required", 400)
-        sub = ctx.webhooks.register_outbound(url, list(event_types), secret=secret)
+        sub = await ctx.webhooks.register_outbound(url, list(event_types), secret=secret)
         return _json(
             request,
             {
@@ -2480,7 +2514,7 @@ def create_app(
 
     async def delete_outbound(request: Request) -> Response:
         sub_id = request.path_params["subscription_id"]
-        if not ctx.webhooks.delete_outbound(sub_id):
+        if not await ctx.webhooks.delete_outbound(sub_id):
             return _error(request, "NOT_FOUND", "subscription not found", 404)
         return Response(status_code=204)
 

@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from inspect import isawaitable
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+import asyncpg
 
 from apps.orchestrator.api.workflow_store import WorkflowConflictError, WorkflowNotFoundError
 from apps.orchestrator.runtime.models import Event as RuntimeEvent, Run
@@ -15,20 +18,38 @@ from apps.orchestrator.runtime.projection import apply_output_include_paths, pro
 from .dispatcher import DispatcherConfig, OutboundDispatcher
 from .models import IdempotencyRecord, WebhookDelivery, WebhookSubscription
 from .signing import verify_signature
-from .store import InMemoryWebhookStore
+from .store import InMemoryWebhookStore, PostgresWebhookStore, WebhookStore
 
 
 @dataclass
 class WebhookService:
-    store: InMemoryWebhookStore
+    store: WebhookStore
     dispatcher: OutboundDispatcher
     idempotency_ttl_s: int = 300
     poll_interval_s: float = 1.0
     _dispatch_task: Optional[asyncio.Task] = field(default=None, init=False, repr=False)
 
     @classmethod
-    def create(cls) -> "WebhookService":
-        return cls(store=InMemoryWebhookStore(), dispatcher=OutboundDispatcher())
+    def create(
+        cls,
+        store: Optional[WebhookStore] = None,
+        store_backend: Optional[str] = None,
+        pool: Optional[object] = None,
+        tenant_id: str = "local",
+    ) -> "WebhookService":
+        if store is not None:
+            resolved_store = store
+        else:
+            backend = (store_backend or os.getenv("WEBHOOK_STORE_BACKEND", "memory")).strip().lower()
+            if backend == "postgres":
+                if not isinstance(pool, asyncpg.Pool):
+                    raise RuntimeError("WEBHOOK_STORE_BACKEND=postgres requires asyncpg pool")
+                resolved_store = PostgresWebhookStore(pool=pool, tenant_id=tenant_id)
+            elif backend in {"", "memory"}:
+                resolved_store = InMemoryWebhookStore()
+            else:
+                raise RuntimeError(f"unsupported WEBHOOK_STORE_BACKEND: {backend}")
+        return cls(store=resolved_store, dispatcher=OutboundDispatcher())
 
     async def start_background_dispatcher(self) -> None:
         if self._dispatch_task and not self._dispatch_task.done():
@@ -50,30 +71,30 @@ class WebhookService:
 
     async def process_due_deliveries(self) -> None:
         now = time.time()
-        for delivery in self.store.list_due_deliveries(now):
-            subscription = self.store.get_subscription(delivery.subscription_id)
+        for delivery in await self.store.list_due_deliveries(now):
+            subscription = await self.store.get_subscription(delivery.subscription_id)
             if not subscription or not subscription.is_active:
                 continue
             await self._attempt_delivery(subscription, delivery)
 
-    def register_outbound(self, url: str, event_types: List[str], secret: Optional[str] = None) -> WebhookSubscription:
+    async def register_outbound(self, url: str, event_types: List[str], secret: Optional[str] = None) -> WebhookSubscription:
         subscription = WebhookSubscription(
             id=self._new_id("whsub"),
             url=url,
             event_types=event_types,
             secret=secret or self._new_id("whsec"),
         )
-        self.store.add_subscription(subscription)
+        await self.store.add_subscription(subscription)
         return subscription
 
-    def list_outbound(self) -> List[WebhookSubscription]:
-        return self.store.list_subscriptions()
+    async def list_outbound(self) -> List[WebhookSubscription]:
+        return await self.store.list_subscriptions()
 
-    def delete_outbound(self, sub_id: str) -> bool:
-        return self.store.delete_subscription(sub_id)
+    async def delete_outbound(self, sub_id: str) -> bool:
+        return await self.store.delete_subscription(sub_id)
 
-    def register_inbound_key(self, integration_key: str, secret: str) -> None:
-        self.store.set_inbound_key(integration_key, secret)
+    async def register_inbound_key(self, integration_key: str, secret: str) -> None:
+        await self.store.set_inbound_key(integration_key, secret)
 
     async def handle_inbound(
         self,
@@ -116,7 +137,7 @@ class WebhookService:
                 return None
             return loaded
 
-        inbound_key = self.store.get_inbound_key(integration_key)
+        inbound_key = await self.store.get_inbound_key(integration_key)
         if not inbound_key:
             return 404, {"error": {"code": "NOT_FOUND", "message": "integration key not found"}}
 
@@ -125,7 +146,7 @@ class WebhookService:
 
         idempotency_key = headers.get("Idempotency-Key")
         if idempotency_key:
-            record = self.store.get_idempotency(idempotency_key, scope=integration_key)
+            record = await self.store.get_idempotency(idempotency_key, scope=integration_key)
             if record:
                 return 200, record.response
 
@@ -174,7 +195,7 @@ class WebhookService:
             return 400, {"error": {"code": "INVALID_ARGUMENT", "message": "invalid action"}}
 
         if idempotency_key:
-            self.store.set_idempotency(
+            await self.store.set_idempotency(
                 IdempotencyRecord(
                     key=idempotency_key,
                     scope=integration_key,
@@ -217,7 +238,7 @@ class WebhookService:
 
     async def enqueue_delivery(self, event_type: str, payload: Dict[str, Any]) -> None:
         now = time.time()
-        for subscription in self.store.list_subscriptions():
+        for subscription in await self.store.list_subscriptions():
             if event_type not in subscription.event_types:
                 continue
             delivery = WebhookDelivery(
@@ -229,14 +250,14 @@ class WebhookService:
                 attempt_count=0,
                 next_retry_at=now,
             )
-            self.store.add_delivery(delivery)
+            await self.store.add_delivery(delivery)
             await self._attempt_delivery(subscription, delivery)
 
     async def _attempt_delivery(self, subscription: WebhookSubscription, delivery: WebhookDelivery) -> None:
         if delivery.attempt_count >= self.dispatcher.config.max_attempts:
             delivery.status = "FAILED"
             delivery.last_error = "max_attempts_reached"
-            self.store.update_delivery(delivery)
+            await self.store.update_delivery(delivery)
             return
 
         delivery.attempt_count += 1
@@ -253,7 +274,7 @@ class WebhookService:
             delivery.last_error = str(exc)
             delivery.next_retry_at = time.time() + self._backoff(delivery.attempt_count)
 
-        self.store.update_delivery(delivery)
+        await self.store.update_delivery(delivery)
 
     def _backoff(self, attempt: int) -> float:
         return self.dispatcher.config.base_backoff_s * (2 ** (attempt - 1))

@@ -1,0 +1,135 @@
+name: deploy-azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      resource_group:
+        description: Azure resource group name
+        required: true
+        default: rg-workcore-prod-uaen
+      location:
+        description: Azure region
+        required: true
+        default: uaenorth
+      deploy_frontdoor:
+        description: Deploy Front Door and routes
+        type: boolean
+        required: true
+        default: true
+      workcore_domain:
+        description: Optional workcore custom domain (for Front Door)
+        required: false
+        default: ''
+      api_domain:
+        description: Optional api custom domain (for Front Door)
+        required: false
+        default: ''
+      chatkit_domain:
+        description: Optional chatkit custom domain (for Front Door)
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: acrworkcoreproduaen
+  KEY_VAULT_NAME: kv-workcore-prod-uaen
+  LOG_ANALYTICS_NAME: law-workcore-prod-uaen
+  ACA_ENV_NAME: cae-workcore-prod-uaen
+  STORAGE_ACCOUNT_NAME: stworkcoreproduaen
+  MINIO_SHARE_NAME: minio-data
+  SWA_NAME: swa-workcore-prod-uaen
+  AOAI_ACCOUNT_NAME: aoai-workcore-prod-uaen
+  VNET_NAME: vnet-workcore-prod-uaen
+  POSTGRES_SUBNET_NAME: snet-postgres-flex
+  POSTGRES_SERVER_NAME: pg-workcore-prod-uaen
+  POSTGRES_DB_NAME: workflow
+  POSTGRES_ADMIN_LOGIN: workcoreadmin
+  POSTGRES_SKU_NAME: Standard_B2s
+  POSTGRES_SKU_TIER: Burstable
+  POSTGRES_BACKUP_RETENTION_DAYS: '14'
+  ORCHESTRATOR_APP_NAME: ca-orchestrator
+  CHATKIT_APP_NAME: ca-chatkit
+  MCP_BRIDGE_APP_NAME: ca-mcp-bridge
+  MINIO_APP_NAME: ca-minio
+  MIGRATE_JOB_NAME: caj-migrate-workcore
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set Azure subscription context
+        run: az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+
+      - name: Ensure required Azure extensions
+        run: |
+          az extension add --name containerapp --upgrade --yes
+          az extension add --name front-door --upgrade --yes
+
+      - name: Deploy foundation infrastructure
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          AZ_LOCATION: ${{ inputs.location }}
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_API_VERSION: 2025-01-01-preview
+          WORKCORE_API_AUTH_TOKEN: ${{ secrets.WORKCORE_API_AUTH_TOKEN }}
+          WEBHOOK_DEFAULT_INBOUND_SECRET: ${{ secrets.WEBHOOK_DEFAULT_INBOUND_SECRET }}
+          CHATKIT_AUTH_TOKEN: ${{ secrets.CHATKIT_AUTH_TOKEN }}
+          MCP_BRIDGE_AUTH_TOKEN: ${{ secrets.MCP_BRIDGE_AUTH_TOKEN }}
+          MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER }}
+          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+        run: ./deploy/azure/scripts/deploy_infra.sh
+
+      - name: Deploy Azure OpenAI model deployments
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          AZ_LOCATION: ${{ inputs.location }}
+        run: ./deploy/azure/scripts/deploy_openai_deployments.sh
+
+      - name: Build and push WorkCore runtime image
+        id: build
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+        run: |
+          ACR_LOGIN_SERVER="$(az acr show --resource-group "${AZ_RESOURCE_GROUP}" --name "${ACR_NAME}" --query loginServer -o tsv)"
+          az acr login --name "${ACR_NAME}"
+
+          IMAGE_TAG="${GITHUB_SHA}"
+          IMAGE_REF="${ACR_LOGIN_SERVER}/workcore-orchestrator:${IMAGE_TAG}"
+
+          docker build \
+            --file deploy/docker/Dockerfile.orchestrator \
+            --tag "${IMAGE_REF}" \
+            .
+
+          docker push "${IMAGE_REF}"
+          echo "image_ref=${IMAGE_REF}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy Container Apps + migration job
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          AZ_LOCATION: ${{ inputs.location }}
+          WORKCORE_IMAGE: ${{ steps.build.outputs.image_ref }}
+        run: ./deploy/azure/scripts/deploy_apps.sh
+
+      - name: Deploy Front Door + WAF
+        if: ${{ inputs.deploy_frontdoor }}
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          WORKCORE_DOMAIN: ${{ inputs.workcore_domain }}
+          API_DOMAIN: ${{ inputs.api_domain }}
+          CHATKIT_DOMAIN: ${{ inputs.chatkit_domain }}
+        run: ./deploy/azure/scripts/deploy_frontdoor.sh

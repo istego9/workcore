@@ -33,7 +33,7 @@ class EventPublisher:
                 project_id=str(metadata.get("project_id")) if metadata.get("project_id") else None,
                 import_run_id=str(metadata.get("import_run_id")) if metadata.get("import_run_id") else None,
             )
-            envelope = self.store.append(envelope)
+            envelope = await self.store.append(envelope)
             published.append(envelope)
             await self.bus.publish(envelope)
         return published

@@ -60,7 +60,7 @@ class WorkflowEngineAdapter:
         action_type: Optional[str] = None,
         action_payload: Optional[Dict[str, Any]] = None,
     ) -> WorkflowEngineResult:
-        before_event = self.runtime.store.last_event("__none__")
+        before_event = await self._store_last_event("__none__")
         run_metadata = dict(metadata or {})
         run_metadata["project_id"] = project_id
         run_metadata["session_id"] = session_id
@@ -104,7 +104,7 @@ class WorkflowEngineAdapter:
         run.metadata.setdefault("commit_point_reached", False)
         run.metadata.setdefault("cancellable", run.status in {"RUNNING", "WAITING_FOR_INPUT"})
         await self._save_run(run, tenant_id=tenant_id)
-        events = self._collect_events(run.id, after_id=before_event.id if before_event else None)
+        events = await self._collect_events(run.id, after_id=before_event.id if before_event else None)
         snapshot = self._snapshot_from_run(run)
         return WorkflowEngineResult(
             run_id=run.id,
@@ -125,7 +125,7 @@ class WorkflowEngineAdapter:
         run = await self.get_run(run_id, tenant_id=tenant_id)
         if run is None:
             raise WorkflowEngineAdapterError("NOT_FOUND", "run not found")
-        before_event = self.runtime.store.last_event(run.id)
+        before_event = await self._store_last_event(run.id)
         run.metadata = dict(run.metadata or {})
         run.metadata.update(dict(metadata or {}))
         run.metadata["session_id"] = session_id
@@ -159,7 +159,7 @@ class WorkflowEngineAdapter:
                         details=self._workflow_engine_error_details(exc, run_id=run.id),
                     ) from exc
         await self._save_run(run, tenant_id=tenant_id)
-        events = self._collect_events(run.id, after_id=before_event.id if before_event else None)
+        events = await self._collect_events(run.id, after_id=before_event.id if before_event else None)
         snapshot = self._snapshot_from_run(run)
         return WorkflowEngineResult(
             run_id=run.id,
@@ -180,7 +180,7 @@ class WorkflowEngineAdapter:
                 cancelled=False,
             )
 
-        before_event = self.runtime.store.last_event(run.id)
+        before_event = await self._store_last_event(run.id)
         run.status = "CANCELLED"
         run.metadata = dict(run.metadata or {})
         run.metadata["cancellable"] = False
@@ -212,7 +212,7 @@ class WorkflowEngineAdapter:
             ],
         )
         await self._save_run(run, tenant_id=tenant_id)
-        events = self._collect_events(run.id, after_id=before_event.id if before_event else None)
+        events = await self._collect_events(run.id, after_id=before_event.id if before_event else None)
         return WorkflowEngineResult(
             run_id=run.id,
             events=self._normalize_events(run, events),
@@ -237,9 +237,23 @@ class WorkflowEngineAdapter:
         if isawaitable(saved):
             await saved
 
-    def _collect_events(self, run_id: str, after_id: Optional[str]) -> List[Any]:
+    async def _store_last_event(self, run_id: str) -> Any:
         try:
-            return self.runtime.store.list_events(run_id, after_id=after_id)
+            value = self.runtime.store.last_event(run_id)
+            if isawaitable(value):
+                return await value
+            return value
+        except Exception:
+            return None
+
+    async def _collect_events(self, run_id: str, after_id: Optional[str]) -> List[Any]:
+        try:
+            value = self.runtime.store.list_events(run_id, after_id=after_id)
+            if isawaitable(value):
+                value = await value
+            if isinstance(value, list):
+                return value
+            return []
         except Exception:
             return []
 

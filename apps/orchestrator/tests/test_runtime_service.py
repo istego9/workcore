@@ -66,9 +66,9 @@ class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
 
         run = await service.start_run({})
 
-        stored = service.store.list_events(run.id)
+        stored = await service.store.list_events(run.id)
         self.assertTrue(len(stored) > 0)
-        snapshot = service.store.get_snapshot(run.id)
+        snapshot = await service.store.get_snapshot(run.id)
         self.assertIsNotNone(snapshot)
         self.assertEqual(snapshot.payload.get("status"), run.status)
 
@@ -105,7 +105,7 @@ class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
                 "output_include_paths": ["result.claim_id"],
             },
         )
-        snapshot = service.store.get_snapshot(run.id)
+        snapshot = await service.store.get_snapshot(run.id)
         self.assertIsNotNone(snapshot)
         state_page = snapshot.payload["state"]["documents"][0]["pages"][0]
         self.assertNotIn("image_base64", state_page)

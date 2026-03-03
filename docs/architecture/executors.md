@@ -34,6 +34,23 @@ Status: Draft
   - `responses` (default)
   - `chat_completions`
 
+## ChatKit transcription provider selection
+- `ChatKit` `input.transcribe` supports two provider paths:
+  - OpenAI path (default): `AsyncOpenAI`
+  - Azure path: `AsyncAzureOpenAI` when `AZURE_OPENAI_ENDPOINT` is set
+- Provider config:
+  - `CHATKIT_STT_MODEL` deployment/model id
+  - `CHATKIT_STT_API_KEY` (fallback to provider default key env)
+  - `CHATKIT_STT_TIMEOUT_SECONDS`
+  - `CHATKIT_STT_ALLOWED_MEDIA_TYPES`
+  - `CHATKIT_STT_MAX_AUDIO_BYTES`
+- Azure STT requirements:
+  - `AZURE_OPENAI_ENDPOINT`
+  - `AZURE_OPENAI_API_VERSION`
+  - `CHATKIT_STT_API_KEY` or `AZURE_OPENAI_API_KEY`
+- Fail-fast rule:
+  - if Azure endpoint is configured without required Azure fields, transcription provider is not initialized and `input.transcribe` returns `ERR_TRANSCRIPTION_UNAVAILABLE`.
+
 ## MCP executor
 - Uses a self-hosted MCP client via `call_tool`.
 - Default runtime wiring uses `MCPBridgeHttpClient` and calls internal bridge endpoint:

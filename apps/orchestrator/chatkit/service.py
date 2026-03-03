@@ -51,11 +51,26 @@ def _audio_filename_from_media_type(media_type: str) -> str:
 
 def _build_transcriber(cfg: ChatKitConfig):
     api_key = cfg.stt_api_key
-    if not api_key:
-        return None
-    from openai import AsyncOpenAI
+    azure_endpoint = (get_env("AZURE_OPENAI_ENDPOINT") or "").strip()
+    azure_api_version = (get_env("AZURE_OPENAI_API_VERSION") or "").strip()
 
-    client = AsyncOpenAI(api_key=api_key, timeout=cfg.stt_timeout_seconds)
+    if azure_endpoint:
+        if not api_key or not azure_api_version:
+            return None
+        from openai import AsyncAzureOpenAI
+
+        client = AsyncAzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=azure_api_version,
+            timeout=cfg.stt_timeout_seconds,
+        )
+    else:
+        if not api_key:
+            return None
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=api_key, timeout=cfg.stt_timeout_seconds)
 
     async def _transcriber(audio_input, _context):
         response = await client.audio.transcriptions.create(

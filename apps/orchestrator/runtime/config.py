@@ -9,6 +9,7 @@ from .env import load_env
 @dataclass
 class StreamingConfig:
     backend: str
+    store_backend: str
     kafka_bootstrap_servers: str
     kafka_topic: str
     kafka_group_id: str
@@ -25,6 +26,7 @@ class RuntimeConfig:
         return cls(
             streaming=StreamingConfig(
                 backend=backend,
+                store_backend=os.getenv("STREAMING_STORE_BACKEND", "memory"),
                 kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
                 kafka_topic=os.getenv("KAFKA_TOPIC", "workflow-events"),
                 kafka_group_id=os.getenv("KAFKA_GROUP_ID", "workflow-sse"),

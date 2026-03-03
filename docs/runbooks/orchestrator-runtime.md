@@ -42,6 +42,19 @@ Tail commands:
 - Optional Agents SDK mode override:
   - `OPENAI_API=responses` or `OPENAI_API=chat_completions`
 
+## Streaming/webhooks durability checklist
+- `STREAMING_STORE_BACKEND`
+  - `memory` for local
+  - `postgres` for Azure
+- `WEBHOOK_STORE_BACKEND`
+  - `memory` for local
+  - `postgres` for Azure
+- For Azure profile both should be `postgres`.
+- Validate DB-backed behavior:
+  - restart API container
+  - reconnect SSE with `Last-Event-ID`
+  - confirm pending webhook deliveries continue after restart
+
 ## Common root causes
 1. Missing or invalid env vars (`DATABASE_URL`, auth tokens, external integration config)
 2. Migrations not applied (`db/migrations/*.sql`)
@@ -51,6 +64,8 @@ Tail commands:
 6. Colima VM ext4 storage issues (`/dev/vdb1`), which can surface as Postgres I/O errors
    - Example: `could not open file "global/pg_filenode.map": I/O error`
 7. MCP bridge misconfiguration (`MCP_BRIDGE_BASE_URL` missing in runtime or bridge upstream not configured)
+8. Durability backend mismatch (`STREAMING_STORE_BACKEND=memory` or `WEBHOOK_STORE_BACKEND=memory` in production)
+9. Azure STT endpoint set without full config (`AZURE_OPENAI_API_VERSION`/key missing)
 
 ## Remediation steps
 1. If Colima storage check fails, repair ext4 metadata and restart VM:
@@ -65,6 +80,14 @@ Tail commands:
    - API/ChatKit runtime: `MCP_BRIDGE_BASE_URL`, `MCP_BRIDGE_AUTH_TOKEN`
    - MCP bridge service: `MCP_BRIDGE_UPSTREAM_CALL_URL`, optional allowlists
 6. Validate problematic workflow via API docs/schema and republish if needed.
+7. Validate durable backends:
+   - `STREAMING_STORE_BACKEND=postgres`
+   - `WEBHOOK_STORE_BACKEND=postgres`
+8. Validate Azure STT envs when transcription fails:
+   - `AZURE_OPENAI_ENDPOINT`
+   - `AZURE_OPENAI_API_VERSION`
+   - `CHATKIT_STT_MODEL`
+   - `CHATKIT_STT_API_KEY` or `AZURE_OPENAI_API_KEY`
 
 ## Verification
 - Create/publish a smoke workflow.
@@ -75,3 +98,5 @@ Tail commands:
 - Reproducible failures affecting all tenants or all runs
 - Data integrity issues in persisted run state
 - Security concerns (auth bypass, secret leakage)
+- Persistent SSE replay gaps with valid `Last-Event-ID`
+- Webhook dispatcher not draining due deliveries after restarts

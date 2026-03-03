@@ -10,7 +10,7 @@ from apps.orchestrator.runtime.projection import project_run_payload_for_transpo
 from apps.orchestrator.streaming import (
     EventPublisher,
     InMemoryEventBus,
-    InMemoryEventStore,
+    EventStore,
     EventEnvelope,
     new_event_id,
     now_ts,
@@ -23,7 +23,7 @@ WorkflowLoader = Callable[[str, Optional[str], str], Awaitable[Workflow]]
 @dataclass
 class ChatKitRuntimeService:
     publisher: EventPublisher
-    store: InMemoryEventStore
+    store: EventStore
     bus: InMemoryEventBus
     evaluator: Any
     workflow_loader: WorkflowLoader
@@ -76,9 +76,9 @@ class ChatKitRuntimeService:
 
     async def _publish_with_snapshot(self, run: Run, events: list[RuntimeEvent]) -> None:
         published = await self.publisher.publish(events)
-        last_event = published[-1] if published else self.store.last_event(run.id)
+        last_event = published[-1] if published else await self.store.last_event(run.id)
         last_event_id = last_event.id if last_event else None
-        last_sequence = last_event.sequence if last_event else self.store.last_sequence(run.id)
+        last_sequence = last_event.sequence if last_event else await self.store.last_sequence(run.id)
         run_metadata = run.metadata or {}
         projected_state, projected_outputs = project_run_payload_for_transport(run.state, run.outputs, run_metadata)
         snapshot = EventEnvelope(
@@ -106,4 +106,4 @@ class ChatKitRuntimeService:
             project_id=str(run_metadata.get("project_id")) if run_metadata.get("project_id") else None,
             import_run_id=str(run_metadata.get("import_run_id")) if run_metadata.get("import_run_id") else None,
         )
-        self.store.set_snapshot(run.id, snapshot)
+        await self.store.set_snapshot(run.id, snapshot)

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator, Callable, Optional
+from inspect import isawaitable
+from typing import AsyncIterator, Awaitable, Callable, Optional
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -13,7 +14,7 @@ from .events import EventEnvelope
 from .store import EventStore
 
 
-SnapshotProvider = Callable[[str], Optional[EventEnvelope]]
+SnapshotProvider = Callable[[str], Optional[EventEnvelope] | Awaitable[Optional[EventEnvelope]]]
 
 
 async def _event_stream(
@@ -28,6 +29,8 @@ async def _event_stream(
 
     if not last_event_id and snapshot_provider:
         snapshot = snapshot_provider(run_id)
+        if isawaitable(snapshot):
+            snapshot = await snapshot
         if snapshot:
             seen.add(snapshot.id)
             yield _format_sse(snapshot)
@@ -36,7 +39,7 @@ async def _event_stream(
             if isinstance(last_snapshot_event_id, str) and last_snapshot_event_id:
                 replay_after_id = last_snapshot_event_id
 
-    replay = store.list_events(run_id, after_id=replay_after_id)
+    replay = await store.list_events(run_id, after_id=replay_after_id)
     for event in replay:
         seen.add(event.id)
         yield _format_sse(event)

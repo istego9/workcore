@@ -16,6 +16,8 @@ Run event streaming via `GET /runs/{run_id}/stream`, replay, and `Last-Event-ID`
    - `curl -N "http://127.0.0.1:8000/runs/<run_id>/stream" -H "X-Tenant-Id: local"`
 3. Reconnect behavior check:
    - `curl -N "http://127.0.0.1:8000/runs/<run_id>/stream" -H "X-Tenant-Id: local" -H "Last-Event-ID: <event_id>"`
+4. Backend mode check:
+   - `echo "$STREAMING_STORE_BACKEND"` (should be `postgres` in Azure profile)
 
 ## Logs and data to inspect
 - `logs/orchestrator.log`
@@ -25,11 +27,16 @@ Run event streaming via `GET /runs/{run_id}/stream`, replay, and `Last-Event-ID`
 Example query:
 - `psql "$DATABASE_URL" -c "select id, run_id, type, sequence, created_at from events where run_id = '<run_id>' order by created_at;"`
 
+Snapshot query:
+- `psql "$DATABASE_URL" -c "select id, sequence, created_at from events where run_id = '<run_id>' and type = 'snapshot' order by sequence desc limit 1;"`
+
 ## Common root causes
 1. Missing or invalid tenant header (`X-Tenant-Id`).
 2. Event persistence gaps caused by runtime failures before publish.
 3. Incorrect `Last-Event-ID` during reconnect.
 4. Streaming backend misconfiguration (`STREAMING_BACKEND`, Kafka env vars).
+5. Durable store backend disabled in production (`STREAMING_STORE_BACKEND=memory`).
+6. Missing snapshot rows when snapshot persistence failed.
 
 ## Remediation steps
 1. Confirm run exists and has events:
@@ -39,6 +46,10 @@ Example query:
    - `./scripts/dev_restart.sh`
 3. Re-run streaming tests:
    - `./.venv/bin/python -m pytest apps/orchestrator/tests/test_streaming.py -q`
+4. Validate durable replay path:
+   - restart orchestrator runtime
+   - reconnect with previous `Last-Event-ID`
+   - confirm replay continues from persisted sequence
 
 ## Verification
 - Start a new run.
@@ -49,3 +60,4 @@ Example query:
 - Missing terminal events (`run_completed`/`run_failed`) for active runs
 - Multi-tenant event leakage
 - Systemic stream disconnects impacting multiple runs
+- Replay inconsistency after runtime restart with `STREAMING_STORE_BACKEND=postgres`
