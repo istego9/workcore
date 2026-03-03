@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.20.0
+  version: 0.21.0
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -2652,8 +2652,24 @@ components:
         import_run_id: { type: string }
         cancellable: { type: boolean }
         commit_point_reached: { type: boolean }
+        error:
+          type: string
+          nullable: true
+          description: Backward-compatible top-level failure message mirrored from failed node diagnostics.
+        last_error:
+          type: string
+          nullable: true
+          description: Alias of `error` for clients expecting legacy run-level failure fields.
+        failed_node_id:
+          type: string
+          nullable: true
+          description: Node id selected as failure source for run-level diagnostics.
         node_runs:
           type: array
+          items: { $ref: '#/components/schemas/NodeRun' }
+        node_states:
+          type: array
+          description: Backward-compatible alias of `node_runs`.
           items: { $ref: '#/components/schemas/NodeRun' }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -2814,6 +2830,10 @@ components:
         workflow_id: { type: string }
         version_id: { type: string }
         step_id: { type: string, nullable: true }
+        node_id:
+          type: string
+          nullable: true
+          description: Backward-compatible alias of `step_id`.
         capability_id: { type: string, nullable: true }
         capability_version: { type: string, nullable: true }
         status: { type: string }

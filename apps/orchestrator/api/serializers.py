@@ -76,6 +76,23 @@ def run_to_dict(run: Run) -> Dict[str, Any]:
                 "usage": usage,
             }
         )
+    failed_node_id = None
+    run_error = None
+    ordered_node_runs = list(run.node_runs.values())
+    for node_run in reversed(ordered_node_runs):
+        if node_run.status == "ERROR":
+            failed_node_id = node_run.node_id
+            if node_run.last_error:
+                run_error = node_run.last_error
+            break
+    if run_error is None:
+        for node_run in reversed(ordered_node_runs):
+            if node_run.last_error:
+                run_error = node_run.last_error
+                if failed_node_id is None:
+                    failed_node_id = node_run.node_id
+                break
+
     return {
         "run_id": run.id,
         "workflow_id": run.workflow_id,
@@ -97,7 +114,12 @@ def run_to_dict(run: Run) -> Dict[str, Any]:
         "commit_point_reached": metadata.get("commit_point_reached"),
         "created_at": metadata.get("created_at"),
         "updated_at": metadata.get("updated_at"),
+        "error": run_error,
+        "last_error": run_error,
+        "failed_node_id": failed_node_id,
         "node_runs": node_runs,
+        # Backward-compatible alias for clients still reading node_states.
+        "node_states": node_runs,
     }
 
 
@@ -209,6 +231,7 @@ def run_ledger_entry_to_dict(entry: RunLedgerEntry) -> Dict[str, Any]:
         "workflow_id": entry.workflow_id,
         "version_id": entry.version_id,
         "step_id": entry.step_id,
+        "node_id": entry.step_id,
         "capability_id": entry.capability_id,
         "capability_version": entry.capability_version,
         "status": entry.status,

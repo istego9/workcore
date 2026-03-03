@@ -4,6 +4,30 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-03-04
+
+### API diff vs previous version
+- Previous API version: `0.20.0`
+- Current API version: `0.21.0`
+- Compatibility: additive (run and ledger responses now include backward-compatible diagnostics aliases)
+
+### Added
+- `Run.error` (nullable string): run-level failure message mirrored from failed node diagnostics.
+- `Run.last_error` (nullable string): alias of `Run.error` for legacy clients.
+- `Run.failed_node_id` (nullable string): selected node id source for run-level diagnostics.
+- `Run.node_states` (array): backward-compatible alias of `Run.node_runs`.
+- `RunLedgerEntry.node_id` (nullable string): backward-compatible alias of `step_id`.
+
+### Changed
+- Failed runs now expose node-derived diagnostics at run top-level for clients that do not parse `node_runs`.
+- Ledger responses now expose both `step_id` and `node_id` with identical value for node-scoped events.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-03-02
 
 ### API diff vs previous version
