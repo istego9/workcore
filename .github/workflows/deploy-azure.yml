@@ -16,6 +16,30 @@ on:
         type: boolean
         required: true
         default: true
+      deploy_builder_ui:
+        description: Build and deploy builder UI to Azure Static Web Apps
+        type: boolean
+        required: true
+        default: true
+      swa_allow_insecure_tls_download:
+        description: Set NODE_TLS_REJECT_UNAUTHORIZED=0 for SWA CLI deploy metadata download
+        type: boolean
+        required: true
+        default: false
+      configure_ui_entra_auth:
+        description: Configure Entra ID app settings for SWA auth
+        type: boolean
+        required: true
+        default: false
+      create_entra_app_registration:
+        description: Auto-create Entra app registration when configuring SWA auth
+        type: boolean
+        required: true
+        default: false
+      entra_app_name:
+        description: Entra app registration display name (used when auto-create is enabled)
+        required: false
+        default: workcore-builder-swa
       enable_secondary_api_domain:
         description: Enable the secondary API domain route (api.runwcr.com cutover)
         type: boolean
@@ -104,7 +128,7 @@ jobs:
           AZ_LOCATION: ${{ inputs.location }}
           POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_API_VERSION: 2025-01-01-preview
+          AZURE_OPENAI_API_VERSION: 2025-03-01-preview
           WORKCORE_API_AUTH_TOKEN: ${{ secrets.WORKCORE_API_AUTH_TOKEN }}
           WEBHOOK_DEFAULT_INBOUND_SECRET: ${{ secrets.WEBHOOK_DEFAULT_INBOUND_SECRET }}
           CHATKIT_AUTH_TOKEN: ${{ secrets.CHATKIT_AUTH_TOKEN }}
@@ -118,6 +142,28 @@ jobs:
           AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
           AZ_LOCATION: ${{ inputs.location }}
         run: ./deploy/azure/scripts/deploy_openai_deployments.sh
+
+      - name: Configure SWA Entra auth (optional)
+        if: ${{ inputs.configure_ui_entra_auth }}
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SWA_NAME: ${{ env.SWA_NAME }}
+          KEY_VAULT_NAME: ${{ env.KEY_VAULT_NAME }}
+          WORKCORE_DOMAIN: ${{ inputs.workcore_domain }}
+          CREATE_ENTRA_APP: ${{ inputs.create_entra_app_registration }}
+          ENTRA_APP_NAME: ${{ inputs.entra_app_name }}
+          ENTRA_CLIENT_ID: ${{ secrets.SWA_ENTRA_CLIENT_ID }}
+          ENTRA_CLIENT_SECRET: ${{ secrets.SWA_ENTRA_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.SWA_ENTRA_TENANT_ID }}
+        run: ./deploy/azure/scripts/configure_swa_entra_auth.sh
+
+      - name: Build and deploy builder UI (SWA)
+        if: ${{ inputs.deploy_builder_ui }}
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SWA_NAME: ${{ env.SWA_NAME }}
+          SWA_ALLOW_INSECURE_TLS_DOWNLOAD: ${{ inputs.swa_allow_insecure_tls_download }}
+        run: ./deploy/azure/scripts/deploy_builder_swa.sh
 
       - name: Build and push WorkCore runtime image
         id: build

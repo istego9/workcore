@@ -50,7 +50,7 @@ MINIO_ROOT_PASSWORD="$(get_secret_or_default minio-root-password)"
 MCP_BRIDGE_AUTH_TOKEN="$(get_secret_or_default mcp-bridge-auth-token)"
 AZURE_OPENAI_ENDPOINT="$(get_secret_or_default azure-openai-endpoint)"
 AZURE_OPENAI_API_KEY="$(get_secret_or_default azure-openai-api-key)"
-AZURE_OPENAI_API_VERSION="$(get_secret_or_default azure-openai-api-version 2025-01-01-preview)"
+AZURE_OPENAI_API_VERSION="$(get_secret_or_default azure-openai-api-version 2025-03-01-preview)"
 CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS:-https://workcore.example.com,https://api.example.com,https://chatkit.example.com}"
 INTEGRATION_HTTP_ALLOWED_HOSTS="${INTEGRATION_HTTP_ALLOWED_HOSTS:-api.openai.com,*.openai.azure.com}"
 
