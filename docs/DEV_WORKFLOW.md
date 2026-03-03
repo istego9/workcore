@@ -38,6 +38,26 @@ When applicable:
 - `USE_PROXY=1 RUN_E2E=1 ./scripts/dev_check.sh` (domain mode + full E2E)
 - `./.venv/bin/python -m pytest apps/orchestrator/tests/test_routing_harness.py` (required when routing policy/eval behavior changes)
 
+## Codex CI/CD helper
+Use a single helper script when working from Codex terminal:
+
+- `./scripts/codex_ci_cd.sh doctor`
+- `./scripts/codex_ci_cd.sh ci-local`
+- `./scripts/codex_ci_cd.sh ci-local --with-builder-e2e --with-dev-check`
+
+GitHub Actions control from Codex:
+
+- `./scripts/codex_ci_cd.sh runs ci --limit 20`
+- `./scripts/codex_ci_cd.sh runs deploy --limit 20`
+- `./scripts/codex_ci_cd.sh deploy-azure --wait`
+- `./scripts/codex_ci_cd.sh watch <run-id>`
+- `./scripts/codex_ci_cd.sh view <run-id> --log`
+- `./scripts/codex_ci_cd.sh cancel <run-id>`
+
+Deploy example with explicit domains:
+
+- `./scripts/codex_ci_cd.sh deploy-azure --ref main --resource-group rg-workcore-prod-uaen --api-primary-domain api.hq21.tech --api-secondary-domain api.runwcr.com --enable-secondary-api-domain false --wait`
+
 ## Acceptance package artifacts
 Use this helper to run the acceptance screenshot Playwright test (desktop + mobile) and build a ZIP package:
 
