@@ -27,6 +27,10 @@ If required information is missing:
 ## Non-negotiable working agreements
 - Never commit secrets (API keys, tokens, credentials). Use a secrets manager and env vars.
 - Keep changes small and reviewable. Prefer incremental PRs.
+- Commit discipline is mandatory for AI-assisted work:
+  - Every completed logical change must be committed immediately as a separate granular commit.
+  - Do not leave AI-authored changes uncommitted at task handoff.
+  - Do not mix unrelated concerns in one commit.
 - Update or add tests for any behavior change.
 - Document all public APIs (OpenAPI) and any breaking changes.
 - For any public API contract update (`docs/api/openapi.yaml` or `docs/api/schemas/*.json`), update `CHANGELOG.md` in the same change.

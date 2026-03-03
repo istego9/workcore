@@ -91,6 +91,9 @@ If a required check cannot be run, the PR must include:
 
 ## PR hygiene
 - Keep changes small and focused.
+- Commit each completed logical step as a separate granular commit.
+- Do not leave AI-authored changes uncommitted at handoff.
+- Do not mix unrelated concerns in one commit.
 - Separate spec updates from implementation when feasible.
 - Include a verification section with exact commands and outcomes.
 - Do not claim validations that were not executed.
