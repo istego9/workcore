@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WorkCore Workflow Model Authoring Guide</title>
+  <style>
+    :root {
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --code-bg: #f8fafc;
+      --accent: #0b4ea2;
+    }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      line-height: 1.45;
+      font-size: 11pt;
+      padding: 28px 34px;
+    }
+    h1, h2, h3, h4 { color: var(--accent); margin: 16px 0 8px; }
+    h1 { font-size: 20pt; border-bottom: 2px solid var(--line); padding-bottom: 8px; }
+    h2 { font-size: 15pt; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+    h3 { font-size: 12.5pt; }
+    h4 { font-size: 11.5pt; }
+    p { margin: 7px 0; }
+    ul, ol { margin: 7px 0 7px 20px; padding: 0; }
+    li { margin: 3px 0; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 9.5pt;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      overflow: auto;
+      margin: 8px 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    pre code {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      font-size: 9pt;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 10px 0;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eff6ff;
+    }
+    blockquote {
+      margin: 10px 0;
+      padding: 4px 12px;
+      border-left: 4px solid #93c5fd;
+      color: var(--muted);
+      background: #f8fbff;
+    }
+    hr {
+      border: 0;
+      border-top: 1px solid var(--line);
+      margin: 14px 0;
+    }
+    @page {
+      size: A4;
+      margin: 14mm;
+    }
+  </style>
+</head>
+<body>
+<h1>WorkCore Workflow Model Authoring Guide</h1>
+<p>Version: 1.0<br>Date: 2026-03-04<br>Audience: LLM agents that design workflow graphs and hand off implementation-ready payloads.</p>
+<h2>1) Purpose</h2>
+<p>This document is a single model-facing contract for creating WorkCore workflows that are:</p>
+<ul>
+<li>valid in Builder,</li>
+<li>publishable by runtime rules,</li>
+<li>executable with predictable behavior,</li>
+<li>easy to implement via API.</li>
+</ul>
+<p>Primary source artifacts used to compile this guide:</p>
+<ul>
+<li><code>docs/architecture/workflow-authoring-agents.md</code></li>
+<li><code>docs/architecture/node-semantics.md</code></li>
+<li><code>docs/architecture/runtime.md</code></li>
+<li><code>docs/architecture/state-and-expressions.md</code></li>
+<li><code>docs/architecture/executors.md</code></li>
+<li><code>docs/architecture/streaming.md</code></li>
+<li><code>docs/architecture/overview.md</code></li>
+<li><code>docs/api/openapi.yaml</code></li>
+<li><code>docs/api/schemas/workflow-draft.schema.json</code></li>
+<li><code>docs/api/schemas/workflow-export-v1.schema.json</code></li>
+<li><code>apps/builder/src/builder/types.ts</code></li>
+<li><code>apps/builder/src/builder/graph.ts</code></li>
+</ul>
+<h2>2) Hard Constraints (Do Not Violate)</h2>
+<p>Graph invariants:</p>
+<ul>
+<li>Exactly one <code>start</code> node.</li>
+<li>At least one <code>end</code> node.</li>
+<li>Node IDs must be unique.</li>
+<li>Every edge must reference existing node IDs.</li>
+<li>There must be at least one path from <code>start</code> to an <code>end</code> node.</li>
+<li>All nodes must be reachable from <code>start</code>.</li>
+</ul>
+<p>Node-specific validation:</p>
+<ul>
+<li><code>if_else</code> must include non-empty <code>branches[]</code> with <code>{ condition, target }</code>.</li>
+<li><code>while</code> must define <code>condition</code>, <code>max_iterations</code>, <code>body_target</code>, <code>exit_target</code>, <code>loop_back</code>.</li>
+<li><code>set_state</code> must provide either:<ul>
+<li>legacy mode: <code>target</code> + <code>expression</code>, or</li>
+<li>batch mode: non-empty <code>assignments[]</code> with <code>{ target, expression }</code>.</li>
+</ul>
+</li>
+<li><code>integration_http</code> must define <code>url</code>.</li>
+</ul>
+<p>Publish/runtime guardrails:</p>
+<ul>
+<li>Do not invent node types beyond supported enum.</li>
+<li>Do not invent config fields outside documented payloads.</li>
+<li>Use idempotency keys for mutating run/interrupt/cancel/rerun calls.</li>
+</ul>
+<h2>3) Supported Node Types</h2>
+<p>Allowed node types:</p>
+<ul>
+<li><code>start</code></li>
+<li><code>agent</code></li>
+<li><code>mcp</code></li>
+<li><code>integration_http</code></li>
+<li><code>if_else</code></li>
+<li><code>while</code></li>
+<li><code>set_state</code></li>
+<li><code>interaction</code></li>
+<li><code>approval</code></li>
+<li><code>output</code></li>
+<li><code>end</code></li>
+</ul>
+<h2>4) Node Semantics and Minimum Configuration</h2>
+<h3><code>start</code></h3>
+<ul>
+<li>Purpose: validate inputs, apply defaults, initialize run state.</li>
+<li>Typical config:<ul>
+<li><code>defaults</code> (optional object).</li>
+</ul>
+</li>
+<li>Workflow-level <code>variables_schema</code> should describe expected input shape.</li>
+</ul>
+<h3><code>agent</code></h3>
+<ul>
+<li>Purpose: execute LLM task through OpenAI Agents SDK.</li>
+<li>Minimum practical config:<ul>
+<li><code>instructions</code> (non-empty recommended).</li>
+</ul>
+</li>
+<li>Common optional fields:<ul>
+<li><code>model</code>, <code>allowed_tools</code>, <code>output_format</code>, <code>output_schema</code>, <code>state_target</code>,</li>
+<li><code>merge_output_to_state</code>, <code>max_retries</code>, <code>timeout_s</code>, <code>emit_partial</code>.</li>
+</ul>
+</li>
+<li>Output behavior:<ul>
+<li>always persisted into <code>node_runs.output</code> and <code>node_outputs[node_id]</code>.</li>
+<li>if <code>state_target</code> is set: full output written there.</li>
+<li>if structured JSON output and no <code>state_target</code>: top-level keys auto-merge into state unless <code>merge_output_to_state=false</code>.</li>
+</ul>
+</li>
+</ul>
+<h3><code>mcp</code></h3>
+<ul>
+<li>Purpose: call tool through MCP bridge (<code>POST /internal/mcp/call</code>).</li>
+<li>Minimum practical config:<ul>
+<li><code>server</code>, <code>tool</code>.</li>
+</ul>
+</li>
+<li>Optional fields:<ul>
+<li><code>arguments</code>, <code>timeout_s</code>, <code>allowed_tools</code>.</li>
+</ul>
+</li>
+</ul>
+<h3><code>integration_http</code></h3>
+<ul>
+<li>Purpose: direct external HTTP call from runtime.</li>
+<li>Required:<ul>
+<li><code>url</code>.</li>
+</ul>
+</li>
+<li>Optional fields:<ul>
+<li><code>method</code> (<code>GET|POST|PUT|PATCH|DELETE</code>)</li>
+<li><code>headers</code>, <code>auth</code>, <code>timeout_s</code>, <code>retry_attempts</code>, <code>retry_backoff_s</code></li>
+<li><code>request_body_expression</code></li>
+<li><code>response_state_target</code>, <code>response_body_state_target</code></li>
+<li><code>fail_on_status</code>, <code>allowed_statuses</code>.</li>
+</ul>
+</li>
+<li>Runtime egress is deny-by-default and controlled by env allowlists.</li>
+</ul>
+<h3><code>if_else</code></h3>
+<ul>
+<li>Purpose: conditional routing.</li>
+<li>Required:<ul>
+<li>non-empty <code>branches[]</code> where each item has <code>condition</code> and <code>target</code>.</li>
+</ul>
+</li>
+<li>Optional:<ul>
+<li><code>else_target</code>.</li>
+</ul>
+</li>
+</ul>
+<h3><code>while</code></h3>
+<ul>
+<li>Purpose: bounded loop with explicit cycle path.</li>
+<li>Required:<ul>
+<li><code>condition</code>, <code>max_iterations</code>, <code>body_target</code>, <code>exit_target</code>, <code>loop_back</code>.</li>
+</ul>
+</li>
+</ul>
+<h3><code>set_state</code></h3>
+<ul>
+<li>Purpose: compute/update state variables.</li>
+<li>Config modes:<ul>
+<li>legacy single assignment: <code>target</code> + <code>expression</code></li>
+<li>batch assignment: <code>assignments[]</code>.</li>
+</ul>
+</li>
+<li>Batch assignments execute in order and later expressions can reference earlier updates.</li>
+</ul>
+<h3><code>interaction</code></h3>
+<ul>
+<li>Purpose: collect user input via interrupt.</li>
+<li>Minimum practical config:<ul>
+<li><code>prompt</code> (non-empty recommended).</li>
+</ul>
+</li>
+<li>Optional:<ul>
+<li><code>allow_file_upload</code>, <code>input_schema</code>, <code>state_target</code>.</li>
+</ul>
+</li>
+</ul>
+<h3><code>approval</code></h3>
+<ul>
+<li>Purpose: approval interrupt (approve/reject).</li>
+<li>Minimum practical config:<ul>
+<li><code>prompt</code> (non-empty recommended).</li>
+</ul>
+</li>
+<li>Optional:<ul>
+<li><code>allow_file_upload</code>, <code>state_target</code>.</li>
+</ul>
+</li>
+</ul>
+<h3><code>output</code></h3>
+<ul>
+<li>Purpose: produce final output payload.</li>
+<li>Config style:<ul>
+<li>expression-based via <code>expression</code>, or</li>
+<li>static via <code>value</code>.</li>
+</ul>
+</li>
+</ul>
+<h3><code>end</code></h3>
+<ul>
+<li>Purpose: mark run completion.</li>
+<li>Required config: none.</li>
+</ul>
+<h2>5) State and Expression Contract</h2>
+<p>Expression context keys:</p>
+<ul>
+<li><code>inputs</code></li>
+<li><code>state</code></li>
+<li><code>node_outputs</code></li>
+</ul>
+<p>CEL examples:</p>
+<ul>
+<li><code>state.intent == &quot;refund&quot;</code></li>
+<li><code>inputs.customer_text != &quot;&quot;</code></li>
+<li><code>node_outputs[&quot;score_node&quot;].score &gt; 0.8</code></li>
+</ul>
+<p>Type handling:</p>
+<ul>
+<li><code>start</code> validates <code>inputs</code> against <code>variables_schema</code>.</li>
+<li><code>set_state</code> validates assigned values against declared variable schema.</li>
+<li>Missing output references in templating are treated as invalid arguments.</li>
+</ul>
+<h2>6) Runtime Lifecycle Contract</h2>
+<p>Run statuses:</p>
+<ul>
+<li><code>RUNNING</code></li>
+<li><code>WAITING_FOR_INPUT</code></li>
+<li><code>COMPLETED</code></li>
+<li><code>FAILED</code></li>
+<li><code>CANCELLED</code></li>
+</ul>
+<p>Node run statuses:</p>
+<ul>
+<li><code>TO_DO</code></li>
+<li><code>IN_PROGRESS</code></li>
+<li><code>RESOLVED</code></li>
+<li><code>ERROR</code></li>
+<li><code>CANCELLED</code></li>
+</ul>
+<p>Semantics:</p>
+<ul>
+<li>Scheduler runs node when inbound dependencies are resolved.</li>
+<li>Non-selected <code>if_else</code> branches are skipped.</li>
+<li><code>while</code> condition is re-evaluated each cycle.</li>
+<li>Node retries use attempt increments; on exhaustion run fails.</li>
+<li><code>interaction</code>/<code>approval</code> create interrupts and transition run to <code>WAITING_FOR_INPUT</code>.</li>
+<li>Resume interrupt continues scheduling.</li>
+<li>Run pins published workflow version (<code>resolved_version</code>) at start; resume uses pinned version.</li>
+</ul>
+<h2>7) Draft JSON Contract for Builder/API</h2>
+<p>Use <code>WorkflowDraft</code> shape only:</p>
+<pre><code class="language-json">{
+  &quot;nodes&quot;: [
+    { &quot;id&quot;: &quot;start&quot;, &quot;type&quot;: &quot;start&quot;, &quot;config&quot;: { &quot;defaults&quot;: {} } },
+    { &quot;id&quot;: &quot;end&quot;, &quot;type&quot;: &quot;end&quot;, &quot;config&quot;: {} }
+  ],
+  &quot;edges&quot;: [
+    { &quot;source&quot;: &quot;start&quot;, &quot;target&quot;: &quot;end&quot; }
+  ],
+  &quot;variables_schema&quot;: {}
+}
+</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>config.ui</code> is managed by Builder import/export and should not be fabricated unless round-tripping Builder JSON.</li>
+<li>Machine validation schemas:<ul>
+<li><code>docs/api/schemas/workflow-draft.schema.json</code></li>
+<li><code>docs/api/schemas/workflow-export-v1.schema.json</code></li>
+</ul>
+</li>
+</ul>
+<h2>8) API Sequence to Implement a Workflow</h2>
+<p>Required headers for workflow APIs:</p>
+<ul>
+<li><code>Authorization: Bearer &lt;token&gt;</code></li>
+<li><code>X-Tenant-Id: &lt;tenant_id&gt;</code></li>
+<li><code>X-Project-Id: &lt;project_id&gt;</code></li>
+</ul>
+<p>Recommended headers:</p>
+<ul>
+<li><code>X-Correlation-Id</code></li>
+<li><code>X-Trace-Id</code></li>
+<li><code>Idempotency-Key</code> for mutating calls</li>
+</ul>
+<p>Typical sequence:</p>
+<ol>
+<li><code>POST /workflows</code> with <code>name</code>, optional <code>description</code>, optional <code>draft</code>.</li>
+<li><code>PUT /workflows/{workflow_id}/draft</code> with full <code>WorkflowDraft</code>.</li>
+<li><code>POST /workflows/{workflow_id}/publish</code>.</li>
+<li><code>POST /workflows/{workflow_id}/runs</code> with <code>inputs</code> and optional <code>mode</code> (<code>live|test|sync|async</code>).</li>
+<li>Observe run:<ul>
+<li><code>GET /runs/{run_id}</code> (polling)</li>
+<li><code>GET /runs/{run_id}/stream</code> (SSE)</li>
+</ul>
+</li>
+<li>Handle interrupts:<ul>
+<li><code>POST /runs/{run_id}/interrupts/{interrupt_id}/resume</code></li>
+<li><code>POST /runs/{run_id}/interrupts/{interrupt_id}/cancel</code></li>
+</ul>
+</li>
+<li>Operations:<ul>
+<li><code>POST /runs/{run_id}/cancel</code></li>
+<li><code>POST /runs/{run_id}/rerun-node</code></li>
+</ul>
+</li>
+</ol>
+<p>Useful validation endpoint for model-generated drafts:</p>
+<ul>
+<li><code>POST /agent-integration-test/validate-draft</code></li>
+</ul>
+<h2>9) Event Streaming Contract (SSE)</h2>
+<p>Endpoint:</p>
+<ul>
+<li><code>GET /runs/{run_id}/stream</code></li>
+</ul>
+<p>Event types include:</p>
+<ul>
+<li><code>snapshot</code></li>
+<li><code>run_started</code></li>
+<li><code>node_started</code></li>
+<li><code>node_completed</code></li>
+<li><code>node_failed</code></li>
+<li><code>node_retry</code></li>
+<li><code>run_waiting_for_input</code></li>
+<li><code>run_completed</code></li>
+<li><code>run_failed</code></li>
+<li><code>message_generated</code></li>
+<li><code>stream_end</code></li>
+</ul>
+<p>Reconnect semantics:</p>
+<ul>
+<li>Send <code>Last-Event-ID</code> to replay from the next event.</li>
+<li>Without <code>Last-Event-ID</code>, stream sends one <code>snapshot</code> first.</li>
+</ul>
+<h2>10) Document Payload and Projection Rules</h2>
+<p>For document workflows:</p>
+<ul>
+<li>Prefer <code>inputs.documents[].pages[].artifact_ref</code> instead of inline heavy payload.</li>
+<li>Use run projections to control payload size:<ul>
+<li><code>state_exclude_paths</code></li>
+<li><code>output_include_paths</code></li>
+</ul>
+</li>
+<li>Read full content explicitly when needed via:<ul>
+<li><code>GET /artifacts/{artifact_ref}</code></li>
+</ul>
+</li>
+</ul>
+<h2>11) Model Output Package (What the Model Must Produce)</h2>
+<p>For each requested workflow, the model should output all items below.</p>
+<ol>
+<li>Objective card:</li>
+</ol>
+<ul>
+<li>business goal</li>
+<li>success criteria</li>
+<li>required inputs</li>
+<li>final output contract</li>
+<li>failure policy</li>
+</ul>
+<ol start="2">
+<li>Graph plan:</li>
+</ol>
+<ul>
+<li>node list with IDs and types</li>
+<li>edge list</li>
+<li>branch/loop target mapping</li>
+</ul>
+<ol start="3">
+<li>Draft payload:</li>
+</ol>
+<ul>
+<li>valid <code>WorkflowDraft</code> JSON only</li>
+<li>no extra node types</li>
+<li>no undocumented required fields</li>
+</ul>
+<ol start="4">
+<li>Config completeness check:</li>
+</ol>
+<ul>
+<li>verify all required node config fields</li>
+<li>verify graph invariants</li>
+</ul>
+<ol start="5">
+<li>API execution plan:</li>
+</ol>
+<ul>
+<li>exact endpoint sequence for create/draft/publish/run</li>
+<li>required headers</li>
+<li>idempotency plan</li>
+</ul>
+<ol start="6">
+<li>Smoke-test plan:</li>
+</ol>
+<ul>
+<li>sample <code>inputs</code></li>
+<li>expected lifecycle transitions</li>
+<li>expected completion or interrupt behavior</li>
+</ul>
+<h2>12) Action Items Template (for Reliable Delivery)</h2>
+<p>Use this checklist before handoff:</p>
+<ol>
+<li>Define workflow objective and measurable success condition.</li>
+<li>Confirm required inputs and <code>variables_schema</code>.</li>
+<li>Build minimal path <code>start -&gt; ... -&gt; end</code>.</li>
+<li>Add branching/looping only when required by objective.</li>
+<li>Fill node configs with supported fields only.</li>
+<li>Validate graph invariants and node-level required fields.</li>
+<li>Publish version.</li>
+<li>Run at least one <code>mode=test</code> smoke run.</li>
+<li>Capture run events/logs and verify expected transitions.</li>
+<li>Record open TODOs for missing business decisions instead of inventing values.</li>
+</ol>
+<h2>13) Do / Don&#39;t</h2>
+<p>Do:</p>
+<ul>
+<li>Keep workflows minimal and explicit.</li>
+<li>Use deterministic routing targets (<code>if_else</code>, <code>while</code>) with concrete node IDs.</li>
+<li>Use <code>set_state</code> to normalize data for downstream conditions and outputs.</li>
+<li>Use idempotency keys on mutating API calls.</li>
+</ul>
+<p>Don&#39;t:</p>
+<ul>
+<li>Do not invent custom node types.</li>
+<li>Do not publish with validation errors.</li>
+<li>Do not rely on implicit branching or hidden side effects.</li>
+<li>Do not embed secrets inline in workflow configs when env refs are supported.</li>
+</ul>
+<h2>14) Canonical Source Map</h2>
+<p>Architecture and semantics:</p>
+<ul>
+<li><code>docs/architecture/overview.md</code></li>
+<li><code>docs/architecture/runtime.md</code></li>
+<li><code>docs/architecture/node-semantics.md</code></li>
+<li><code>docs/architecture/state-and-expressions.md</code></li>
+<li><code>docs/architecture/executors.md</code></li>
+<li><code>docs/architecture/streaming.md</code></li>
+<li><code>docs/architecture/workflow-authoring-agents.md</code></li>
+</ul>
+<p>API and schemas:</p>
+<ul>
+<li><code>docs/api/openapi.yaml</code></li>
+<li><code>docs/api/schemas/workflow-draft.schema.json</code></li>
+<li><code>docs/api/schemas/workflow-export-v1.schema.json</code></li>
+</ul>
+<p>Builder implementation references:</p>
+<ul>
+<li><code>apps/builder/src/builder/types.ts</code></li>
+<li><code>apps/builder/src/builder/graph.ts</code></li>
+</ul>
+
+</body>
+</html>
