@@ -32,15 +32,16 @@ Optional Azure override variables used by onboarding automation:
 ## 4) Operator flow
 1. Open internal portal page `GET /internal/partner-access`.
 2. Fill minimum fields:
-   - `partner_id`
    - `display_name`
-   - `tenant_id_pinned`
-3. Submit form with **Generate ZIP**.
-4. Downloaded package contains:
+3. Optional advanced overrides:
+   - `partner_id` (manual override instead of auto-generated slug)
+   - `tenant_id_pinned` (manual override; default is generated `partner_id`)
+4. Submit form with **Generate ZIP**.
+5. Downloaded package contains:
    - `README.md` (token exchange and API call steps)
    - `.env.partner` (client credentials and endpoints)
    - `metadata.json` (non-secret package metadata)
-5. Deliver package to partner over approved secure channel.
+6. Deliver package to partner over approved secure channel.
 
 ## 5) Error handling
 - `401 UNAUTHORIZED`: no/invalid Entra principal header.

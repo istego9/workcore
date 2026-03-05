@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.0
+  version: 0.24.1
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -1530,14 +1530,12 @@ components:
       type: object
       additionalProperties: false
       required:
-        - partner_id
         - display_name
-        - tenant_id_pinned
       properties:
         partner_id:
           type: string
           pattern: '^[a-z0-9][a-z0-9_-]{1,63}$'
-          description: Stable partner identifier used in APIM partner map and secret naming.
+          description: Optional stable partner identifier. If omitted, generated from display_name.
         display_name:
           type: string
           minLength: 1
@@ -1547,7 +1545,7 @@ components:
           type: string
           minLength: 1
           maxLength: 128
-          description: Tenant identifier enforced by APIM tenant pinning.
+          description: Optional tenant identifier enforced by APIM tenant pinning. If omitted, defaults to resolved partner_id.
         entra_app_display_name:
           type: string
           minLength: 1

@@ -50,6 +50,11 @@ APIM validates OAuth token, pins tenant scope by partner mapping, and forwards i
   - operator signs in through Microsoft Entra protected internal frontend
   - frontend forwards EasyAuth principal header `X-MS-CLIENT-PRINCIPAL`
   - backend validates Entra principal and returns onboarding ZIP package
+- Minimal required input in portal form:
+  - `display_name`
+- Auto-generated defaults (can be overridden in advanced fields):
+  - `partner_id` generated from `display_name`
+  - `tenant_id_pinned` defaults to generated `partner_id`
 - ZIP package includes:
   - `README.md` with partner-specific token exchange and call instructions
   - `.env.partner` with partner-specific environment values (`client_id`, `client_secret`, `scope`, `token_endpoint`, `base_url`)

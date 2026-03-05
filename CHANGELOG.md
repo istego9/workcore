@@ -7,6 +7,27 @@ The format follows a simple date-based log.
 ## 2026-03-05
 
 ### API diff vs previous version
+- Previous API version: `0.24.0`
+- Current API version: `0.24.1`
+- Compatibility: additive (internal self-service onboarding now supports auto-generated IDs)
+
+### Added
+- Optional auto-generation behavior for internal self-service onboarding request:
+  - `partner_id` can be omitted and is generated from `display_name`
+  - `tenant_id_pinned` can be omitted and defaults to resolved `partner_id`
+
+### Changed
+- Internal operator guidance now treats `display_name` as the minimal required onboarding input.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-03-05
+
+### API diff vs previous version
 - Previous API version: `0.23.0`
 - Current API version: `0.24.0`
 - Compatibility: additive (new internal partner onboarding self-service endpoints)
