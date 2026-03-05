@@ -4,6 +4,61 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-03-05
+
+### API diff vs previous version
+- Previous API version: `0.22.0`
+- Current API version: `0.23.0`
+- Compatibility: additive (auth model for external clients moved to APIM + Entra OAuth2 without endpoint/payload changes)
+
+### Added
+- OAuth2 client_credentials guidance for external integrations:
+  - Entra token endpoint
+  - `scope=api://workcore-partner-api/.default`
+- APIM gateway deployment and partner lifecycle automation scripts:
+  - `deploy_apim.sh`
+  - `apim_partner_onboard.sh`
+  - `apim_partner_rotate_secret.sh`
+  - `apim_partner_revoke.sh`
+
+### Changed
+- OpenAPI global security scheme now documents OAuth2 client_credentials instead of static bearer token provisioning.
+- API reference and integration guide now document partner authentication via APIM + Entra OAuth tokens.
+- Azure deployment architecture now includes APIM as mandatory API gateway in front of runtime services.
+
+### Deprecated
+- Direct external distribution of internal runtime bearer secrets (`WORKCORE_API_AUTH_TOKEN`, `CHATKIT_AUTH_TOKEN`).
+
+### Removed
+- External auth guidance based on reading bearer secrets directly from Key Vault.
+
+## 2026-03-04
+
+### API diff vs previous version
+- Previous API version: `0.21.0`
+- Current API version: `0.22.0`
+- Compatibility: breaking (`POST /chatkit` removed from public contract; canonical chat endpoint is now `POST /chat`)
+
+### Added
+- Public ChatKit endpoint path in contract and integration docs:
+  - `POST /chat`
+- Dual production auth profile documentation for chat integrations:
+  - single bearer (shared token for `/orchestrator/*` and `/chat`)
+  - split bearer (independent tokens for `/orchestrator/*` and `/chat`)
+
+### Changed
+- OpenAPI path migrated from `/chatkit` to `/chat` without payload shape changes.
+- Integration kit examples and API reference examples now use `"$BASE_URL/chat"`.
+- Edge/path routing guidance now standardizes single API host + path split:
+  - `/chat` and `/chat/*` -> ChatKit transport
+  - `/orchestrator/*` and other API paths -> orchestrator API
+
+### Deprecated
+- None.
+
+### Removed
+- Public endpoint path `POST /chatkit` from OpenAPI contract and integration guides.
+
 ## 2026-03-04
 
 ### API diff vs previous version

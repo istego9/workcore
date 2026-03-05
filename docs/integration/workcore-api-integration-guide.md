@@ -1,7 +1,7 @@
 # WorkCore API Integration Guide
 
-Version: 1.1  
-Date: March 4, 2026  
+Version: 1.3  
+Date: March 5, 2026  
 Primary API URL: `https://api.hq21.tech`  
 Gateway alias (same backend path): `https://api.runwcr.com`
 
@@ -18,12 +18,20 @@ Gateway host policy:
 - Hostname does not change contract, auth, headers, or payloads.
 
 ## 2. Authentication model
-WorkCore API is protected with bearer token authentication.
+WorkCore API is protected with OAuth2 access tokens issued by Microsoft Entra ID (`client_credentials` flow).
 
-Send on protected endpoints:
-- `Authorization: Bearer <WORKCORE_API_AUTH_TOKEN>`
+Token exchange:
+- Token endpoint:
+  - `https://login.microsoftonline.com/<tenant_id>/oauth2/v2.0/token`
+- Form fields:
+  - `grant_type=client_credentials`
+  - `client_id=<partner_client_id>`
+  - `client_secret=<partner_client_secret>`
+  - `scope=api://workcore-partner-api/.default`
+- Use returned token as:
+  - `Authorization: Bearer <access_token>`
 
-No bearer token is required for:
+No OAuth token is required for:
 - `GET /health`
 - `GET /openapi.yaml`
 - `GET /api-reference`
@@ -36,19 +44,10 @@ No bearer token is required for:
 - `GET /schemas/*`
 - `POST /webhooks/inbound/{integration_key}` (signature-based)
 
-If you are an internal platform operator and have Azure access, you can read the current API token from Key Vault:
-
-```bash
-az keyvault secret show \
-  --vault-name kv-workcore-prod-uaen \
-  --name workcore-api-auth-token \
-  --query value -o tsv
-```
-
 ## 3. Required headers
 ### Common headers
 - `Authorization: Bearer <token>` (required on protected endpoints)
-- `X-Tenant-Id: <tenant>` (recommended on all calls, required for strict multi-tenant paths such as `/chatkit`)
+- `X-Tenant-Id: <tenant>` (recommended on all calls, required for strict multi-tenant paths such as `/chat`)
 - `X-Correlation-Id: <id>` (recommended)
 - `X-Trace-Id: <id>` (recommended)
 
@@ -63,9 +62,17 @@ az keyvault secret show \
 export BASE_URL="https://api.hq21.tech"
 # optional alias with identical behavior:
 # export BASE_URL="https://api.runwcr.com"
-export TOKEN="<WORKCORE_API_AUTH_TOKEN>"
+export ENTRA_TENANT_ID="<entra_tenant_id>"
+export CLIENT_ID="<partner_client_id>"
+export CLIENT_SECRET="<partner_client_secret>"
+export SCOPE="api://workcore-partner-api/.default"
 export TENANT_ID="local"
 export PROJECT_ID="proj_hq21"
+
+TOKEN="$(curl -sS -X POST "https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=${SCOPE}" \
+  | jq -r '.access_token')"
 ```
 
 Health check:
@@ -266,15 +273,36 @@ curl -sS -X DELETE "$BASE_URL/webhooks/outbound/<subscription_id>" \
   -H "X-Tenant-Id: $TENANT_ID"
 ```
 
-## 8. ChatKit endpoint
-ChatKit endpoint is separate:
-- `POST /chatkit`
+## 8. Chat endpoint
+Chat endpoint is on the same API host:
+- `POST /chat`
 
 Requirements:
 - `X-Tenant-Id` is required
-- if ChatKit auth token is configured, send `Authorization: Bearer <CHATKIT_AUTH_TOKEN>`
+- send `Authorization: Bearer <access_token>` obtained from Entra OAuth token endpoint
 
 For `threads.create`, include `metadata.workflow_id` (required).
+
+Diagnostic checks:
+```bash
+# expected: 200 + SSE events
+curl -N -X POST "$BASE_URL/chat" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type":"threads.create",
+    "metadata":{"workflow_id":"wf_example"},
+    "params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[]}}
+  }'
+
+# expected after cutover: 404
+curl -i -X POST "$BASE_URL/chatkit" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"threads.create","metadata":{"workflow_id":"wf_example"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[]}}}'
+```
 
 ## 9. Error model
 All API errors are returned in a standard envelope:
@@ -290,7 +318,7 @@ All API errors are returned in a standard envelope:
 ```
 
 Common integration errors:
-- `401 UNAUTHORIZED`: missing or invalid bearer token
+- `401 UNAUTHORIZED`: missing, expired, or invalid OAuth access token
 - `422 ERR_PROJECT_ID_REQUIRED`: missing `X-Project-Id` on workflow endpoints
 - `400 BadRequest` with Azure OpenAI text:
   - `"Responses API is enabled only for api-version 2025-03-01-preview and later"`
@@ -298,7 +326,7 @@ Common integration errors:
 - `400 INVALID_ARGUMENT`: invalid request body/parameters
 
 ## 10. Production checklist for external teams
-1. Token rotation process is defined and tested.
+1. OAuth client secret rotation process is defined and tested (12-month lifetime + overlap window).
 2. `X-Tenant-Id`, `X-Correlation-Id`, `X-Trace-Id` are generated and propagated end-to-end.
 3. `X-Project-Id` is always set for `/workflows*` APIs.
 4. All mutating calls send stable `Idempotency-Key`.
@@ -308,4 +336,6 @@ Common integration errors:
 
 ## 11. Operational contacts
 - API contract and behavior changes must be validated against `openapi.yaml`.
+- Invite-only onboarding package for partners:
+  - `docs/integration/apim-partner-onboarding-guide.md`
 - For environment-specific token/domain issues, contact the WorkCore platform owner.

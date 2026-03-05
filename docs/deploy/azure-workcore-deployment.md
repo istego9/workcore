@@ -41,6 +41,7 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 
 ## Target architecture
 - Edge ingress: Azure Front Door Standard + WAF
+- API gateway: Azure API Management Standard v2 (`apim-workcore-prod-uaen`)
 - UI: Azure Static Web Apps (regional exception: hosted in `West Europe`, because SWA is unavailable in `UAE North`)
 - Runtime:
   - `orchestrator` in Azure Container Apps (`min=1`, `max=1`)
@@ -67,19 +68,45 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
   - Primary is enabled in Front Door from first deployment.
   - Secondary is created but enabled only after smoke validation (controlled by deploy input `enable_secondary_api_domain`).
 - Front Door routing:
-  - `route-api-primary` -> orchestrator origin group
-  - `route-api-secondary` -> orchestrator origin group (optional cutover route)
+  - `route-api-primary` -> APIM origin group
+  - `route-api-secondary` -> APIM origin group (optional cutover route)
 - DNS:
   - both API hostnames must CNAME to Front Door endpoint hostname.
+
+## UI domain strategy
+- UI custom domain: `wrk.hq21.tech`
+- Front Door route:
+  - `route-workcore-custom` -> `og-ui` (SWA origin), `link-to-default-domain=Disabled`
+- DNS records required for activation:
+  - `CNAME wrk.hq21.tech -> <frontdoor-endpoint>.z02.azurefd.net`
+  - `TXT _dnsauth.wrk.hq21.tech -> <validation token from cd-workcore>`
+- Until DNS validation completes, the Front Door default host remains the temporary UI URL.
+
+## UI access control (Microsoft Entra ID)
+- Access model:
+  - SWA route policy requires `allowedRoles: ["authenticated"]`.
+  - Unauthenticated requests are redirected to `/.auth/login/aad`.
+- Identity provider:
+  - Azure Static Web Apps built-in auth provider `aad` (Microsoft Entra ID).
+  - Required SWA app settings:
+    - `AZURE_CLIENT_ID`
+    - `AZURE_CLIENT_SECRET`
+    - `AZURE_TENANT_ID`
+- Operational guidance:
+  - Keep provider secrets in Key Vault; inject via deployment pipeline.
+  - Use single-tenant Entra app registration for organization-only access.
 
 ## Runtime data flow
 1. User opens `workcore.<domain>` through Front Door.
 2. Front Door routes UI to Static Web Apps.
-3. Front Door routes API calls to `api.<domain>` (`orchestrator`) and `chatkit.<domain>` (`chatkit`).
-4. Runtime writes run state to PostgreSQL.
-5. SSE `/runs/{run_id}/stream` replays from Postgres-backed event store and survives container restart.
-6. Webhook subscriptions/deliveries/idempotency persist in PostgreSQL and dispatcher resumes after restart.
-7. Agent/router/STT calls use Azure OpenAI deployments in `UAE North`.
+3. Front Door routes API calls on `api.<domain>` to APIM gateway.
+4. APIM validates Entra OAuth2 access token, resolves partner mapping (`appid` -> pinned tenant), and forwards to upstream runtime:
+   - `/chat*` -> `chatkit`
+   - all other protected API paths -> `orchestrator`
+5. Runtime writes run state to PostgreSQL.
+6. SSE `/runs/{run_id}/stream` replays from Postgres-backed event store and survives container restart.
+7. Webhook subscriptions/deliveries/idempotency persist in PostgreSQL and dispatcher resumes after restart.
+8. Agent/router/STT calls use Azure OpenAI deployments in `UAE North`.
 
 ## Azure OpenAI profile (`UAE North`)
 - Account: Azure OpenAI resource in `uaenorth`.
@@ -106,27 +133,32 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 
 ## Security baseline
 - WAF policy with managed rules on Front Door.
+- Entra OAuth2 client_credentials at APIM edge for external partners.
+- APIM tenant pinning: external `X-Tenant-Id` is overridden by gateway partner mapping.
 - Private PostgreSQL access via delegated subnet.
 - Secrets in Key Vault, no plaintext secrets in CI or manifests.
 - GitHub Actions OIDC to Azure (no long-lived cloud credentials).
 - Auth/CORS/env hardening stays enabled (`WORKCORE_ALLOW_INSECURE_DEV=0`).
+- UI endpoints are protected by Entra login gate in SWA (`authenticated` role).
 
 ## Rollout
 1. Deploy infra foundation.
 2. Build/push images to ACR.
 3. Deploy runtime revisions.
 4. Run migrations job.
-5. Deploy Front Door with `api.hq21.tech` as primary API route.
-6. Run smoke/e2e checks against primary API domain.
-7. Enable secondary API route (`api.runwcr.com`) and run secondary-domain smoke.
-8. Keep both routes active or use secondary as staged cutover endpoint.
+5. Deploy APIM API import + policy (`deploy_apim.sh`) and partner mapping named value.
+6. Run APIM pre-prod smoke with partner OAuth clients.
+7. Deploy Front Door with `api.hq21.tech` as primary API route to APIM.
+8. Run smoke/e2e checks against primary API domain.
+9. Enable secondary API route (`api.runwcr.com`) and run secondary-domain smoke.
+10. Keep both routes active or use secondary as staged cutover endpoint.
 
 ## Existing environment migration note
 - If Container Apps environment was created before VNet integration, recreate it after deleting dependent apps/jobs so private PostgreSQL DNS resolves from runtime containers.
 
 ## Rollback
-1. Revert to previous Container Apps revision.
-2. Switch Front Door origin to previous stable backend.
+1. Keep APIM deployed, but switch Front Door API routes back to runtime origins (`orchestrator` + `chatkit`) for emergency bypass.
+2. Revert to previous Container Apps revision if runtime regression is detected.
 3. If emergency mitigation is needed, temporarily set:
    - `STREAMING_STORE_BACKEND=memory`
    - `WEBHOOK_STORE_BACKEND=memory`
@@ -142,6 +174,16 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 ## Automation and operator commands
 - Preflight dual-domain readiness:
   - `./deploy/azure/scripts/preflight_dual_api_domains.sh`
+- Deploy APIM gateway configuration:
+  - `./deploy/azure/scripts/deploy_apim.sh`
+- Partner onboarding and secret lifecycle:
+  - `./deploy/azure/scripts/apim_partner_onboard.sh`
+  - `./deploy/azure/scripts/apim_partner_rotate_secret.sh`
+  - `./deploy/azure/scripts/apim_partner_revoke.sh`
+- Deploy builder UI artifact to Static Web Apps:
+  - `./deploy/azure/scripts/deploy_builder_swa.sh`
+- Configure SWA Entra auth app settings:
+  - `./deploy/azure/scripts/configure_swa_entra_auth.sh`
 - Full deploy via GitHub workflow:
   - `.github/workflows/deploy-azure.yml`
 - Direct Front Door apply:

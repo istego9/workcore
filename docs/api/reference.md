@@ -10,9 +10,21 @@ Primary contract source: `/openapi.yaml` (OpenAPI 3.0.3).
 - Production: use your deployed API URL.
 
 ## Authentication
-- WorkCore runtime profile requires `WORKCORE_API_AUTH_TOKEN`; send:
-  - `Authorization: Bearer <token>`
-- No bearer token is required for:
+- Public API access is provided through Azure API Management (APIM) with Microsoft Entra OAuth2 (`client_credentials`).
+- Exchange `client_id` + `client_secret` for an access token:
+  - `POST https://login.microsoftonline.com/<tenant_id>/oauth2/v2.0/token`
+  - `grant_type=client_credentials`
+  - `scope=api://workcore-partner-api/.default`
+- Send:
+  - `Authorization: Bearer <access_token>`
+
+Example token exchange:
+```bash
+curl -sS -X POST "https://login.microsoftonline.com/<tenant_id>/oauth2/v2.0/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=<client_id>&client_secret=<client_secret>&scope=api://workcore-partner-api/.default"
+```
+- No OAuth token is required for:
   - `GET /health`
   - `GET /openapi.yaml`
   - `GET /api-reference`
@@ -22,18 +34,18 @@ Primary contract source: `/openapi.yaml` (OpenAPI 3.0.3).
   - `GET /agent-integration-test`
   - `GET /agent-integration-test.json`
   - `POST /agent-integration-test/validate-draft`
+  - `GET /schemas/*`
   - `POST /webhooks/inbound/{integration_key}` (signature-based)
 
 Inbound webhooks require signature headers generated with `WEBHOOK_DEFAULT_INBOUND_SECRET`:
 - `X-Webhook-Timestamp`
 - `X-Webhook-Signature`
 
-ChatKit service auth is configured independently:
-- If `CHATKIT_AUTH_TOKEN` is set on ChatKit, `POST /chatkit` requires the matching bearer token.
+APIM validates OAuth token, pins tenant scope by partner mapping, and forwards internal bearer credentials to upstream services.
 
 ## Required integration headers
 - `X-Tenant-Id`: tenant scope for all workflow/run operations.
-- `X-Tenant-Id` is required for `POST /chatkit` in strict multi-tenant mode.
+- `X-Tenant-Id` is required for `POST /chat` in strict multi-tenant mode.
 - `X-Correlation-Id`: request correlation key; echoed in responses/errors.
 - `X-Trace-Id`: distributed trace key; propagated to run metadata/events.
 - `X-Project-Id`: required for all `/workflows*` authoring/read operations.
@@ -329,7 +341,8 @@ Handoff package includes:
 Use `Idempotency-Key` on handoff endpoints for retry-safe delivery.
 
 ## Chat-first integration for external clients
-For full user interaction (approval/forms/files) integrate `POST /chatkit` in addition to run APIs.
+For full user interaction (approval/forms/files) integrate `POST /chat` in addition to run APIs.
+- Deprecated path notice: `POST /chatkit` is removed from the public contract and should return `404`.
 
 - Supported interactive request types:
   - `threads.create`
@@ -354,12 +367,11 @@ For full user interaction (approval/forms/files) integrate `POST /chatkit` in ad
   - `run_id` (workflow execution identity)
   - `interrupt_id` (human-interaction step identity)
 
-If `CHATKIT_AUTH_TOKEN` is configured on the ChatKit service, include:
-- `Authorization: Bearer <token>`
+`POST /chat` uses the same OAuth access token model as other protected API endpoints.
 
 ## Example: start chat thread and run (SSE)
 ```bash
-curl -N -X POST "https://api.workcore.build/chatkit" \
+curl -N -X POST "https://api.workcore.build/chat" \
   -H "Content-Type: application/json" \
   -d '{
     "metadata": {
@@ -381,7 +393,7 @@ curl -N -X POST "https://api.workcore.build/chatkit" \
 
 ## Example: submit interrupt action from chat widget
 ```bash
-curl -N -X POST "https://api.workcore.build/chatkit" \
+curl -N -X POST "https://api.workcore.build/chat" \
   -H "Content-Type: application/json" \
   -d '{
     "type": "threads.custom_action",
