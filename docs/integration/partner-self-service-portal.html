@@ -89,6 +89,23 @@
         gap: 10px;
         align-items: center;
       }
+      details {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+      details summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .advanced-grid {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
       button {
         border: 0;
         border-radius: 10px;
@@ -121,6 +138,9 @@
         form {
           grid-template-columns: 1fr;
         }
+        .advanced-grid {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -128,29 +148,34 @@
     <div class="page">
       <div class="panel">
         <h1>Partner App Onboarding</h1>
-        <p class="hint">Fill minimum fields and download an onboarding ZIP package for the partner integration team.</p>
+        <p class="hint">Fill minimal fields and download an onboarding ZIP package for the partner integration team.</p>
         <div class="identity" id="identity"></div>
 
         <form id="onboard-form">
-          <label>
-            Partner ID
-            <input id="partner_id" name="partner_id" required placeholder="acme_prod" />
-          </label>
-
-          <label>
-            Display Name
+          <label class="full">
+            Display Name (required)
             <input id="display_name" name="display_name" required placeholder="Acme Production" />
           </label>
 
-          <label>
-            Tenant ID (Pinned)
-            <input id="tenant_id_pinned" name="tenant_id_pinned" required placeholder="tenant_acme" />
-          </label>
+          <details class="full">
+            <summary>Advanced overrides (optional)</summary>
+            <div class="advanced-grid">
+              <label>
+                Partner ID (auto-generated if empty)
+                <input id="partner_id" name="partner_id" placeholder="acme-prod-1a2b3c" />
+              </label>
 
-          <label>
-            Entra App Display Name (optional)
-            <input id="entra_app_display_name" name="entra_app_display_name" placeholder="workcore-partner-acme" />
-          </label>
+              <label>
+                Tenant ID (Pinned, defaults to Partner ID)
+                <input id="tenant_id_pinned" name="tenant_id_pinned" placeholder="tenant_acme" />
+              </label>
+
+              <label class="full">
+                Entra App Display Name (optional)
+                <input id="entra_app_display_name" name="entra_app_display_name" placeholder="workcore-partner-acme" />
+              </label>
+            </div>
+          </details>
 
           <label>
             Secret Expiry (months)
@@ -216,18 +241,25 @@
         submitBtn.disabled = true;
 
         const payload = {
-          partner_id: document.getElementById("partner_id").value.trim(),
           display_name: document.getElementById("display_name").value.trim(),
-          tenant_id_pinned: document.getElementById("tenant_id_pinned").value.trim(),
-          entra_app_display_name: document.getElementById("entra_app_display_name").value.trim(),
           secret_expiry_months: Number(document.getElementById("secret_expiry_months").value || "12"),
           rate_limit_profile: document.getElementById("rate_limit_profile").value.trim(),
           allowed_domains: parseDomains(document.getElementById("allowed_domains").value),
           base_url: document.getElementById("base_url").value.trim(),
         };
 
-        if (!payload.entra_app_display_name) {
-          delete payload.entra_app_display_name;
+        const partnerId = document.getElementById("partner_id").value.trim();
+        const tenantIdPinned = document.getElementById("tenant_id_pinned").value.trim();
+        const entraAppDisplayName = document.getElementById("entra_app_display_name").value.trim();
+
+        if (partnerId) {
+          payload.partner_id = partnerId;
+        }
+        if (tenantIdPinned) {
+          payload.tenant_id_pinned = tenantIdPinned;
+        }
+        if (entraAppDisplayName) {
+          payload.entra_app_display_name = entraAppDisplayName;
         }
 
         try {

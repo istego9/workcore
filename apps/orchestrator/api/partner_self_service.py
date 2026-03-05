@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -112,11 +113,30 @@ def _parse_secret_expiry_months(payload: Mapping[str, Any]) -> int:
     return value
 
 
+def _auto_partner_id(display_name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        slug = "partner"
+    digest = hashlib.sha1(display_name.encode("utf-8")).hexdigest()[:6]
+    prefix_max_len = 63 - 1 - len(digest)
+    prefix = slug[:prefix_max_len].strip("-_")
+    if not prefix:
+        prefix = "partner"
+    candidate = f"{prefix}-{digest}"
+    if not _PARTNER_ID_RE.match(candidate):
+        raise PartnerSelfServiceError("INTERNAL", "failed to generate valid partner_id", 500)
+    return candidate
+
+
 def normalize_onboard_request(payload: Any, *, default_base_url: str = "https://api.hq21.tech") -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise PartnerSelfServiceError("INVALID_ARGUMENT", "request body must be a JSON object", 422)
 
-    partner_id = _require_string(payload, "partner_id", required=True, max_length=64)
+    display_name = _require_string(payload, "display_name", required=True, max_length=120)
+    partner_id = _require_string(payload, "partner_id", max_length=64, default="")
+    if not partner_id:
+        partner_id = _auto_partner_id(display_name)
     if not _PARTNER_ID_RE.match(partner_id):
         raise PartnerSelfServiceError(
             "INVALID_ARGUMENT",
@@ -124,8 +144,7 @@ def normalize_onboard_request(payload: Any, *, default_base_url: str = "https://
             422,
         )
 
-    display_name = _require_string(payload, "display_name", required=True, max_length=120)
-    tenant_id_pinned = _require_string(payload, "tenant_id_pinned", required=True, max_length=128)
+    tenant_id_pinned = _require_string(payload, "tenant_id_pinned", max_length=128, default=partner_id)
     rate_limit_profile = _require_string(payload, "rate_limit_profile", max_length=64, default="default")
     base_url = _require_string(payload, "base_url", max_length=200, default=default_base_url)
     if not (base_url.startswith("https://") or base_url.startswith("http://")):
