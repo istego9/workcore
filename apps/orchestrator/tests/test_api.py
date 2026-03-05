@@ -1,6 +1,10 @@
 import asyncio
+import base64
+import io
+import json
 import os
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -2269,6 +2273,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Chat Frontend Integration (Fork)", markdown_response.text)
         self.assertIn("Option A: embed chat-fork frontend in an external app", markdown_response.text)
         self.assertIn("Option B: headless integration against ChatKit API", markdown_response.text)
+        self.assertIn("/chat", markdown_response.text)
         self.assertIn("input.transcribe", markdown_response.text)
         self.assertIn("Example: project bootstrap + registry binding", markdown_response.text)
         self.assertIn("Example: orchestrator message", markdown_response.text)
@@ -2282,6 +2287,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn("integration_logs", payload["urls"])
         self.assertIn("projects_list", payload["urls"])
         self.assertIn("projects_create", payload["urls"])
+        self.assertIn("chat_endpoint", payload["urls"])
+        self.assertTrue(payload["urls"]["chat_endpoint"].endswith("/chat"))
         self.assertIn("project_orchestrator_upsert_template", payload["urls"])
         self.assertIn("project_workflow_definition_upsert_template", payload["urls"])
         self.assertEqual(
@@ -2316,8 +2323,15 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(
             any(check.get("id") == "draft_schema_set_state_batch_assignments" for check in report["checks"])
         )
+        self.assertTrue(
+            any(
+                check.get("id") == "openapi_chatkit_path_removed" and check.get("ok") is True
+                for check in report["checks"]
+            )
+        )
         self.assertIn("projects_list", report["urls"])
         self.assertIn("projects_create", report["urls"])
+        self.assertIn("chat_endpoint", report["urls"])
         self.assertIn("project_orchestrator_upsert_template", report["urls"])
         self.assertIn("project_workflow_definition_upsert_template", report["urls"])
 
@@ -2559,6 +2573,109 @@ class ApiAuthTests(unittest.TestCase):
             },
         )
         self.assertEqual(validate_response.status_code, 200)
+
+
+class PartnerSelfServiceApiTests(unittest.TestCase):
+    def setUp(self):
+        self._tracked_env = {
+            "WORKCORE_API_AUTH_TOKEN": os.environ.get("WORKCORE_API_AUTH_TOKEN"),
+            "WORKCORE_PARTNER_PORTAL_ENABLED": os.environ.get("WORKCORE_PARTNER_PORTAL_ENABLED"),
+            "WORKCORE_PARTNER_PORTAL_ALLOWED_TENANT_ID": os.environ.get("WORKCORE_PARTNER_PORTAL_ALLOWED_TENANT_ID"),
+            "WORKCORE_PARTNER_PORTAL_ALLOWED_USER_EMAILS": os.environ.get("WORKCORE_PARTNER_PORTAL_ALLOWED_USER_EMAILS"),
+            "WORKCORE_PARTNER_PORTAL_DEFAULT_BASE_URL": os.environ.get("WORKCORE_PARTNER_PORTAL_DEFAULT_BASE_URL"),
+        }
+        os.environ.pop("WORKCORE_API_AUTH_TOKEN", None)
+        os.environ["WORKCORE_PARTNER_PORTAL_ENABLED"] = "1"
+        os.environ["WORKCORE_PARTNER_PORTAL_ALLOWED_TENANT_ID"] = "tenant-internal"
+        os.environ.pop("WORKCORE_PARTNER_PORTAL_ALLOWED_USER_EMAILS", None)
+        os.environ["WORKCORE_PARTNER_PORTAL_DEFAULT_BASE_URL"] = "https://api.hq21.tech"
+        self.client = TestClient(create_app(workflow_store=InMemoryWorkflowStore()))
+
+    def tearDown(self):
+        self.client.close()
+        for key, value in self._tracked_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _principal_header(self, *, tenant_id: str = "tenant-internal", user_email: str = "ops@hq21.tech") -> dict:
+        payload = {
+            "auth_typ": "aad",
+            "claims": [
+                {"typ": "http://schemas.microsoft.com/identity/claims/tenantid", "val": tenant_id},
+                {"typ": "preferred_username", "val": user_email},
+                {"typ": "oid", "val": "user_1"},
+            ],
+        }
+        encoded = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+        return {"X-MS-CLIENT-PRINCIPAL": encoded}
+
+    def test_partner_portal_requires_entra_header(self):
+        response = self.client.get("/internal/partner-access")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["code"], "UNAUTHORIZED")
+
+    def test_partner_portal_rejects_wrong_tenant(self):
+        response = self.client.get("/internal/partner-access", headers=self._principal_header(tenant_id="tenant-foreign"))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "FORBIDDEN")
+
+    def test_partner_portal_onboard_returns_zip(self):
+        mocked_onboarding = {
+            "partner_id": "acme_prod",
+            "display_name": "Acme Production",
+            "client_id": "app_123",
+            "client_secret": "secret_abc",
+            "client_secret_expires_at": "2027-03-05T10:00:00Z",
+            "token_endpoint": "https://login.microsoftonline.com/tenant-internal/oauth2/v2.0/token",
+            "scope": "api://workcore-partner-api/.default",
+            "base_url": "https://api.hq21.tech",
+            "tenant_id_pinned": "tenant_acme",
+            "allowed_domains": ["api.hq21.tech"],
+        }
+
+        with mock.patch("apps.orchestrator.api.app.run_partner_onboarding", return_value=mocked_onboarding):
+            response = self.client.post(
+                "/internal/partner-access/onboard-package",
+                headers=self._principal_header(),
+                json={
+                    "partner_id": "acme_prod",
+                    "display_name": "Acme Production",
+                    "tenant_id_pinned": "tenant_acme",
+                    "allowed_domains": ["api.hq21.tech"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/zip", response.headers.get("content-type", ""))
+        self.assertIn("workcore-partner-acme_prod-onboarding.zip", response.headers.get("content-disposition", ""))
+
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        self.assertIn("README.md", archive.namelist())
+        self.assertIn(".env.partner", archive.namelist())
+        env_text = archive.read(".env.partner").decode("utf-8")
+        self.assertIn("CLIENT_ID=app_123", env_text)
+        self.assertIn("CLIENT_SECRET=secret_abc", env_text)
+
+    def test_partner_portal_disabled_returns_not_found(self):
+        os.environ["WORKCORE_PARTNER_PORTAL_ENABLED"] = "0"
+        disabled_client = TestClient(create_app(workflow_store=InMemoryWorkflowStore()))
+        try:
+            response = disabled_client.get("/internal/partner-access", headers=self._principal_header())
+        finally:
+            disabled_client.close()
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "NOT_FOUND")
+
+    def test_partner_portal_bypasses_legacy_bearer_middleware(self):
+        os.environ["WORKCORE_API_AUTH_TOKEN"] = "legacy_token"
+        auth_client = TestClient(create_app(workflow_store=InMemoryWorkflowStore()))
+        try:
+            response = auth_client.get("/internal/partner-access", headers=self._principal_header())
+        finally:
+            auth_client.close()
+        self.assertEqual(response.status_code, 200)
 
 
 class ApiCorsTests(unittest.TestCase):
