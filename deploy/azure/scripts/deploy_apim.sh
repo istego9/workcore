@@ -184,8 +184,8 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
 <policies>
   <inbound>
     <base />
-    <set-variable name="requestPath" value="@((context.Request.OriginalUrl?.Path ?? context.Request.Url.Path).ToLowerInvariant())" />
-    <set-variable name="isPublicRoute" value="@{
+    <set-variable name="requestPath" value='@((context.Request.OriginalUrl?.Path ?? context.Request.Url.Path).ToLowerInvariant())' />
+    <set-variable name="isPublicRoute" value='@{
       var path = (string)context.Variables["requestPath"];
       return path == "/health"
         || path == "/openapi.yaml"
@@ -198,14 +198,14 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
         || path == "/agent-integration-test/validate-draft"
         || path.StartsWith("/schemas/")
         || path.StartsWith("/webhooks/inbound/");
-    }" />
-    <set-variable name="isChatRoute" value="@{
+    }' />
+    <set-variable name="isChatRoute" value='@{
       var path = (string)context.Variables["requestPath"];
       return path == "/chat" || path.StartsWith("/chat/");
-    }" />
+    }' />
     <set-variable name="clientAppId" value="" />
     <choose>
-      <when condition="@(!(bool)context.Variables["isPublicRoute"])">
+      <when condition='@(!(bool)context.Variables["isPublicRoute"])'>
         <validate-jwt
           header-name="Authorization"
           require-scheme="Bearer"
@@ -216,28 +216,28 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
             <audience>{{oauth-audience}}</audience>
           </audiences>
         </validate-jwt>
-        <set-variable name="clientAppId" value="@{
+        <set-variable name="clientAppId" value='@{
           var authHeader = context.Request.Headers.GetValueOrDefault("Authorization", "");
           var jwt = authHeader.AsJwt();
           if (jwt == null) return "";
           var appId = jwt.Claims.GetValueOrDefault("appid");
           if (!string.IsNullOrWhiteSpace(appId)) return appId;
           return jwt.Claims.GetValueOrDefault("azp") ?? "";
-        }" />
+        }' />
         <set-variable name="partnerMapRaw" value="{{partner-app-map}}" />
-        <set-variable name="partnerMap" value="@{
+        <set-variable name="partnerMap" value='@{
           var raw = (string)context.Variables["partnerMapRaw"];
           if (string.IsNullOrWhiteSpace(raw)) return new Newtonsoft.Json.Linq.JObject();
           return Newtonsoft.Json.Linq.JObject.Parse(raw);
-        }" />
+        }' />
         <choose>
-          <when condition="@{
+          <when condition='@{
             var enforce = "{{enforce-partner-map}}".ToLowerInvariant();
             if (!(enforce == "1" || enforce == "true" || enforce == "yes" || enforce == "on")) return false;
             var appId = (string)context.Variables["clientAppId"];
             var map = (Newtonsoft.Json.Linq.JObject)context.Variables["partnerMap"];
             return string.IsNullOrWhiteSpace(appId) || map[appId] == null;
-          }">
+          }'>
             <return-response>
               <set-status code="401" reason="Unauthorized" />
               <set-header name="Content-Type" exists-action="override">
@@ -272,7 +272,7 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
       <value>@($"trace_{Guid.NewGuid().ToString("N").Substring(0, 12)}")</value>
     </set-header>
     <choose>
-      <when condition="@((bool)context.Variables["isChatRoute"])">
+      <when condition='@((bool)context.Variables["isChatRoute"])'>
         <set-backend-service base-url="{{backend-chatkit-url}}" />
         <set-header name="Authorization" exists-action="override">
           <value>Bearer {{backend-chatkit-token}}</value>
@@ -298,11 +298,23 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
 </policies>
 EOF_POLICY
 
-az apim api policy create \
+if az apim api policy show \
   --resource-group "${AZ_RESOURCE_GROUP}" \
   --service-name "${APIM_NAME}" \
-  --api-id "${APIM_API_ID}" \
-  --xml-content @"${POLICY_FILE}" \
-  --output none
+  --api-id "${APIM_API_ID}" >/dev/null 2>&1; then
+  az apim api policy update \
+    --resource-group "${AZ_RESOURCE_GROUP}" \
+    --service-name "${APIM_NAME}" \
+    --api-id "${APIM_API_ID}" \
+    --xml-content @"${POLICY_FILE}" \
+    --output none
+else
+  az apim api policy create \
+    --resource-group "${AZ_RESOURCE_GROUP}" \
+    --service-name "${APIM_NAME}" \
+    --api-id "${APIM_API_ID}" \
+    --xml-content @"${POLICY_FILE}" \
+    --output none
+fi
 
 echo "[apim] deployment complete"

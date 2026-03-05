@@ -77,6 +77,7 @@ Commands:
         --resource-group <name>                        (default: rg-workcore-prod-uaen)
         --location <azure-region>                      (default: uaenorth)
         --deploy-frontdoor <true|false>                (default: true)
+        --deploy-apim <true|false>                     (default: true)
         --deploy-builder-ui <true|false>               (default: true)
         --swa-allow-insecure-tls-download <true|false> (default: false)
         --configure-ui-entra-auth <true|false>         (default: false)
@@ -187,6 +188,7 @@ deploy_azure() {
   local resource_group="rg-workcore-prod-uaen"
   local location="uaenorth"
   local deploy_frontdoor="true"
+  local deploy_apim="true"
   local deploy_builder_ui="true"
   local swa_allow_insecure_tls_download="false"
   local configure_ui_entra_auth="false"
@@ -217,6 +219,10 @@ deploy_azure() {
         ;;
       --deploy-frontdoor)
         deploy_frontdoor="${2:-}"
+        shift 2
+        ;;
+      --deploy-apim)
+        deploy_apim="${2:-}"
         shift 2
         ;;
       --deploy-builder-ui)
@@ -282,6 +288,7 @@ deploy_azure() {
   done
 
   deploy_frontdoor="$(normalize_bool "${deploy_frontdoor}")"
+  deploy_apim="$(normalize_bool "${deploy_apim}")"
   deploy_builder_ui="$(normalize_bool "${deploy_builder_ui}")"
   swa_allow_insecure_tls_download="$(normalize_bool "${swa_allow_insecure_tls_download}")"
   configure_ui_entra_auth="$(normalize_bool "${configure_ui_entra_auth}")"
@@ -293,6 +300,7 @@ deploy_azure() {
     -f resource_group="${resource_group}" \
     -f location="${location}" \
     -f deploy_frontdoor="${deploy_frontdoor}" \
+    -f deploy_apim="${deploy_apim}" \
     -f deploy_builder_ui="${deploy_builder_ui}" \
     -f swa_allow_insecure_tls_download="${swa_allow_insecure_tls_download}" \
     -f configure_ui_entra_auth="${configure_ui_entra_auth}" \

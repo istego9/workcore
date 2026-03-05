@@ -16,6 +16,11 @@ on:
         type: boolean
         required: true
         default: true
+      deploy_apim:
+        description: Deploy APIM gateway policy and partner auth mapping
+        type: boolean
+        required: true
+        default: true
       deploy_builder_ui:
         description: Build and deploy builder UI to Azure Static Web Apps
         type: boolean
@@ -84,6 +89,7 @@ env:
   SWA_NAME: swa-workcore-prod-uaen
   SWA_LOCATION: westeurope
   AOAI_ACCOUNT_NAME: aoai-workcore-prod-uaen
+  APIM_NAME: apim-workcore-prod-uaen
   VNET_NAME: vnet-workcore-prod-uaen
   POSTGRES_SUBNET_NAME: snet-postgres-flex
   CONTAINERAPPS_SUBNET_NAME: snet-containerapps
@@ -193,6 +199,18 @@ jobs:
           INTEGRATION_HTTP_ALLOWED_HOSTS: ${{ inputs.integration_http_allowed_hosts }}
         run: ./deploy/azure/scripts/deploy_apps.sh
 
+      - name: Deploy APIM gateway policy
+        if: ${{ inputs.deploy_apim }}
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          APIM_NAME: ${{ env.APIM_NAME }}
+          KEY_VAULT_NAME: ${{ env.KEY_VAULT_NAME }}
+          ORCHESTRATOR_APP_NAME: ${{ env.ORCHESTRATOR_APP_NAME }}
+          CHATKIT_APP_NAME: ${{ env.CHATKIT_APP_NAME }}
+          ENTRA_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          APIM_OAUTH_AUDIENCE: ${{ secrets.APIM_OAUTH_AUDIENCE }}
+        run: ./deploy/azure/scripts/deploy_apim.sh
+
       - name: Deploy Front Door + WAF
         if: ${{ inputs.deploy_frontdoor }}
         env:
@@ -201,5 +219,7 @@ jobs:
           API_PRIMARY_DOMAIN: ${{ inputs.api_primary_domain }}
           API_SECONDARY_DOMAIN: ${{ inputs.api_secondary_domain }}
           ENABLE_SECONDARY_API_DOMAIN: ${{ inputs.enable_secondary_api_domain }}
+          API_USE_APIM_GATEWAY: true
+          APIM_NAME: ${{ env.APIM_NAME }}
           CHATKIT_DOMAIN: ${{ inputs.chatkit_domain }}
         run: ./deploy/azure/scripts/deploy_frontdoor.sh
