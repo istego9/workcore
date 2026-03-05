@@ -7,6 +7,31 @@ The format follows a simple date-based log.
 ## 2026-03-05
 
 ### API diff vs previous version
+- Previous API version: `0.23.0`
+- Current API version: `0.24.0`
+- Compatibility: additive (new internal partner onboarding self-service endpoints)
+
+### Added
+- Internal operator endpoints:
+  - `GET /internal/partner-access`
+  - `POST /internal/partner-access/onboard-package`
+- New request schema:
+  - `PartnerSelfServiceOnboardRequest`
+- Internal portal auth scheme in OpenAPI:
+  - `entraEasyAuthPrincipal` (`X-MS-CLIENT-PRINCIPAL`)
+
+### Changed
+- API reference now documents internal onboarding self-service flow and generated ZIP artifacts.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-03-05
+
+### API diff vs previous version
 - Previous API version: `0.22.0`
 - Current API version: `0.23.0`
 - Compatibility: additive (auth model for external clients moved to APIM + Entra OAuth2 without endpoint/payload changes)

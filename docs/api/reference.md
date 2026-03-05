@@ -43,6 +43,17 @@ Inbound webhooks require signature headers generated with `WEBHOOK_DEFAULT_INBOU
 
 APIM validates OAuth token, pins tenant scope by partner mapping, and forwards internal bearer credentials to upstream services.
 
+### Internal partner onboarding self-service
+- Internal operator portal endpoint: `GET /internal/partner-access`
+- Package generation endpoint: `POST /internal/partner-access/onboard-package`
+- Intended usage:
+  - operator signs in through Microsoft Entra protected internal frontend
+  - frontend forwards EasyAuth principal header `X-MS-CLIENT-PRINCIPAL`
+  - backend validates Entra principal and returns onboarding ZIP package
+- ZIP package includes:
+  - `README.md` with partner-specific token exchange and call instructions
+  - `.env.partner` with partner-specific environment values (`client_id`, `client_secret`, `scope`, `token_endpoint`, `base_url`)
+
 ## Required integration headers
 - `X-Tenant-Id`: tenant scope for all workflow/run operations.
 - `X-Tenant-Id` is required for `POST /chat` in strict multi-tenant mode.
