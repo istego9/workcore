@@ -135,6 +135,10 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 - WAF policy with managed rules on Front Door.
 - Entra OAuth2 client_credentials at APIM edge for external partners.
 - APIM tenant pinning: external `X-Tenant-Id` is overridden by gateway partner mapping.
+- Internal partner self-service endpoints require Entra EasyAuth principal header and optional tenant/user allowlist:
+  - `WORKCORE_PARTNER_PORTAL_ENABLED=1`
+  - `WORKCORE_PARTNER_PORTAL_ALLOWED_TENANT_ID=<internal_tenant>`
+  - `WORKCORE_PARTNER_PORTAL_ALLOWED_USER_EMAILS=<comma-separated-upns>` (recommended)
 - Private PostgreSQL access via delegated subnet.
 - Secrets in Key Vault, no plaintext secrets in CI or manifests.
 - GitHub Actions OIDC to Azure (no long-lived cloud credentials).
@@ -180,6 +184,10 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
   - `./deploy/azure/scripts/apim_partner_onboard.sh`
   - `./deploy/azure/scripts/apim_partner_rotate_secret.sh`
   - `./deploy/azure/scripts/apim_partner_revoke.sh`
+- Internal self-service onboarding portal:
+  - `GET /internal/partner-access`
+  - `POST /internal/partner-access/onboard-package`
+  - operator runbook: `docs/integration/partner-self-service-operator-guide.md`
 - Deploy builder UI artifact to Static Web Apps:
   - `./deploy/azure/scripts/deploy_builder_swa.sh`
 - Configure SWA Entra auth app settings:
