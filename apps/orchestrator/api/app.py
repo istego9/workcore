@@ -164,6 +164,18 @@ def _is_truthy(value: Optional[str]) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _extract_bearer_token(header_value: Optional[str]) -> Optional[str]:
+    if not header_value:
+        return None
+    parts = header_value.strip().split()
+    if len(parts) != 2:
+        return None
+    scheme, token = parts
+    if scheme.lower() != "bearer":
+        return None
+    return token
+
+
 def validate_runtime_security_env() -> None:
     if _is_truthy(get_env("WORKCORE_ALLOW_INSECURE_DEV", "0")):
         return
@@ -2596,6 +2608,7 @@ def create_app(
             "project_workflow_definition_upsert_template": (
                 f"{base_url}/projects/{{project_id}}/workflow-definitions"
             ),
+            "chat_endpoint": f"{base_url}/chat",
             "orchestrator_message": f"{base_url}/orchestrator/messages",
             "orchestrator_eval_replay": f"{base_url}/orchestrator/eval/replay",
             "orchestrator_stack_template": f"{base_url}/orchestrator/sessions/{{session_id}}/stack?project_id={{project_id}}",
@@ -2771,6 +2784,7 @@ def create_app(
             "/projects/{project_id}/workflow-definitions",
             "/capabilities",
             "/capabilities/{capability_id}/versions",
+            "/chat",
             "/orchestrator/messages",
             "/orchestrator/eval/replay",
             "/orchestrator/sessions/{session_id}/stack",
@@ -2787,6 +2801,12 @@ def create_app(
             "OpenAPI includes integration kit/test/log and reliability endpoints",
             len(missing_paths) == 0,
             "ok" if not missing_paths else f"missing: {', '.join(missing_paths)}",
+        )
+        add_check(
+            "openapi_chatkit_path_removed",
+            "OpenAPI no longer exposes deprecated /chatkit path",
+            "  /chatkit:" not in openapi_text,
+            "ok" if "  /chatkit:" not in openapi_text else "deprecated /chatkit path found",
         )
         add_check(
             "integration_log_buffer_configured",
@@ -3085,6 +3105,7 @@ def create_app(
             f"- Capability versions endpoint template: {urls['capabilities_versions_template']}",
             f"- Project orchestrator upsert endpoint template: {urls['project_orchestrator_upsert_template']}",
             f"- Project workflow-definition upsert endpoint template: {urls['project_workflow_definition_upsert_template']}",
+            f"- Chat endpoint: {urls['chat_endpoint']}",
             f"- Orchestrator message endpoint: {urls['orchestrator_message']}",
             f"- Orchestrator eval replay endpoint: {urls['orchestrator_eval_replay']}",
             f"- Orchestrator stack endpoint template: {urls['orchestrator_stack_template']}",
@@ -3152,9 +3173,10 @@ def create_app(
             "3. Keep fallback switch available (`VITE_CHAT_FRONTEND_MODE=chatkit|fork`).",
             "",
             "### Option B: headless integration against ChatKit API",
-            f"- Endpoint: {str(request.base_url).rstrip('/')}/chatkit",
+            f"- Endpoint: {str(request.base_url).rstrip('/')}/chat",
             "- Required header: `X-Tenant-Id`",
-            "- Optional auth header: `Authorization: Bearer <token>` (required if CHATKIT_AUTH_TOKEN enabled)",
+            "- Auth profile (single bearer): use the same `Authorization: Bearer <WORKCORE_API_AUTH_TOKEN>` as orchestrator calls.",
+            "- Auth profile (split bearer): use `Authorization: Bearer <CHATKIT_AUTH_TOKEN>` for `/chat`.",
             "- Request types:",
             "  - `threads.create` (SSE response)",
             "  - `threads.add_user_message` (SSE response)",
@@ -3163,7 +3185,7 @@ def create_app(
             "",
             "### Example: create thread (SSE)",
             "```bash",
-            "curl -N -X POST \"$BASE_URL/chatkit\" \\",
+            "curl -N -X POST \"$BASE_URL/chat\" \\",
             "  -H \"Authorization: Bearer $TOKEN\" \\",
             "  -H \"X-Tenant-Id: $TENANT\" \\",
             "  -H \"Content-Type: application/json\" \\",
@@ -3172,7 +3194,7 @@ def create_app(
             "",
             "### Example: transcribe audio (JSON)",
             "```bash",
-            "curl -X POST \"$BASE_URL/chatkit\" \\",
+            "curl -X POST \"$BASE_URL/chat\" \\",
             "  -H \"Authorization: Bearer $TOKEN\" \\",
             "  -H \"X-Tenant-Id: $TENANT\" \\",
             "  -H \"Content-Type: application/json\" \\",
@@ -3672,7 +3694,8 @@ def create_app(
         exception_handlers={Exception: _unhandled_exception},
     )
     app.state.api_context = ctx
-    api_auth_token = get_env("WORKCORE_API_AUTH_TOKEN")
+    api_auth_token_raw = get_env("WORKCORE_API_AUTH_TOKEN")
+    api_auth_token = api_auth_token_raw.strip() if api_auth_token_raw else None
 
     if api_auth_token:
         class ApiTokenMiddleware(BaseHTTPMiddleware):
@@ -3694,9 +3717,9 @@ def create_app(
                 ):
                     return await call_next(request)
 
-                auth_header = request.headers.get("Authorization", "")
-                expected = f"Bearer {api_auth_token}"
-                if auth_header != expected:
+                auth_header = request.headers.get("Authorization")
+                presented_token = _extract_bearer_token(auth_header)
+                if presented_token != api_auth_token:
                     return _error(request, "UNAUTHORIZED", "missing or invalid bearer token", 401)
                 return await call_next(request)
 
