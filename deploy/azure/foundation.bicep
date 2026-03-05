@@ -33,6 +33,21 @@ param staticWebAppLocation string = 'westeurope'
 @description('Azure OpenAI account name (globally unique).')
 param azureOpenAIAccountName string
 
+@description('Azure API Management service name.')
+param apiManagementName string = 'apim-workcore-prod-uaen'
+
+@description('Azure API Management SKU.')
+@allowed([
+  'StandardV2'
+])
+param apiManagementSkuName string = 'StandardV2'
+
+@description('Azure API Management publisher display name.')
+param apiManagementPublisherName string = 'WorkCore Platform'
+
+@description('Azure API Management publisher contact email.')
+param apiManagementPublisherEmail string = 'platform@hq21.tech'
+
 @description('Virtual network name.')
 param vnetName string = 'vnet-workcore-prod-uaen'
 
@@ -334,6 +349,25 @@ resource azureOpenAI 'Microsoft.CognitiveServices/accounts@2023-05-01' = {
   }
 }
 
+resource apiManagement 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
+  name: apiManagementName
+  location: location
+  tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: apiManagementSkuName
+    capacity: 1
+  }
+  properties: {
+    publisherName: apiManagementPublisherName
+    publisherEmail: apiManagementPublisherEmail
+    publicNetworkAccess: 'Enabled'
+    virtualNetworkType: 'None'
+  }
+}
+
 output acrLoginServer string = acr.properties.loginServer
 output keyVaultUri string = keyVault.properties.vaultUri
 output containerAppsEnvId string = containerAppsEnv.id
@@ -344,3 +378,5 @@ output postgresAdminLogin string = postgresAdminLogin
 output storageAccountNameOut string = storageAccount.name
 output storageFileShareName string = minioShareName
 output openAIEndpoint string = 'https://${azureOpenAI.name}.openai.azure.com/'
+output apiManagementNameOut string = apiManagement.name
+output apiManagementGatewayUrl string = apiManagement.properties.gatewayUrl

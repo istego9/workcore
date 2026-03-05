@@ -32,6 +32,15 @@
     "azureOpenAIAccountName": {
       "value": "aoai-workcore-prod-uaen"
     },
+    "apiManagementName": {
+      "value": "apim-workcore-prod-uaen"
+    },
+    "apiManagementPublisherName": {
+      "value": "WorkCore Platform"
+    },
+    "apiManagementPublisherEmail": {
+      "value": "platform@hq21.tech"
+    },
     "vnetName": {
       "value": "vnet-workcore-prod-uaen"
     },

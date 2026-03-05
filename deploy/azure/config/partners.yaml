@@ -1,0 +1,17 @@
+{
+  "partners": [
+    {
+      "partner_id": "sample_partner",
+      "display_name": "Sample Partner",
+      "entra_app_display_name": "workcore-partner-sample",
+      "entra_app_id": "",
+      "tenant_id_pinned": "local",
+      "allowed_domains": [
+        "api.hq21.tech"
+      ],
+      "status": "inactive",
+      "rate_limit_profile": "default",
+      "secret_expiry_months": 12
+    }
+  ]
+}

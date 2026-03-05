@@ -5,6 +5,7 @@ AZ_RESOURCE_GROUP="${AZ_RESOURCE_GROUP:-rg-workcore-prod-uaen}"
 AFD_PROFILE_NAME="${AFD_PROFILE_NAME:-afd-workcore-prod-uaen}"
 AFD_ENDPOINT_NAME="${AFD_ENDPOINT_NAME:-workcore}"
 KEY_VAULT_NAME="${KEY_VAULT_NAME:-kv-workcore-prod-uaen}"
+APIM_NAME="${APIM_NAME:-apim-workcore-prod-uaen}"
 
 API_PRIMARY_DOMAIN="${API_PRIMARY_DOMAIN:-api.hq21.tech}"
 API_SECONDARY_DOMAIN="${API_SECONDARY_DOMAIN:-api.runwcr.com}"
@@ -51,6 +52,15 @@ if az afd endpoint show --resource-group "${AZ_RESOURCE_GROUP}" --profile-name "
 else
   echo "  endpoint not created yet (will be created by deploy_frontdoor.sh)"
   endpoint_host=""
+fi
+
+echo "[preflight] API Management"
+if az apim show --resource-group "${AZ_RESOURCE_GROUP}" --name "${APIM_NAME}" >/dev/null 2>&1; then
+  apim_gateway_url="$(az apim show --resource-group "${AZ_RESOURCE_GROUP}" --name "${APIM_NAME}" --query gatewayUrl -o tsv)"
+  echo "  [ok] ${APIM_NAME} (${apim_gateway_url})"
+else
+  echo "  [missing] ${APIM_NAME}"
+  missing=$((missing + 1))
 fi
 
 echo "[preflight] DNS guidance"
