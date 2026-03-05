@@ -298,23 +298,56 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
 </policies>
 EOF_POLICY
 
-if az apim api policy show \
-  --resource-group "${AZ_RESOURCE_GROUP}" \
-  --service-name "${APIM_NAME}" \
-  --api-id "${APIM_API_ID}" >/dev/null 2>&1; then
-  az apim api policy update \
+if az apim api policy -h >/dev/null 2>&1; then
+  if az apim api policy show \
     --resource-group "${AZ_RESOURCE_GROUP}" \
     --service-name "${APIM_NAME}" \
-    --api-id "${APIM_API_ID}" \
-    --xml-content @"${POLICY_FILE}" \
-    --output none
+    --api-id "${APIM_API_ID}" >/dev/null 2>&1; then
+    az apim api policy update \
+      --resource-group "${AZ_RESOURCE_GROUP}" \
+      --service-name "${APIM_NAME}" \
+      --api-id "${APIM_API_ID}" \
+      --xml-content @"${POLICY_FILE}" \
+      --output none
+  else
+    az apim api policy create \
+      --resource-group "${AZ_RESOURCE_GROUP}" \
+      --service-name "${APIM_NAME}" \
+      --api-id "${APIM_API_ID}" \
+      --xml-content @"${POLICY_FILE}" \
+      --output none
+  fi
 else
-  az apim api policy create \
-    --resource-group "${AZ_RESOURCE_GROUP}" \
-    --service-name "${APIM_NAME}" \
-    --api-id "${APIM_API_ID}" \
-    --xml-content @"${POLICY_FILE}" \
+  SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+  POLICY_PAYLOAD_FILE="$(mktemp)"
+  python3 - <<'PY' "${POLICY_FILE}" "${POLICY_PAYLOAD_FILE}"
+import json
+import pathlib
+import sys
+
+policy_path = pathlib.Path(sys.argv[1])
+payload_path = pathlib.Path(sys.argv[2])
+value = policy_path.read_text(encoding="utf-8")
+payload_path.write_text(
+    json.dumps(
+        {
+            "properties": {
+                "format": "rawxml",
+                "value": value,
+            }
+        },
+        ensure_ascii=True,
+    ),
+    encoding="utf-8",
+)
+PY
+  az rest \
+    --method put \
+    --uri "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${AZ_RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/${APIM_NAME}/apis/${APIM_API_ID}/policies/policy?api-version=2023-05-01-preview" \
+    --body @"${POLICY_PAYLOAD_FILE}" \
+    --headers "Content-Type=application/json" \
     --output none
+  rm -f "${POLICY_PAYLOAD_FILE}"
 fi
 
 echo "[apim] deployment complete"
