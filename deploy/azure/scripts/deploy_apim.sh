@@ -218,21 +218,21 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
         <set-variable name="clientAppId" value='@{
           var authHeader = context.Request.Headers.GetValueOrDefault("Authorization", "");
           var jwt = authHeader.AsJwt();
-          if (jwt == null) return "";
+          if (jwt == null) { return ""; }
           var appId = jwt.Claims.GetValueOrDefault("appid");
-          if (!string.IsNullOrWhiteSpace(appId)) return appId;
+          if (!string.IsNullOrWhiteSpace(appId)) { return appId; }
           return jwt.Claims.GetValueOrDefault("azp") ?? "";
         }' />
         <set-variable name="partnerMapRaw" value="{{partner-app-map}}" />
         <set-variable name="partnerMap" value='@{
           var raw = (string)context.Variables["partnerMapRaw"];
-          if (string.IsNullOrWhiteSpace(raw)) return new Newtonsoft.Json.Linq.JObject();
+          if (string.IsNullOrWhiteSpace(raw)) { return new Newtonsoft.Json.Linq.JObject(); }
           return Newtonsoft.Json.Linq.JObject.Parse(raw);
         }' />
         <choose>
           <when condition='@{
             var enforce = "{{enforce-partner-map}}".ToLowerInvariant();
-            if (!(enforce == "1" || enforce == "true" || enforce == "yes" || enforce == "on")) return false;
+            if (!(enforce == "1" || enforce == "true" || enforce == "yes" || enforce == "on")) { return false; }
             var appId = (string)context.Variables["clientAppId"];
             var map = (Newtonsoft.Json.Linq.JObject)context.Variables["partnerMap"];
             return string.IsNullOrWhiteSpace(appId) || map[appId] == null;
