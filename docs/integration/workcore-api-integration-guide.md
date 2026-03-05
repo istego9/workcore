@@ -293,7 +293,7 @@ curl -N -X POST "$BASE_URL/chat" \
   -d '{
     "type":"threads.create",
     "metadata":{"workflow_id":"wf_example"},
-    "params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[]}}
+    "params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}
   }'
 
 # expected after cutover: 404
@@ -301,7 +301,7 @@ curl -i -X POST "$BASE_URL/chatkit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Tenant-Id: $TENANT_ID" \
   -H "Content-Type: application/json" \
-  -d '{"type":"threads.create","metadata":{"workflow_id":"wf_example"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[]}}}'
+  -d '{"type":"threads.create","metadata":{"workflow_id":"wf_example"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}}'
 ```
 
 ## 9. Error model
