@@ -123,6 +123,37 @@ print(json.dumps(result, separators=(",", ":"), sort_keys=True))
 PY
 }
 
+merge_partner_map_json() {
+  python3 - <<'PY' "$1" "$2"
+import json
+import sys
+
+raw_existing, raw_from_config = sys.argv[1:]
+try:
+    existing = json.loads(raw_existing) if raw_existing.strip() else {}
+except Exception:
+    existing = {}
+if not isinstance(existing, dict):
+    existing = {}
+
+try:
+    from_config = json.loads(raw_from_config) if raw_from_config.strip() else {}
+except Exception:
+    from_config = {}
+if not isinstance(from_config, dict):
+    from_config = {}
+
+# Keep current APIM partner map when config has no active entries.
+if not from_config:
+    print(json.dumps(existing, separators=(",", ":"), sort_keys=True))
+    raise SystemExit(0)
+
+merged = dict(existing)
+merged.update(from_config)
+print(json.dumps(merged, separators=(",", ":"), sort_keys=True))
+PY
+}
+
 echo "[apim] validating required resources"
 az apim show --resource-group "${AZ_RESOURCE_GROUP}" --name "${APIM_NAME}" --query name -o tsv >/dev/null
 ORCHESTRATOR_HOST="$(az containerapp show --resource-group "${AZ_RESOURCE_GROUP}" --name "${ORCHESTRATOR_APP_NAME}" --query properties.configuration.ingress.fqdn -o tsv)"
@@ -166,7 +197,13 @@ fi
 az apim api import "${api_import_args[@]}" --output none
 
 echo "[apim] syncing named values"
-PARTNER_MAP_JSON="$(build_partner_map_json)"
+PARTNER_MAP_FROM_CONFIG_JSON="$(build_partner_map_json)"
+CURRENT_PARTNER_MAP_JSON="$(az apim nv show \
+  --resource-group "${AZ_RESOURCE_GROUP}" \
+  --service-name "${APIM_NAME}" \
+  --named-value-id partner-app-map \
+  --query value -o tsv 2>/dev/null || true)"
+PARTNER_MAP_JSON="$(merge_partner_map_json "${CURRENT_PARTNER_MAP_JSON}" "${PARTNER_MAP_FROM_CONFIG_JSON}")"
 upsert_named_value "backend-orchestrator-url" "https://${ORCHESTRATOR_HOST}" false "backend-orchestrator-url"
 upsert_named_value "backend-chatkit-url" "https://${CHATKIT_HOST}" false "backend-chatkit-url"
 upsert_named_value "backend-orchestrator-token" "${WORKCORE_API_AUTH_TOKEN}" true "backend-orchestrator-token"
@@ -272,6 +309,23 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
     </set-header>
     <choose>
       <when condition='@((bool)context.Variables["isChatRoute"])'>
+        <choose>
+          <when condition='@{
+            var path = (string)context.Variables["requestPath"];
+            return path == "/chat";
+          }'>
+            <rewrite-uri template="/chatkit" copy-unmatched-params="true" />
+          </when>
+          <when condition='@{
+            var path = (string)context.Variables["requestPath"];
+            return path.StartsWith("/chat/");
+          }'>
+            <rewrite-uri template='@{
+              var path = (string)context.Variables["requestPath"];
+              return "/chatkit" + path.Substring(5);
+            }' copy-unmatched-params="true" />
+          </when>
+        </choose>
         <set-backend-service base-url="{{backend-chatkit-url}}" />
         <set-header name="Authorization" exists-action="override">
           <value>Bearer {{backend-chatkit-token}}</value>
