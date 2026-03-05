@@ -2493,6 +2493,28 @@ class ApiAuthTests(unittest.TestCase):
         )
         self.assertEqual(authorized.status_code, 201)
 
+    def test_auth_accepts_case_insensitive_bearer_scheme(self):
+        response = self.client.get(
+            "/projects",
+            headers={"Authorization": "bearer test_api_token"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_auth_accepts_extra_whitespace(self):
+        response = self.client.get(
+            "/projects",
+            headers={"Authorization": "   Bearer    test_api_token   "},
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_auth_rejects_non_bearer_scheme(self):
+        response = self.client.get(
+            "/projects",
+            headers={"Authorization": "Basic test_api_token"},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["code"], "UNAUTHORIZED")
+
     def test_health_does_not_require_auth(self):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
