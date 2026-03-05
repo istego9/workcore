@@ -29,6 +29,15 @@ from apps.orchestrator.api.capability_store import CapabilityConflictError, crea
 from apps.orchestrator.api.handoff_store import create_handoff_store
 from apps.orchestrator.api.idempotency import IdempotencyStore, create_idempotency_store
 from apps.orchestrator.api.ledger_store import create_run_ledger_store, runtime_events_to_ledger_entries
+from apps.orchestrator.api.partner_self_service import (
+    PartnerSelfServiceError,
+    build_onboarding_package_zip,
+    decode_easyauth_principal,
+    identity_from_easyauth_payload,
+    normalize_onboard_request,
+    render_partner_portal_html,
+    run_partner_onboarding,
+)
 from apps.orchestrator.api.serializers import (
     capability_to_dict,
     handoff_to_dict,
@@ -565,6 +574,23 @@ def create_app(
         log_capacity = _DEFAULT_AGENT_INTEGRATION_LOG_CAPACITY
     log_capacity = max(_MAX_AGENT_INTEGRATION_LOG_LIMIT, min(log_capacity, 5000))
     integration_logs: deque[Dict[str, Any]] = deque(maxlen=log_capacity)
+    partner_portal_enabled = _is_truthy(get_env("WORKCORE_PARTNER_PORTAL_ENABLED", "0"))
+    partner_portal_allowed_tenant = (get_env("WORKCORE_PARTNER_PORTAL_ALLOWED_TENANT_ID") or "").strip()
+    partner_portal_allowed_users_raw = get_env("WORKCORE_PARTNER_PORTAL_ALLOWED_USER_EMAILS") or ""
+    partner_portal_allowed_users = {
+        item.strip().lower()
+        for item in partner_portal_allowed_users_raw.split(",")
+        if item.strip()
+    }
+    partner_portal_default_base_url = (
+        get_env("WORKCORE_PARTNER_PORTAL_DEFAULT_BASE_URL") or "https://api.hq21.tech"
+    ).strip() or "https://api.hq21.tech"
+    partner_portal_env_overrides = {
+        "AZ_RESOURCE_GROUP": get_env("AZ_RESOURCE_GROUP") or "",
+        "APIM_NAME": get_env("APIM_NAME") or "",
+        "APIM_OAUTH_AUDIENCE": get_env("APIM_OAUTH_AUDIENCE") or "",
+        "ENTRA_TENANT_ID": get_env("ENTRA_TENANT_ID") or get_env("AZURE_TENANT_ID") or "",
+    }
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
@@ -838,6 +864,30 @@ def create_app(
                     context={"scope": scope, "exception_type": exc.__class__.__name__},
                 )
         return response
+
+    def _partner_portal_error(request: Request, exc: PartnerSelfServiceError) -> JSONResponse:
+        return _error(request, exc.code, exc.message, exc.status_code, exc.details)
+
+    def _require_partner_portal_identity(request: Request):
+        if not partner_portal_enabled:
+            raise PartnerSelfServiceError("NOT_FOUND", "partner self-service portal is disabled", 404)
+
+        principal_header = request.headers.get("X-MS-CLIENT-PRINCIPAL")
+        if not principal_header:
+            raise PartnerSelfServiceError("UNAUTHORIZED", "missing Entra principal header", 401)
+
+        principal_payload = decode_easyauth_principal(principal_header)
+        identity = identity_from_easyauth_payload(principal_payload)
+
+        if partner_portal_allowed_tenant and identity.tenant_id != partner_portal_allowed_tenant:
+            raise PartnerSelfServiceError("FORBIDDEN", "tenant is not allowed for partner self-service", 403)
+
+        if partner_portal_allowed_users:
+            email = identity.user_email.strip().lower()
+            if not email or email not in partner_portal_allowed_users:
+                raise PartnerSelfServiceError("FORBIDDEN", "user is not allowed for partner self-service", 403)
+
+        return identity
 
     def _validate_draft(draft: Dict[str, Any]) -> list[str]:
         errors: list[str] = []
@@ -2577,6 +2627,65 @@ def create_app(
         )
         return PlainTextResponse(content, media_type="text/markdown")
 
+    async def partner_access_portal(request: Request) -> Response:
+        try:
+            identity = _require_partner_portal_identity(request)
+            html = render_partner_portal_html(
+                {
+                    "user_email": identity.user_email,
+                    "user_id": identity.user_id,
+                    "tenant_id": identity.tenant_id,
+                    "default_base_url": partner_portal_default_base_url,
+                }
+            )
+        except PartnerSelfServiceError as exc:
+            return _partner_portal_error(request, exc)
+
+        _integration_log(
+            request,
+            "partner.portal.view",
+            "Partner self-service portal viewed",
+            status_code=200,
+            context={"user": identity.user_email, "tenant": identity.tenant_id},
+        )
+        return Response(html, media_type="text/html")
+
+    async def partner_access_onboard_package(request: Request) -> Response:
+        try:
+            identity = _require_partner_portal_identity(request)
+            payload = await request.json()
+            request_data = normalize_onboard_request(
+                payload,
+                default_base_url=partner_portal_default_base_url,
+            )
+            onboarding = run_partner_onboarding(request_data, extra_env=partner_portal_env_overrides)
+            package = build_onboarding_package_zip(onboarding, issued_by=identity.user_email)
+        except json.JSONDecodeError:
+            return _error(request, "INVALID_ARGUMENT", "request body must be valid JSON", 422)
+        except PartnerSelfServiceError as exc:
+            return _partner_portal_error(request, exc)
+
+        filename = f"workcore-partner-{request_data['partner_id']}-onboarding.zip"
+        _integration_log(
+            request,
+            "partner.portal.onboard",
+            "Partner onboarding package generated",
+            status_code=200,
+            context={
+                "partner_id": request_data["partner_id"],
+                "tenant_id_pinned": request_data["tenant_id_pinned"],
+                "operator": identity.user_email,
+            },
+        )
+        return Response(
+            package,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename=\"{filename}\"',
+                "Cache-Control": "no-store",
+            },
+        )
+
     def _public_doc_urls(request: Request) -> Dict[str, str]:
         base_url = str(request.base_url).rstrip("/")
         return {
@@ -3634,6 +3743,8 @@ def create_app(
         Route("/health", health),
         Route("/openapi.yaml", openapi_spec),
         Route("/api-reference", api_reference),
+        Route("/internal/partner-access", partner_access_portal),
+        Route("/internal/partner-access/onboard-package", partner_access_onboard_package, methods=["POST"]),
         Route("/workflow-authoring-guide", workflow_authoring_guide),
         Route("/schemas/workflow-draft.schema.json", workflow_draft_schema),
         Route("/schemas/workflow-export-v1.schema.json", workflow_export_schema),
@@ -3712,6 +3823,8 @@ def create_app(
                     or request.url.path == "/agent-integration-test"
                     or request.url.path == "/agent-integration-test.json"
                     or request.url.path == "/agent-integration-test/validate-draft"
+                    or request.url.path == "/internal/partner-access"
+                    or request.url.path == "/internal/partner-access/onboard-package"
                     or request.url.path.startswith("/schemas/")
                     or request.url.path.startswith("/webhooks/inbound/")
                 ):
