@@ -54,7 +54,6 @@ upsert_named_value() {
       --resource-group "${AZ_RESOURCE_GROUP}" \
       --service-name "${APIM_NAME}" \
       --named-value-id "${named_value_id}" \
-      --display-name "${display_name}" \
       --value "${value}" \
       --secret "${secret}" \
       --output none

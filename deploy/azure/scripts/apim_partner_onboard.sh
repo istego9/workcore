@@ -181,7 +181,6 @@ if az apim nv show --resource-group "${AZ_RESOURCE_GROUP}" --service-name "${API
     --resource-group "${AZ_RESOURCE_GROUP}" \
     --service-name "${APIM_NAME}" \
     --named-value-id partner-app-map \
-    --display-name partner-app-map \
     --value "${UPDATED_MAP_JSON}" \
     --secret false \
     --output none
