@@ -77,6 +77,148 @@ print(
 PY
 }
 
+resolve_oauth_resource_access() {
+  python3 - <<'PY' "${APIM_OAUTH_AUDIENCE}"
+import json
+import re
+import subprocess
+import sys
+
+audience = sys.argv[1].strip()
+
+def run_json(cmd):
+    raw = subprocess.check_output(cmd, text=True).strip()
+    if not raw:
+        return None
+    return json.loads(raw)
+
+service_principals = run_json(
+    [
+        "az",
+        "ad",
+        "sp",
+        "list",
+        "--filter",
+        f"servicePrincipalNames/any(x:x eq '{audience}')",
+        "-o",
+        "json",
+    ]
+) or []
+
+resource_sp = service_principals[0] if service_principals else None
+if resource_sp is None:
+    applications = run_json(
+        [
+            "az",
+            "ad",
+            "app",
+            "list",
+            "--filter",
+            f"identifierUris/any(x:x eq '{audience}')",
+            "-o",
+            "json",
+        ]
+    ) or []
+    if applications:
+        app_id = str(applications[0].get("appId", "")).strip()
+        if app_id:
+            resource_sp = run_json(["az", "ad", "sp", "show", "--id", app_id, "-o", "json"])
+
+if resource_sp is None:
+    candidate = audience
+    if audience.startswith("api://"):
+        suffix = audience[len("api://") :]
+        if re.fullmatch(r"[0-9a-fA-F-]{36}", suffix):
+            candidate = suffix
+    try:
+        resource_sp = run_json(["az", "ad", "sp", "show", "--id", candidate, "-o", "json"])
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"oauth audience '{audience}' does not resolve to an Entra resource application") from exc
+
+if not isinstance(resource_sp, dict):
+    raise SystemExit(f"oauth audience '{audience}' does not resolve to an Entra resource application")
+
+resource_app_id = str(resource_sp.get("appId", "")).strip()
+resource_sp_id = str(resource_sp.get("id", "")).strip()
+if not resource_app_id or not resource_sp_id:
+    raise SystemExit(f"oauth audience '{audience}' resolved to an invalid Entra service principal")
+
+role_id = ""
+for role in resource_sp.get("appRoles") or []:
+    if not isinstance(role, dict):
+        continue
+    allowed = role.get("allowedMemberTypes") or []
+    if role.get("isEnabled") and "Application" in allowed and str(role.get("value", "")).strip() == "workcore.api.access":
+        role_id = str(role.get("id", "")).strip()
+        break
+if not role_id:
+    for role in resource_sp.get("appRoles") or []:
+        if not isinstance(role, dict):
+            continue
+        allowed = role.get("allowedMemberTypes") or []
+        if role.get("isEnabled") and "Application" in allowed:
+            role_id = str(role.get("id", "")).strip()
+            break
+
+if not role_id:
+    raise SystemExit(f"oauth audience '{audience}' resource app has no enabled application app role")
+
+print("\t".join([resource_app_id, resource_sp_id, role_id]))
+PY
+}
+
+ensure_oauth_app_role_assignment() {
+  local client_sp_id="$1"
+  local resource_sp_id="$2"
+  local resource_app_role_id="$3"
+  python3 - <<'PY' "${client_sp_id}" "${resource_sp_id}" "${resource_app_role_id}"
+import json
+import subprocess
+import sys
+
+client_sp_id, resource_sp_id, resource_app_role_id = sys.argv[1:]
+payload = json.loads(
+    subprocess.check_output(
+        [
+            "az",
+            "rest",
+            "--method",
+            "GET",
+            "--url",
+            f"https://graph.microsoft.com/v1.0/servicePrincipals/{client_sp_id}/appRoleAssignments?$select=resourceId,appRoleId",
+        ],
+        text=True,
+    )
+)
+
+for item in payload.get("value", []):
+    if str(item.get("resourceId", "")).strip() == resource_sp_id and str(item.get("appRoleId", "")).strip() == resource_app_role_id:
+        raise SystemExit(0)
+
+subprocess.check_call(
+    [
+        "az",
+        "rest",
+        "--method",
+        "POST",
+        "--url",
+        f"https://graph.microsoft.com/v1.0/servicePrincipals/{client_sp_id}/appRoleAssignments",
+        "--headers",
+        "Content-Type=application/json",
+        "--body",
+        json.dumps(
+            {
+                "principalId": client_sp_id,
+                "resourceId": resource_sp_id,
+                "appRoleId": resource_app_role_id,
+            },
+            ensure_ascii=True,
+        ),
+    ]
+)
+PY
+}
+
 IFS=$'\t' read -r PARTNER_ID_VALUE DISPLAY_NAME ENTRA_APP_DISPLAY_NAME TENANT_ID_PINNED STATUS RATE_LIMIT_PROFILE SECRET_EXPIRY_MONTHS ALLOWED_DOMAINS_JSON ENTRA_APP_ID <<< "$(read_partner_record)"
 
 if [[ "${STATUS}" != "active" ]]; then
@@ -101,6 +243,9 @@ if [[ -z "${SP_OBJECT_ID}" ]]; then
   az ad sp create --id "${ENTRA_APP_ID}" --output none
   SP_OBJECT_ID="$(az ad sp show --id "${ENTRA_APP_ID}" --query id -o tsv)"
 fi
+
+IFS=$'\t' read -r RESOURCE_APP_ID RESOURCE_SP_OBJECT_ID RESOURCE_APP_ROLE_ID <<< "$(resolve_oauth_resource_access)"
+ensure_oauth_app_role_assignment "${SP_OBJECT_ID}" "${RESOURCE_SP_OBJECT_ID}" "${RESOURCE_APP_ROLE_ID}"
 
 SECRET_END_DATE="$(python3 - <<'PY' "${SECRET_EXPIRY_MONTHS}"
 from datetime import datetime

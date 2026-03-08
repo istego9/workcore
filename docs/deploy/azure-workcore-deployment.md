@@ -103,10 +103,14 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
 4. APIM validates Entra OAuth2 access token, resolves partner mapping (`appid` -> pinned tenant), and forwards to upstream runtime:
    - `/chat*` -> `chatkit`
    - all other protected API paths -> `orchestrator`
-5. Runtime writes run state to PostgreSQL.
-6. SSE `/runs/{run_id}/stream` replays from Postgres-backed event store and survives container restart.
-7. Webhook subscriptions/deliveries/idempotency persist in PostgreSQL and dispatcher resumes after restart.
-8. Agent/router/STT calls use Azure OpenAI deployments in `UAE North`.
+5. Microsoft Entra resource app for APIM partner auth must exist with:
+   - identifier URI `api://workcore-partner-api`
+   - application role `workcore.api.access`
+   - a service principal in the same tenant so onboarding can create app-role assignments for partner clients
+6. Runtime writes run state to PostgreSQL.
+7. SSE `/runs/{run_id}/stream` replays from Postgres-backed event store and survives container restart.
+8. Webhook subscriptions/deliveries/idempotency persist in PostgreSQL and dispatcher resumes after restart.
+9. Agent/router/STT calls use Azure OpenAI deployments in `UAE North`.
 
 ## Azure OpenAI profile (`UAE North`)
 - Account: Azure OpenAI resource in `uaenorth`.
@@ -182,6 +186,8 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
   - `./deploy/azure/scripts/deploy_apim.sh`
 - Partner onboarding and secret lifecycle:
   - `./deploy/azure/scripts/apim_partner_onboard.sh`
+    - resolves the OAuth resource app from `APIM_OAUTH_AUDIENCE`
+    - ensures partner service principal has the required application app-role assignment
   - `./deploy/azure/scripts/apim_partner_rotate_secret.sh`
   - `./deploy/azure/scripts/apim_partner_revoke.sh`
 - Internal self-service onboarding portal:
