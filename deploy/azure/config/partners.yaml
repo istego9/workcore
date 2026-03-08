@@ -29,6 +29,20 @@
       "secret_expiry_months": 12
     },
     {
+      "partner_id": "hq21-future-bank",
+      "display_name": "HQ21 Future Bank",
+      "entra_app_display_name": "workcore-partner-hq21-future-bank",
+      "entra_app_id": "5cba2168-e6ef-4c07-a559-7c8bcd49022b",
+      "tenant_id_pinned": "hq21-future-bank",
+      "allowed_domains": [
+        "api.hq21.tech",
+        "api.runwcr.com"
+      ],
+      "status": "active",
+      "rate_limit_profile": "default",
+      "secret_expiry_months": 12
+    },
+    {
       "partner_id": "sample_partner",
       "display_name": "Sample Partner",
       "entra_app_display_name": "workcore-partner-sample",
