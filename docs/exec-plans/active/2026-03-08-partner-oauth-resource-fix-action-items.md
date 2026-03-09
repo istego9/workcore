@@ -21,7 +21,12 @@
 ## 4) Implementation files
 - `deploy/azure/scripts/apim_partner_onboard.sh`
 - `deploy/azure/scripts/deploy_apim.sh`
+- `apps/orchestrator/api/partner_self_service.py`
 - `docs/deploy/azure-workcore-deployment.md`
+- `docs/api/reference.md`
+- `docs/integration/workcore-api-integration-guide.md`
+- `docs/integration/apim-partner-onboarding-guide.md`
+- `apps/orchestrator/tests/test_api.py`
 
 ## 5) Tests
 - `bash -n deploy/azure/scripts/apim_partner_onboard.sh`
@@ -30,6 +35,7 @@
   - token exchange with generated partner credentials
   - protected API call through `https://api.hq21.tech`
   - protected API call through `https://api.runwcr.com`
+  - partner onboarding ZIP contains decoded-JWT audience note
 
 ## 6) Observability/security impacts
 - Do not log client secrets.

@@ -26,6 +26,10 @@ curl -sS "https://api.hq21.tech/projects" \
   -H "X-Tenant-Id: <tenant_id>"
 ```
 
+JWT note:
+- when decoding the token, `aud` may appear as the WorkCore resource app ID instead of `api://workcore-partner-api`
+- this is expected if the token was requested with `scope=api://workcore-partner-api/.default`
+
 ## 3) Required headers
 - `Authorization: Bearer <access_token>`
 - `X-Tenant-Id: <tenant_id>`

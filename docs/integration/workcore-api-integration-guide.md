@@ -31,6 +31,8 @@ Token exchange:
   - `scope=api://workcore-partner-api/.default`
 - Use returned token as:
   - `Authorization: Bearer <access_token>`
+- JWT note:
+  - when decoding the token, `aud` may appear as the WorkCore resource app ID instead of the scope alias; this is expected if the token was issued for the scope above
 
 No OAuth token is required for:
 - `GET /health`

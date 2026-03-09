@@ -2703,8 +2703,11 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         self.assertIn("README.md", archive.namelist())
         self.assertIn(".env.partner", archive.namelist())
         env_text = archive.read(".env.partner").decode("utf-8")
+        readme_text = archive.read("README.md").decode("utf-8")
         self.assertIn("CLIENT_ID=app_123", env_text)
         self.assertIn("CLIENT_SECRET=secret_abc", env_text)
+        self.assertIn("Decoded JWT note", env_text)
+        self.assertIn("Decoded JWT note", readme_text)
 
     def test_partner_portal_autogenerates_partner_and_tenant_ids(self):
         captured_request_data = {}

@@ -17,6 +17,9 @@ Primary contract source: `/openapi.yaml` (OpenAPI 3.0.3).
   - `scope=api://workcore-partner-api/.default`
 - Send:
   - `Authorization: Bearer <access_token>`
+- JWT note:
+  - decoded access tokens may show `aud` as the WorkCore resource app ID instead of the scope alias
+  - this is expected if the token was requested with `scope=api://workcore-partner-api/.default`
 
 Example token exchange:
 ```bash
