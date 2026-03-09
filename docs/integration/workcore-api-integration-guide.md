@@ -1,7 +1,7 @@
 # WorkCore API Integration Guide
 
-Version: 1.1  
-Date: March 4, 2026  
+Version: 1.4  
+Date: March 9, 2026  
 Primary API URL: `https://api.hq21.tech`  
 Gateway alias (same backend path): `https://api.runwcr.com`
 
@@ -11,6 +11,7 @@ This document is a practical integration guide for backend and platform teams th
 Source-of-truth contract:
 - OpenAPI: `https://api.hq21.tech/openapi.yaml`
 - API reference: `https://api.hq21.tech/api-reference`
+- Agent integration entrypoint: `https://api.hq21.tech/agent-integration-kit`
 
 Gateway host policy:
 - `api.hq21.tech` is the primary host.
@@ -36,6 +37,9 @@ No bearer token is required for:
 - `GET /schemas/*`
 - `POST /webhooks/inbound/{integration_key}` (signature-based)
 
+Bearer auth is required for:
+- `GET /agent-integration-logs`
+
 If you are an internal platform operator and have Azure access, you can read the current API token from Key Vault:
 
 ```bash
@@ -48,7 +52,7 @@ az keyvault secret show \
 ## 3. Required headers
 ### Common headers
 - `Authorization: Bearer <token>` (required on protected endpoints)
-- `X-Tenant-Id: <tenant>` (recommended on all calls, required for strict multi-tenant paths such as `/chatkit`)
+- `X-Tenant-Id: <tenant>` (recommended on all calls, required for strict multi-tenant paths such as `/chat`)
 - `X-Correlation-Id: <id>` (recommended)
 - `X-Trace-Id: <id>` (recommended)
 
@@ -266,13 +270,13 @@ curl -sS -X DELETE "$BASE_URL/webhooks/outbound/<subscription_id>" \
   -H "X-Tenant-Id: $TENANT_ID"
 ```
 
-## 8. ChatKit endpoint
-ChatKit endpoint is separate:
-- `POST /chatkit`
+## 8. Chat endpoint
+Chat endpoint is on the same API host:
+- `POST /chat`
 
 Requirements:
 - `X-Tenant-Id` is required
-- if ChatKit auth token is configured, send `Authorization: Bearer <CHATKIT_AUTH_TOKEN>`
+- send `Authorization: Bearer <access_token>` obtained from Entra OAuth token endpoint
 
 For `threads.create`, include `metadata.workflow_id` (required).
 

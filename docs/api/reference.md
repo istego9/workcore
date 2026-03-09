@@ -260,6 +260,7 @@ Offline routing replay/eval:
 ## Agent integration kit URL
 - Markdown entrypoint: `/agent-integration-kit`
 - Machine-readable bundle: `/agent-integration-kit.json`
+- Generated URLs inside the kit should stay on the current public API host (`api.hq21.tech` or `api.runwcr.com`), not on internal backend origins.
 - Workflow authoring guide: `/workflow-authoring-guide`
 - Project list endpoint: `GET /projects`
 - Project bootstrap endpoint: `POST /projects`
@@ -292,7 +293,8 @@ Each log entry includes:
 
 Example:
 ```bash
-curl -sS "https://api.workcore.build/agent-integration-logs?correlation_id=corr_123&limit=50"
+curl -sS "https://api.hq21.tech/agent-integration-logs?correlation_id=corr_123&limit=50" \
+  -H "Authorization: Bearer <access_token>"
 ```
 
 ## Core workflow lifecycle

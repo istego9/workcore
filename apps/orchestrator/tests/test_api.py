@@ -2261,6 +2261,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("/projects/{project_id}/orchestrators", markdown_response.text)
         self.assertIn("/projects/{project_id}/workflow-definitions", markdown_response.text)
         self.assertIn("/agent-integration-logs", markdown_response.text)
+        self.assertIn("Logs endpoint requires `Authorization: Bearer <access_token>`.", markdown_response.text)
         self.assertIn("API changelog policy", markdown_response.text)
         self.assertIn("Previous API version", markdown_response.text)
         self.assertIn("Current API version", markdown_response.text)
@@ -2307,6 +2308,9 @@ class ApiTests(unittest.TestCase):
         integration_test_ui = self.client.get("/agent-integration-test")
         self.assertEqual(integration_test_ui.status_code, 200)
         self.assertIn("WorkCore Agent Integration Test", integration_test_ui.text)
+        self.assertIn("Open integration logs (auth required)", integration_test_ui.text)
+        self.assertIn("Bearer token for /agent-integration-logs", integration_test_ui.text)
+        self.assertIn("Logs require Authorization: Bearer", integration_test_ui.text)
 
         integration_test_json = self.client.get("/agent-integration-test.json")
         self.assertEqual(integration_test_json.status_code, 200)
@@ -2384,6 +2388,50 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(invalid_draft_response.status_code, 200)
         self.assertFalse(invalid_draft_response.json()["valid"])
         self.assertGreater(len(invalid_draft_response.json()["errors"]), 0)
+
+    def test_agent_integration_kit_uses_forwarded_public_host(self):
+        internal_base_url = "http://ca-orchestrator.graybush-234133fd.uaenorth.azurecontainerapps.io"
+        headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "api.runwcr.com",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"WORKCORE_PARTNER_PORTAL_DEFAULT_BASE_URL": "https://api.hq21.tech"},
+            clear=False,
+        ):
+            with TestClient(
+                create_app(
+                    workflow_store=InMemoryWorkflowStore(),
+                    artifact_store=InMemoryArtifactStore(),
+                ),
+                base_url=internal_base_url,
+            ) as client:
+                response = client.get("/agent-integration-kit.json", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["urls"]["openapi"], "https://api.runwcr.com/openapi.yaml")
+        self.assertEqual(payload["urls"]["chat_endpoint"], "https://api.runwcr.com/chat")
+
+    def test_agent_integration_kit_falls_back_from_internal_origin_host(self):
+        internal_base_url = "http://ca-orchestrator.graybush-234133fd.uaenorth.azurecontainerapps.io"
+        with mock.patch.dict(
+            os.environ,
+            {"WORKCORE_PARTNER_PORTAL_DEFAULT_BASE_URL": "https://api.hq21.tech"},
+            clear=False,
+        ):
+            with TestClient(
+                create_app(
+                    workflow_store=InMemoryWorkflowStore(),
+                    artifact_store=InMemoryArtifactStore(),
+                ),
+                base_url=internal_base_url,
+            ) as client:
+                response = client.get("/agent-integration-kit.json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["urls"]["openapi"], "https://api.hq21.tech/openapi.yaml")
+        self.assertEqual(payload["urls"]["api_reference"], "https://api.hq21.tech/api-reference")
 
     def test_agent_integration_logs_reject_invalid_limit(self):
         response = self.client.get("/agent-integration-logs", params={"limit": "bad"})
