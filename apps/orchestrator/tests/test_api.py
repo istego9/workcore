@@ -2739,6 +2739,56 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         self.assertRegex(resolved_partner_id, r"^[a-z0-9][a-z0-9_-]{1,63}$")
         self.assertEqual(captured_request_data.get("tenant_id_pinned"), resolved_partner_id)
         self.assertEqual(captured_request_data.get("display_name"), "Acme Platform Team")
+        self.assertEqual(captured_request_data.get("base_url"), "https://api.hq21.tech")
+        self.assertEqual(captured_request_data.get("allowed_domains"), ["api.hq21.tech"])
+
+    def test_partner_portal_forces_runwcr_for_epam_partner(self):
+        captured_request_data = {}
+
+        def _fake_onboarding(request_data, *, extra_env=None):
+            captured_request_data.update(request_data)
+            return {
+                "partner_id": request_data["partner_id"],
+                "display_name": request_data["display_name"],
+                "client_id": "app_epam_123",
+                "client_secret": "secret_epam_abc",
+                "client_secret_expires_at": "2027-03-05T10:00:00Z",
+                "token_endpoint": "https://login.microsoftonline.com/tenant-internal/oauth2/v2.0/token",
+                "scope": "api://workcore-partner-api/.default",
+                "base_url": request_data["base_url"],
+                "tenant_id_pinned": request_data["tenant_id_pinned"],
+                "allowed_domains": request_data["allowed_domains"],
+            }
+
+        with mock.patch("apps.orchestrator.api.app.run_partner_onboarding", side_effect=_fake_onboarding):
+            response = self.client.post(
+                "/internal/partner-access/onboard-package",
+                headers=self._principal_header(),
+                json={
+                    "display_name": "EPAM Future Insurance",
+                    "partner_id": "epam_future-insurance",
+                    "tenant_id_pinned": "epam_future-insurance",
+                    "entra_app_display_name": "workcore-partner-epam_future-insurance",
+                    "base_url": "https://api.hq21.tech",
+                    "allowed_domains": ["api.hq21.tech", "api.runwcr.com"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured_request_data.get("base_url"), "https://api.runwcr.com")
+        self.assertEqual(captured_request_data.get("allowed_domains"), ["api.runwcr.com"])
+
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        readme_text = archive.read("README.md").decode("utf-8")
+        env_text = archive.read(".env.partner").decode("utf-8")
+        metadata = json.loads(archive.read("metadata.json").decode("utf-8"))
+
+        self.assertIn("https://api.runwcr.com", readme_text)
+        self.assertIn("BASE_URL=https://api.runwcr.com", env_text)
+        self.assertEqual(metadata["base_url"], "https://api.runwcr.com")
+        self.assertEqual(metadata["allowed_domains"], ["api.runwcr.com"])
+        self.assertNotIn("https://api.hq21.tech", readme_text)
+        self.assertNotIn("https://api.hq21.tech", env_text)
 
     def test_partner_portal_disabled_returns_not_found(self):
         os.environ["WORKCORE_PARTNER_PORTAL_ENABLED"] = "0"

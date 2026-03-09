@@ -55,6 +55,10 @@ APIM validates OAuth token, pins tenant scope by partner mapping, and forwards i
 - Auto-generated defaults (can be overridden in advanced fields):
   - `partner_id` generated from `display_name`
   - `tenant_id_pinned` defaults to generated `partner_id`
+- EPAM onboarding host policy:
+  - if `display_name`, `partner_id`, `tenant_id_pinned`, or `entra_app_display_name` contains `epam`
+  - generated onboarding artifacts are pinned to `BASE_URL=https://api.runwcr.com`
+  - `allowed_domains` are normalized to `api.runwcr.com` only
 - ZIP package includes:
   - `README.md` with partner-specific token exchange and call instructions
   - `.env.partner` with partner-specific environment values (`client_id`, `client_secret`, `scope`, `token_endpoint`, `base_url`)

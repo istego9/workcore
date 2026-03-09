@@ -19,6 +19,9 @@ _ROOT_DIR = Path(__file__).resolve().parents[3]
 _ONBOARD_SCRIPT_PATH = _ROOT_DIR / "deploy" / "azure" / "scripts" / "apim_partner_onboard.sh"
 _PORTAL_TEMPLATE_PATH = _ROOT_DIR / "docs" / "integration" / "partner-self-service-portal.html"
 _PARTNER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
+_EPAM_MARKER = "epam"
+_EPAM_BASE_URL = "https://api.runwcr.com"
+_EPAM_ALLOWED_DOMAINS = ["api.runwcr.com"]
 
 
 class PartnerSelfServiceError(RuntimeError):
@@ -129,6 +132,14 @@ def _auto_partner_id(display_name: str) -> str:
     return candidate
 
 
+def _contains_epam_marker(value: str) -> bool:
+    return _EPAM_MARKER in value.strip().lower()
+
+
+def _is_epam_partner(*values: str) -> bool:
+    return any(_contains_epam_marker(value) for value in values if value)
+
+
 def normalize_onboard_request(payload: Any, *, default_base_url: str = "https://api.hq21.tech") -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise PartnerSelfServiceError("INVALID_ARGUMENT", "request body must be a JSON object", 422)
@@ -145,22 +156,27 @@ def normalize_onboard_request(payload: Any, *, default_base_url: str = "https://
         )
 
     tenant_id_pinned = _require_string(payload, "tenant_id_pinned", max_length=128, default=partner_id)
+    entra_app_display_name = _require_string(
+        payload,
+        "entra_app_display_name",
+        max_length=120,
+        default=f"workcore-partner-{partner_id}",
+    )
     rate_limit_profile = _require_string(payload, "rate_limit_profile", max_length=64, default="default")
+    allowed_domains = _parse_allowed_domains(payload)
     base_url = _require_string(payload, "base_url", max_length=200, default=default_base_url)
     if not (base_url.startswith("https://") or base_url.startswith("http://")):
         raise PartnerSelfServiceError("INVALID_ARGUMENT", "base_url must start with http:// or https://", 422)
+    if _is_epam_partner(display_name, partner_id, tenant_id_pinned, entra_app_display_name):
+        base_url = _EPAM_BASE_URL
+        allowed_domains = list(_EPAM_ALLOWED_DOMAINS)
 
     return {
         "partner_id": partner_id,
         "display_name": display_name,
-        "entra_app_display_name": _require_string(
-            payload,
-            "entra_app_display_name",
-            max_length=120,
-            default=f"workcore-partner-{partner_id}",
-        ),
+        "entra_app_display_name": entra_app_display_name,
         "tenant_id_pinned": tenant_id_pinned,
-        "allowed_domains": _parse_allowed_domains(payload),
+        "allowed_domains": allowed_domains,
         "status": "active",
         "rate_limit_profile": rate_limit_profile,
         "secret_expiry_months": _parse_secret_expiry_months(payload),

@@ -4,6 +4,27 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-03-09
+
+### API diff vs previous version
+- Previous API version: `0.24.1`
+- Current API version: `0.24.2`
+- Compatibility: additive/non-breaking (internal onboarding defaults now enforce EPAM-specific host policy)
+
+### Added
+- Internal onboarding host policy for EPAM partner requests:
+  - generated onboarding artifacts use only `https://api.runwcr.com`
+  - `allowed_domains` are normalized to `api.runwcr.com`
+
+### Changed
+- Internal self-service onboarding docs and OpenAPI now describe EPAM-specific base URL normalization for generated ZIP artifacts.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-03-05
 
 ### API diff vs previous version

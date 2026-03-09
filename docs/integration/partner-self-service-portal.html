@@ -189,13 +189,15 @@
 
           <label class="full">
             Allowed Domains (comma-separated)
-            <input id="allowed_domains" name="allowed_domains" value="api.hq21.tech" />
+            <input id="allowed_domains" name="allowed_domains" placeholder="api.example.com" />
           </label>
 
           <label class="full">
             Base URL
-            <input id="base_url" name="base_url" value="https://api.hq21.tech" />
+            <input id="base_url" name="base_url" placeholder="https://api.example.com" />
           </label>
+
+          <p class="hint full" id="host-policy-hint"></p>
 
           <div class="full actions">
             <button id="submit-btn" type="submit">Generate ZIP</button>
@@ -214,18 +216,78 @@
       const resultEl = document.getElementById("result");
       const form = document.getElementById("onboard-form");
       const submitBtn = document.getElementById("submit-btn");
+      const baseUrlInput = document.getElementById("base_url");
+      const allowedDomainsInput = document.getElementById("allowed_domains");
+      const displayNameInput = document.getElementById("display_name");
+      const partnerIdInput = document.getElementById("partner_id");
+      const tenantIdPinnedInput = document.getElementById("tenant_id_pinned");
+      const entraAppDisplayNameInput = document.getElementById("entra_app_display_name");
+      const hostPolicyHintEl = document.getElementById("host-policy-hint");
+      const EPAM_BASE_URL = "https://api.runwcr.com";
+      const EPAM_ALLOWED_DOMAINS = "api.runwcr.com";
 
       identityEl.textContent = `Signed in as: ${context.user_email || "unknown"} | Tenant: ${context.tenant_id || "unknown"}`;
-      if (context.default_base_url) {
-        const baseUrlInput = document.getElementById("base_url");
-        baseUrlInput.value = context.default_base_url;
-      }
 
       const parseDomains = (value) =>
         value
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean);
+
+      const hostFromBaseUrl = (value) => {
+        try {
+          return new URL(value).host || "";
+        } catch (err) {
+          return "";
+        }
+      };
+
+      const defaultBaseUrl = context.default_base_url || "";
+      const defaultAllowedDomains = hostFromBaseUrl(defaultBaseUrl);
+      let epamLockApplied = false;
+
+      const isEpamPartner = () =>
+        [
+          displayNameInput.value,
+          partnerIdInput.value,
+          tenantIdPinnedInput.value,
+          entraAppDisplayNameInput.value,
+        ].some((value) => value.trim().toLowerCase().includes("epam"));
+
+      const applyHostPolicy = () => {
+        if (isEpamPartner()) {
+          baseUrlInput.value = EPAM_BASE_URL;
+          allowedDomainsInput.value = EPAM_ALLOWED_DOMAINS;
+          baseUrlInput.readOnly = true;
+          allowedDomainsInput.readOnly = true;
+          hostPolicyHintEl.textContent = "EPAM policy: onboarding package will use only https://api.runwcr.com.";
+          epamLockApplied = true;
+          return;
+        }
+
+        if (epamLockApplied) {
+          baseUrlInput.value = defaultBaseUrl;
+          allowedDomainsInput.value = defaultAllowedDomains;
+        } else {
+          if (!baseUrlInput.value.trim()) {
+            baseUrlInput.value = defaultBaseUrl;
+          }
+          if (!allowedDomainsInput.value.trim()) {
+            allowedDomainsInput.value = defaultAllowedDomains;
+          }
+        }
+        baseUrlInput.readOnly = false;
+        allowedDomainsInput.readOnly = false;
+        hostPolicyHintEl.textContent = defaultBaseUrl
+          ? `Default onboarding host: ${defaultBaseUrl}`
+          : "";
+        epamLockApplied = false;
+      };
+
+      applyHostPolicy();
+      for (const input of [displayNameInput, partnerIdInput, tenantIdPinnedInput, entraAppDisplayNameInput]) {
+        input.addEventListener("input", applyHostPolicy);
+      }
 
       const parseFilename = (value) => {
         if (!value) return "partner-onboarding.zip";
