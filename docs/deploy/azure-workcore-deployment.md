@@ -105,6 +105,7 @@ No open product decisions for this iteration; Blob-native replacement for MinIO 
    - all other protected API paths -> `orchestrator`
 5. Microsoft Entra resource app for APIM partner auth must exist with:
    - identifier URI `api://workcore-partner-api`
+   - APIM policy must accept both the public alias and the resolved Entra resource app ID as valid JWT audiences
    - application role `workcore.api.access`
    - a service principal in the same tenant so onboarding can create app-role assignments for partner clients
 6. Runtime writes run state to PostgreSQL.

@@ -154,10 +154,80 @@ print(json.dumps(merged, separators=(",", ":"), sort_keys=True))
 PY
 }
 
+resolve_oauth_resource_app_id() {
+  python3 - <<'PY' "${APIM_OAUTH_AUDIENCE}"
+import json
+import re
+import subprocess
+import sys
+
+audience = sys.argv[1].strip()
+
+def run_json(cmd):
+    raw = subprocess.check_output(cmd, text=True).strip()
+    if not raw:
+        return None
+    return json.loads(raw)
+
+service_principals = run_json(
+    [
+        "az",
+        "ad",
+        "sp",
+        "list",
+        "--filter",
+        f"servicePrincipalNames/any(x:x eq '{audience}')",
+        "-o",
+        "json",
+    ]
+) or []
+if service_principals:
+    app_id = str(service_principals[0].get("appId", "")).strip()
+    if app_id:
+        print(app_id)
+        raise SystemExit(0)
+
+applications = run_json(
+    [
+        "az",
+        "ad",
+        "app",
+        "list",
+        "--filter",
+        f"identifierUris/any(x:x eq '{audience}')",
+        "-o",
+        "json",
+    ]
+) or []
+if applications:
+    app_id = str(applications[0].get("appId", "")).strip()
+    if app_id:
+        print(app_id)
+        raise SystemExit(0)
+
+candidate = audience
+if audience.startswith("api://"):
+    suffix = audience[len("api://") :]
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", suffix):
+        candidate = suffix
+
+try:
+    sp = run_json(["az", "ad", "sp", "show", "--id", candidate, "-o", "json"])
+except subprocess.CalledProcessError as exc:
+    raise SystemExit(f"oauth audience '{audience}' does not resolve to an Entra resource application") from exc
+
+app_id = str((sp or {}).get("appId", "")).strip()
+if not app_id:
+    raise SystemExit(f"oauth audience '{audience}' does not resolve to an Entra resource application")
+print(app_id)
+PY
+}
+
 echo "[apim] validating required resources"
 az apim show --resource-group "${AZ_RESOURCE_GROUP}" --name "${APIM_NAME}" --query name -o tsv >/dev/null
 ORCHESTRATOR_HOST="$(az containerapp show --resource-group "${AZ_RESOURCE_GROUP}" --name "${ORCHESTRATOR_APP_NAME}" --query properties.configuration.ingress.fqdn -o tsv)"
 CHATKIT_HOST="$(az containerapp show --resource-group "${AZ_RESOURCE_GROUP}" --name "${CHATKIT_APP_NAME}" --query properties.configuration.ingress.fqdn -o tsv)"
+OAUTH_RESOURCE_APP_ID="$(resolve_oauth_resource_app_id)"
 
 if [[ -z "${ORCHESTRATOR_HOST}" || -z "${CHATKIT_HOST}" ]]; then
   echo "orchestrator/chatkit ingress FQDN could not be resolved" >&2
@@ -211,6 +281,7 @@ upsert_named_value "backend-chatkit-token" "${CHATKIT_AUTH_TOKEN}" true "backend
 upsert_named_value "partner-app-map" "${PARTNER_MAP_JSON}" false "partner-app-map"
 upsert_named_value "oauth-openid-config-url" "${OPENID_CONFIG_URL}" false "oauth-openid-config-url"
 upsert_named_value "oauth-audience" "${APIM_OAUTH_AUDIENCE}" false "oauth-audience"
+upsert_named_value "oauth-resource-app-id" "${OAUTH_RESOURCE_APP_ID}" false "oauth-resource-app-id"
 upsert_named_value "enforce-partner-map" "${APIM_ENFORCE_PARTNER_MAP}" false "enforce-partner-map"
 
 echo "[apim] applying API policy"
@@ -250,6 +321,7 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
           <openid-config url="{{oauth-openid-config-url}}" />
           <audiences>
             <audience>{{oauth-audience}}</audience>
+            <audience>{{oauth-resource-app-id}}</audience>
           </audiences>
         </validate-jwt>
         <set-variable name="clientAppId" value='@{
