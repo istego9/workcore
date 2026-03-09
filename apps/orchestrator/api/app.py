@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
+from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -2686,8 +2687,49 @@ def create_app(
             },
         )
 
-    def _public_doc_urls(request: Request) -> Dict[str, str]:
+    def _forwarded_base_url(request: Request) -> str | None:
+        forwarded = (request.headers.get("Forwarded") or "").strip()
+        if forwarded:
+            first_hop = forwarded.split(",", 1)[0]
+            items: dict[str, str] = {}
+            for raw_item in first_hop.split(";"):
+                key, sep, value = raw_item.partition("=")
+                if not sep:
+                    continue
+                items[key.strip().lower()] = value.strip().strip('"')
+            host = items.get("host")
+            if host:
+                proto = items.get("proto") or request.url.scheme
+                return f"{proto}://{host}".rstrip("/")
+
+        forwarded_host = (request.headers.get("X-Forwarded-Host") or "").split(",", 1)[0].strip()
+        if forwarded_host:
+            forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip()
+            proto = forwarded_proto or request.url.scheme
+            return f"{proto}://{forwarded_host}".rstrip("/")
+
+        original_host = (request.headers.get("X-Original-Host") or "").split(",", 1)[0].strip()
+        if original_host:
+            forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip()
+            proto = forwarded_proto or request.url.scheme
+            return f"{proto}://{original_host}".rstrip("/")
+
+        return None
+
+    def _public_base_url(request: Request) -> str:
+        forwarded_base = _forwarded_base_url(request)
+        if forwarded_base:
+            return forwarded_base
+
         base_url = str(request.base_url).rstrip("/")
+        parsed = urlsplit(base_url)
+        hostname = (parsed.hostname or "").lower()
+        if hostname.endswith(".azurecontainerapps.io"):
+            return partner_portal_default_base_url.rstrip("/")
+        return base_url
+
+    def _public_doc_urls(request: Request) -> Dict[str, str]:
+        base_url = _public_base_url(request)
         return {
             "integration_kit_markdown": f"{base_url}/agent-integration-kit",
             "integration_kit_json": f"{base_url}/agent-integration-kit.json",
@@ -3191,6 +3233,7 @@ def create_app(
 
     async def agent_integration_kit(request: Request) -> PlainTextResponse:
         urls = _public_doc_urls(request)
+        public_base_url = _public_base_url(request)
         updated_at = datetime.now(timezone.utc).isoformat()
         lines = [
             "# WorkCore Agent Integration Kit",
@@ -3235,6 +3278,7 @@ def create_app(
             "## Detailed troubleshooting logs",
             "- Use integration logs to debug onboarding failures quickly.",
             f"- Logs endpoint: {urls['integration_logs']}",
+            "- Logs endpoint requires `Authorization: Bearer <access_token>`.",
             "- Filter logs by `correlation_id`, `trace_id`, or `event`.",
             "",
             "## API changelog policy",
@@ -3282,10 +3326,9 @@ def create_app(
             "3. Keep fallback switch available (`VITE_CHAT_FRONTEND_MODE=chatkit|fork`).",
             "",
             "### Option B: headless integration against ChatKit API",
-            f"- Endpoint: {str(request.base_url).rstrip('/')}/chat",
+            f"- Endpoint: {public_base_url}/chat",
             "- Required header: `X-Tenant-Id`",
-            "- Auth profile (single bearer): use the same `Authorization: Bearer <WORKCORE_API_AUTH_TOKEN>` as orchestrator calls.",
-            "- Auth profile (split bearer): use `Authorization: Bearer <CHATKIT_AUTH_TOKEN>` for `/chat`.",
+            "- Auth profile: use the same `Authorization: Bearer <WORKCORE_API_AUTH_TOKEN>` as orchestrator calls on the public API host.",
             "- Request types:",
             "  - `threads.create` (SSE response)",
             "  - `threads.add_user_message` (SSE response)",
@@ -3312,7 +3355,7 @@ def create_app(
             "",
             "### Example: project bootstrap + registry binding",
             "```bash",
-            "BASE_URL=\"https://api.runwcr.com\"",
+            f"BASE_URL=\"{public_base_url}\"",
             "TOKEN=\"<bearer_token>\"",
             "TENANT=\"local\"",
             "PROJECT_ID=\"project_future_bank_demo_2026_02\"",
@@ -3500,17 +3543,18 @@ def create_app(
     <button id="refresh">Run checks</button>
     <a href="/agent-integration-test.json" target="_blank" rel="noopener noreferrer">Open JSON report</a>
     <a href="/agent-integration-kit" target="_blank" rel="noopener noreferrer">Open integration kit</a>
-    <a href="/agent-integration-logs?limit=100" target="_blank" rel="noopener noreferrer">Open integration logs</a>
+    <a href="/agent-integration-logs?limit=100" target="_blank" rel="noopener noreferrer">Open integration logs (auth required)</a>
   </div>
   <div id="summary" class="card muted">Loading...</div>
   <div id="checks" class="card"></div>
 
   <h2>Integration Logs</h2>
-  <p class="muted">Use logs to troubleshoot integration errors by correlation or trace context.</p>
+  <p class="muted">Use logs to troubleshoot integration errors by correlation or trace context. Bearer auth is required for this endpoint.</p>
   <div class="row">
+    <input id="logsToken" type="password" placeholder="Bearer token for /agent-integration-logs" style="min-width: 320px; flex: 1 1 320px;" />
     <button id="refreshLogs">Refresh logs</button>
   </div>
-  <pre id="logsOutput">No logs loaded yet.</pre>
+  <pre id="logsOutput">Logs require Authorization: Bearer &lt;access_token&gt;. Paste a token above to load protected log entries.</pre>
 
   <h2>Draft Validator</h2>
   <p class="muted">Paste draft JSON and validate against runtime publish rules.</p>
@@ -3523,6 +3567,7 @@ def create_app(
   <script>
     const summaryEl = document.getElementById('summary');
     const checksEl = document.getElementById('checks');
+    const logsTokenInput = document.getElementById('logsToken');
     const logsOutput = document.getElementById('logsOutput');
     const validateOutput = document.getElementById('validateOutput');
     const draftInput = document.getElementById('draftInput');
@@ -3548,11 +3593,18 @@ def create_app(
           '<span class=\"muted\">' + (check.detail || '') + '</span>';
         checksEl.appendChild(row);
       });
-      await runLogs();
     }
 
     async function runLogs() {
-      const response = await fetch('/agent-integration-logs?limit=50');
+      const token = (logsTokenInput.value || '').trim();
+      if (!token) {
+        logsOutput.textContent = 'Logs require Authorization: Bearer <access_token>. Paste a token above to load protected log entries.';
+        return;
+      }
+      const authValue = token.startsWith('Bearer ') ? token : 'Bearer ' + token;
+      const response = await fetch('/agent-integration-logs?limit=50', {
+        headers: { Authorization: authValue }
+      });
       const payload = await response.json();
       logsOutput.textContent = JSON.stringify(payload, null, 2);
     }

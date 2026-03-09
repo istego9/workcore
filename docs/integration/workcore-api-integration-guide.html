@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WorkCore API Integration Guide</title>
+  <style>
+    :root {
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --code-bg: #f8fafc;
+      --accent: #0b4ea2;
+    }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      line-height: 1.45;
+      font-size: 11pt;
+      padding: 32px 36px;
+    }
+    h1, h2, h3 { color: var(--accent); margin: 16px 0 8px; }
+    h1 { font-size: 20pt; border-bottom: 2px solid var(--line); padding-bottom: 8px; }
+    h2 { font-size: 15pt; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+    h3 { font-size: 12.5pt; }
+    p { margin: 7px 0; }
+    ul, ol { margin: 7px 0 7px 20px; padding: 0; }
+    li { margin: 3px 0; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 9.5pt;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      overflow: auto;
+      margin: 8px 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    pre code {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      font-size: 9pt;
+    }
+  </style>
+</head>
+<body>
+<h1>WorkCore API Integration Guide</h1>
+<p>Version: 1.4 Date: March 9, 2026 Primary API URL: <code>https://api.hq21.tech</code> Secondary API URL: <code>https://api.runwcr.com</code></p>
+<h2>1. Purpose</h2>
+<p>This document is a practical integration guide for backend and platform teams that need to integrate with the WorkCore runtime API.</p>
+<p>Source-of-truth contract:</p>
+<ul>
+<li>OpenAPI: <code>https://api.hq21.tech/openapi.yaml</code></li>
+<li>API reference: <code>https://api.hq21.tech/api-reference</code></li>
+<li>Agent integration entrypoint: <code>https://api.hq21.tech/agent-integration-kit</code></li>
+</ul>
+<h2>2. Authentication model</h2>
+<p>WorkCore API is protected with bearer token authentication.</p>
+<p>Send on protected endpoints:</p>
+<ul>
+<li><code>Authorization: Bearer &lt;WORKCORE_API_AUTH_TOKEN&gt;</code></li>
+</ul>
+<p>No bearer token is required for:</p>
+<ul>
+<li><code>GET /health</code></li>
+<li><code>GET /openapi.yaml</code></li>
+<li><code>GET /api-reference</code></li>
+<li><code>GET /workflow-authoring-guide</code></li>
+<li><code>GET /agent-integration-kit</code></li>
+<li><code>GET /agent-integration-kit.json</code></li>
+<li><code>GET /agent-integration-test</code></li>
+<li><code>GET /agent-integration-test.json</code></li>
+<li><code>POST /agent-integration-test/validate-draft</code></li>
+<li><code>GET /schemas/*</code></li>
+<li><code>POST /webhooks/inbound/{integration_key}</code> (signature-based)</li>
+</ul>
+<p>Bearer auth is required for:</p>
+<ul>
+<li><code>GET /agent-integration-logs</code></li>
+</ul>
+<p>If you are an internal platform operator and have Azure access, you can read the current API token from Key Vault:</p>
+<pre><code class="language-bash">az keyvault secret show \
+  --vault-name kv-workcore-prod-uaen \
+  --name workcore-api-auth-token \
+  --query value -o tsv
+</code></pre>
+<h2>3. Required headers</h2>
+<h3>Common headers</h3>
+<ul>
+<li><code>Authorization: Bearer &lt;token&gt;</code> (required on protected endpoints)</li>
+<li><code>X-Tenant-Id: &lt;tenant&gt;</code> (recommended on all calls, required for strict multi-tenant paths such as <code>/chat</code>)</li>
+<li><code>X-Correlation-Id: &lt;id&gt;</code> (recommended)</li>
+<li><code>X-Trace-Id: &lt;id&gt;</code> (recommended)</li>
+</ul>
+<h3>Workflow authoring/run headers</h3>
+<ul>
+<li><code>X-Project-Id: &lt;project_id&gt;</code> is required for <code>/workflows*</code> APIs.</li>
+</ul>
+<h3>Retry safety</h3>
+<ul>
+<li><code>Idempotency-Key: &lt;key&gt;</code> is strongly recommended for mutating requests (<code>POST/PATCH/DELETE</code>).</li>
+</ul>
+<h2>4. Quick start</h2>
+<pre><code class="language-bash">export BASE_URL="https://api.hq21.tech"
+export TOKEN="&lt;WORKCORE_API_AUTH_TOKEN&gt;"
+export TENANT_ID="local"
+export PROJECT_ID="proj_hq21"
+</code></pre>
+<p>Health check:</p>
+<pre><code class="language-bash">curl -sS "$BASE_URL/health"
+# expected: ok
+</code></pre>
+<p>List projects (protected endpoint):</p>
+<pre><code class="language-bash">curl -sS "$BASE_URL/projects" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
+</code></pre>
+<p>List workflows (requires project scope):</p>
+<pre><code class="language-bash">curl -sS "$BASE_URL/workflows" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID"
+</code></pre>
+<h2>5. Minimal integration flow</h2>
+<h3>5.1 Create project</h3>
+<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/projects" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "proj_hq21",
+    "project_name": "HQ21 Production"
+  }'
+</code></pre>
+<h3>5.2 Create workflow draft</h3>
+<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/workflows" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Order triage",
+    "description": "Classify customer intent and route",
+    "draft": {
+      "nodes": [
+        {"id": "start", "type": "start"},
+        {"id": "end", "type": "end"}
+      ],
+      "edges": [
+        {"source": "start", "target": "end"}
+      ]
+    }
+  }'
+</code></pre>
+<h3>5.3 Publish workflow</h3>
+<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/workflows/&lt;workflow_id&gt;/publish" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID"
+</code></pre>
+<h3>5.4 Start run</h3>
+<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/workflows/&lt;workflow_id&gt;/runs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID" \
+  -H "Idempotency-Key: run-$(date +%s)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "inputs": {
+      "customer_text": "I need help with my order"
+    }
+  }'
+</code></pre>
+<h3>5.5 Poll run state</h3>
+<pre><code class="language-bash">curl -sS "$BASE_URL/runs/&lt;run_id&gt;" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID"
+</code></pre>
+<h2>6. SSE streaming and reconnect</h2>
+<p>Run progress stream:</p>
+<pre><code class="language-bash">curl -N "$BASE_URL/runs/&lt;run_id&gt;/stream" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID" \
+  -H "Accept: text/event-stream"
+</code></pre>
+<p>Reconnect from last event:</p>
+<pre><code class="language-bash">curl -N "$BASE_URL/runs/&lt;run_id&gt;/stream" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID" \
+  -H "Last-Event-ID: evt_abc123"
+</code></pre>
+<p>SSE events include <code>id</code>, <code>event</code>, and JSON <code>data</code> with:</p>
+<ul>
+<li><code>event_id</code>, <code>sequence</code>, <code>timestamp</code></li>
+<li><code>run_id</code>, <code>workflow_id</code>, <code>version_id</code>, <code>node_id</code></li>
+<li><code>type</code>, <code>payload</code></li>
+<li><code>correlation_id</code>, <code>trace_id</code>, <code>tenant_id</code>, <code>project_id</code>, <code>import_run_id</code></li>
+</ul>
+<h2>7. Webhooks</h2>
+<h3>7.1 Inbound webhook (to WorkCore)</h3>
+<p>Endpoint:</p>
+<ul>
+<li><code>POST /webhooks/inbound/{integration_key}</code></li>
+</ul>
+<p>Headers:</p>
+<ul>
+<li><code>X-Webhook-Timestamp: &lt;unix_ts&gt;</code></li>
+<li><code>X-Webhook-Signature: t=&lt;unix_ts&gt;,v1=&lt;hmac_sha256&gt;</code></li>
+<li>optional <code>Idempotency-Key: &lt;key&gt;</code></li>
+</ul>
+<p>Signature payload:</p>
+<ul>
+<li><code>"&lt;timestamp&gt;.&lt;raw_request_body&gt;"</code></li>
+</ul>
+<p>Signature example:</p>
+<pre><code class="language-bash">SECRET="&lt;inbound_secret&gt;"
+TS="$(date +%s)"
+BODY='{"action":"start_run","workflow_id":"wf_123","inputs":{"customer_text":"Hello"}}'
+SIG="$(printf "%s.%s" "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.* //')"
+
+curl -sS -X POST "$BASE_URL/webhooks/inbound/default" \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Timestamp: $TS" \
+  -H "X-Webhook-Signature: t=$TS,v1=$SIG" \
+  -H "Idempotency-Key: wh-$(date +%s)" \
+  -d "$BODY"
+</code></pre>
+<p>Supported actions:</p>
+<ul>
+<li><code>start_run</code></li>
+<li><code>resume_interrupt</code></li>
+</ul>
+<h3>7.2 Outbound webhooks (from WorkCore)</h3>
+<p>Register subscription:</p>
+<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/webhooks/outbound" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://your-service.example.com/workcore/events",
+    "event_types": ["run_completed", "run_failed", "interrupt_created", "node_failed"]
+  }'
+</code></pre>
+<p>List subscriptions:</p>
+<pre><code class="language-bash">curl -sS "$BASE_URL/webhooks/outbound" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
+</code></pre>
+<p>Delete subscription:</p>
+<pre><code class="language-bash">curl -sS -X DELETE "$BASE_URL/webhooks/outbound/&lt;subscription_id&gt;" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
+</code></pre>
+<h2>8. Chat endpoint</h2>
+<p>Public chat endpoint:</p>
+<ul>
+<li><code>POST /chat</code></li>
+</ul>
+<p>Requirements:</p>
+<ul>
+<li><code>X-Tenant-Id</code> is required</li>
+<li>send <code>Authorization: Bearer &lt;WORKCORE_API_AUTH_TOKEN&gt;</code> on protected public API calls</li>
+</ul>
+<p>For <code>threads.create</code>, include <code>metadata.workflow_id</code> (required).</p>
+<h2>9. Error model</h2>
+<p>All API errors are returned in a standard envelope:</p>
+<pre><code class="language-json">{
+  "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "..."
+  },
+  "correlation_id": "corr_123"
+}
+</code></pre>
+<p>Common integration errors:</p>
+<ul>
+<li><code>401 UNAUTHORIZED</code>: missing or invalid bearer token</li>
+<li><code>422 ERR_PROJECT_ID_REQUIRED</code>: missing <code>X-Project-Id</code> on workflow endpoints</li>
+<li><code>400 INVALID_ARGUMENT</code>: invalid request body/parameters</li>
+</ul>
+<h2>10. Production checklist for external teams</h2>
+<ol>
+<li>Token rotation process is defined and tested.</li>
+<li><code>X-Tenant-Id</code>, <code>X-Correlation-Id</code>, <code>X-Trace-Id</code> are generated and propagated end-to-end.</li>
+<li><code>X-Project-Id</code> is always set for <code>/workflows*</code> APIs.</li>
+<li>All mutating calls send stable <code>Idempotency-Key</code>.</li>
+<li>SSE consumers support reconnect with <code>Last-Event-ID</code>.</li>
+<li>Webhook consumers verify signatures and handle retries idempotently.</li>
+<li>Monitoring dashboards alert on 401/429/5xx spikes.</li>
+</ol>
+<h2>11. Operational contacts</h2>
+<ul>
+<li>API contract and behavior changes must be validated against <code>openapi.yaml</code>.</li>
+<li>For environment-specific token/domain issues, contact the WorkCore platform owner.</li>
+</ul>
+
+</body>
+</html>

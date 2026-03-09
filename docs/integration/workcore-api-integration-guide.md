@@ -1,7 +1,7 @@
 # WorkCore API Integration Guide
 
-Version: 1.3  
-Date: March 5, 2026  
+Version: 1.4  
+Date: March 9, 2026  
 Primary API URL: `https://api.hq21.tech`  
 Gateway alias (same backend path): `https://api.runwcr.com`
 
@@ -11,6 +11,7 @@ This document is a practical integration guide for backend and platform teams th
 Source-of-truth contract:
 - OpenAPI: `https://api.hq21.tech/openapi.yaml`
 - API reference: `https://api.hq21.tech/api-reference`
+- Agent integration entrypoint: `https://api.hq21.tech/agent-integration-kit`
 
 Gateway host policy:
 - `api.hq21.tech` is the primary host.
@@ -43,6 +44,9 @@ No OAuth token is required for:
 - `POST /agent-integration-test/validate-draft`
 - `GET /schemas/*`
 - `POST /webhooks/inbound/{integration_key}` (signature-based)
+
+Bearer auth is required for:
+- `GET /agent-integration-logs`
 
 ## 3. Required headers
 ### Common headers
