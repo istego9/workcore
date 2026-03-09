@@ -1,17 +1,18 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.21.0
+  version: 0.24.1
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
-    WorkCore runtime profiles should set `WORKCORE_API_AUTH_TOKEN` and `WEBHOOK_DEFAULT_INBOUND_SECRET`.
-    API requests (except `/health` and signed inbound webhooks) must include `Authorization: Bearer <token>`.
+    External clients authenticate via Microsoft Entra OAuth2 client_credentials and call the API through APIM gateway.
+    API requests (except `/health`, docs/schema endpoints, and signed inbound webhooks) must include `Authorization: Bearer <access_token>`.
 servers:
   - url: https://api.example.com
 
 security:
-  - bearerAuth: []
+  - oauthClientCredentials:
+      - api://workcore-partner-api/.default
 
 tags:
   - name: projects
@@ -24,6 +25,7 @@ tags:
   - name: webhooks
   - name: chatkit
   - name: orchestrator
+  - name: partner-admin
 
 paths:
   /openapi.yaml:
@@ -227,7 +229,53 @@ paths:
               schema:
                 $ref: '#/components/schemas/AgentIntegrationLogReport'
         '401': { $ref: '#/components/responses/ErrorResponse' }
-  /chatkit:
+  /internal/partner-access:
+    get:
+      tags: [partner-admin]
+      summary: Internal partner onboarding portal (HTML)
+      description: >
+        Internal operator portal page for partner onboarding package generation.
+        Access is restricted to Microsoft Entra-authenticated internal users via EasyAuth principal headers.
+      security:
+        - entraEasyAuthPrincipal: []
+      responses:
+        '200':
+          description: HTML portal page
+          content:
+            text/html:
+              schema:
+                type: string
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /internal/partner-access/onboard-package:
+    post:
+      tags: [partner-admin]
+      summary: Generate partner onboarding ZIP package
+      description: >
+        Executes internal onboarding automation for a partner app and returns a ZIP package
+        with operator/partner artifacts (`README.md`, `.env.partner`) including generated credentials.
+      security:
+        - entraEasyAuthPrincipal: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerSelfServiceOnboardRequest'
+      responses:
+        '200':
+          description: Onboarding package ZIP
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ErrorResponse' }
+        '502': { $ref: '#/components/responses/ErrorResponse' }
+  /chat:
     parameters:
       - $ref: '#/components/parameters/TenantIdRequired'
     post:
@@ -323,7 +371,7 @@ paths:
                 data: {"type":"progress_update","text":"Run started"}
                 data: {"type":"thread.item.done","item":{"type":"widget"}}
         '401':
-          description: Unauthorized (when CHATKIT_AUTH_TOKEN is configured and missing/invalid)
+          description: Unauthorized (missing/invalid OAuth access token)
           content:
             application/json:
               schema:
@@ -1306,10 +1354,18 @@ paths:
 
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+    oauthClientCredentials:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token
+          scopes:
+            api://workcore-partner-api/.default: WorkCore API access through APIM gateway.
+    entraEasyAuthPrincipal:
+      type: apiKey
+      in: header
+      name: X-MS-CLIENT-PRINCIPAL
+      description: Base64-encoded EasyAuth principal header from Microsoft Entra protected frontend.
 
   parameters:
     WorkflowId:
@@ -1469,6 +1525,51 @@ components:
           code: INVALID_ARGUMENT
           message: "workflow_id is required"
         correlation_id: "corr_123"
+
+    PartnerSelfServiceOnboardRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - display_name
+      properties:
+        partner_id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{1,63}$'
+          description: Optional stable partner identifier. If omitted, generated from display_name.
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Human-readable partner name.
+        tenant_id_pinned:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Optional tenant identifier enforced by APIM tenant pinning. If omitted, defaults to resolved partner_id.
+        entra_app_display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Optional Entra app registration display name.
+        allowed_domains:
+          type: array
+          items:
+            type: string
+          description: Optional allowed API hostnames for partner metadata.
+        rate_limit_profile:
+          type: string
+          default: default
+          description: APIM rate-limit profile identifier.
+        secret_expiry_months:
+          type: integer
+          minimum: 1
+          maximum: 24
+          default: 12
+          description: Partner client secret validity period in months.
+        base_url:
+          type: string
+          default: https://api.hq21.tech
+          description: Primary API base URL written into generated onboarding artifacts.
 
     ChatKitJsonResponse:
       type: object
@@ -2924,6 +3025,7 @@ components:
             capabilities_versions_template: { type: string }
             project_orchestrator_upsert_template: { type: string }
             project_workflow_definition_upsert_template: { type: string }
+            chat_endpoint: { type: string, format: uri }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
             orchestrator_context_get: { type: string, format: uri }
@@ -2982,6 +3084,7 @@ components:
             capabilities_versions_template: { type: string }
             project_orchestrator_upsert_template: { type: string }
             project_workflow_definition_upsert_template: { type: string }
+            chat_endpoint: { type: string, format: uri }
             orchestrator_message: { type: string, format: uri }
             orchestrator_stack_template: { type: string }
             orchestrator_context_get: { type: string, format: uri }
