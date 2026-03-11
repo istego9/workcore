@@ -10,10 +10,11 @@ import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 _ROOT_DIR = Path(__file__).resolve().parents[3]
 _ONBOARD_SCRIPT_PATH = _ROOT_DIR / "deploy" / "azure" / "scripts" / "apim_partner_onboard.sh"
@@ -22,6 +23,12 @@ _PARTNER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 _EPAM_MARKER = "epam"
 _EPAM_BASE_URL = "https://api.runwcr.com"
 _EPAM_ALLOWED_DOMAINS = ["api.runwcr.com"]
+_CHAT_API_PATH = "/chat"
+_CHATKIT_ALIAS_PATH = "/chatkit"
+_CHATKIT_ALIAS_SUNSET_AT = datetime(2026, 4, 4, 0, 0, 0, tzinfo=timezone.utc)
+_DEFAULT_SCOPE = "api://workcore-partner-api/.default"
+_DEFAULT_TOKEN_ENDPOINT_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+_SECRET_ROTATION_BUFFER_DAYS = 30
 
 
 class PartnerSelfServiceError(RuntimeError):
@@ -38,6 +45,197 @@ class PartnerPortalIdentity:
     tenant_id: str
     user_id: str
     user_email: str
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _isoformat_utc(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _base_url_without_trailing_slash(base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    return normalized or "https://api.hq21.tech"
+
+
+def _host_from_base_url(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    return (parsed.hostname or "").strip().lower()
+
+
+def _token_endpoint_for_manifest(explicit_endpoint: str | None, tenant_id: str | None) -> str:
+    endpoint = (explicit_endpoint or "").strip()
+    if endpoint:
+        return endpoint
+    tenant = (tenant_id or "").strip() or "<tenant_id>"
+    return _DEFAULT_TOKEN_ENDPOINT_TEMPLATE.format(tenant_id=tenant)
+
+
+def _secret_expiry_payload(
+    *,
+    now: datetime,
+    validity_policy: str,
+    issued_at: datetime | None,
+    expires_at: datetime | None,
+) -> dict[str, Any]:
+    warning_level = "unknown"
+    warning_message = "Secret expiry is unknown. Generate onboarding package to get exact expiry."
+    rotation_due_at: datetime | None = None
+
+    if expires_at is not None:
+        days_left = (expires_at - now).total_seconds() / 86400
+        rotation_due_at = expires_at - timedelta(days=_SECRET_ROTATION_BUFFER_DAYS)
+        if days_left <= 0:
+            warning_level = "critical"
+            warning_message = "Secret is already expired; rotate immediately."
+        elif days_left <= 30:
+            warning_level = "critical"
+            warning_message = "Secret expires within 30 days; rotate immediately."
+        elif days_left <= 60:
+            warning_level = "warn"
+            warning_message = "Secret expires within 60 days; schedule rotation now."
+        else:
+            warning_level = "info"
+            warning_message = "Secret lifetime is healthy; keep rotation schedule."
+
+    return {
+        "validity_policy": validity_policy,
+        "issued_at": _isoformat_utc(issued_at),
+        "expires_at": _isoformat_utc(expires_at),
+        "rotation_due_at": _isoformat_utc(rotation_due_at),
+        "warning_level": warning_level,
+        "warning_message": warning_message,
+    }
+
+
+def _default_operator_notes() -> list[str]:
+    return [
+        "Canonical chat endpoint is POST /chat.",
+        "POST /chatkit is a deprecated compatibility alias until 2026-04-04T00:00:00Z.",
+        "Thread creation resolution order: metadata.workflow_id -> metadata.project_id -> X-Project-Id.",
+        "Do not use API key auth for public integrations; use OAuth client_credentials.",
+    ]
+
+
+def build_integration_manifest(
+    *,
+    base_url: str,
+    tenant_id: str | None = None,
+    project_id: str | None = None,
+    default_chat_workflow_id: str | None = None,
+    default_chat_workflow_readiness: str = "unknown",
+    token_endpoint: str | None = None,
+    scope: str | None = None,
+    audience: str | None = None,
+    allowed_domains: list[str] | None = None,
+    rate_limit_profile: str | None = None,
+    secret_expiry_months: int | None = None,
+    secret_issued_at: str | None = None,
+    secret_expires_at: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current_time = now or _utc_now()
+    normalized_base_url = _base_url_without_trailing_slash(base_url)
+    chat_api_url = f"{normalized_base_url}{_CHAT_API_PATH}"
+    deprecated_chat_alias_url = f"{normalized_base_url}{_CHATKIT_ALIAS_PATH}"
+
+    normalized_scope = (scope or "").strip() or _DEFAULT_SCOPE
+    normalized_tenant = (tenant_id or "").strip() or None
+    normalized_project = (project_id or "").strip() or None
+    normalized_default_workflow = (default_chat_workflow_id or "").strip() or None
+    normalized_audience = (audience or "").strip() or None
+    normalized_rate_limit = (rate_limit_profile or "").strip() or None
+    resolved_allowed_domains = [
+        domain.strip().lower()
+        for domain in (allowed_domains or [])
+        if isinstance(domain, str) and domain.strip()
+    ]
+    if not resolved_allowed_domains:
+        host = _host_from_base_url(normalized_base_url)
+        if host:
+            resolved_allowed_domains = [host]
+
+    issued_at = _parse_datetime(secret_issued_at)
+    expires_at = _parse_datetime(secret_expires_at)
+    policy_months = secret_expiry_months if isinstance(secret_expiry_months, int) and secret_expiry_months > 0 else None
+    policy_text = (
+        f"Partner secret validity policy: {policy_months} month(s). Rotate at least "
+        f"{_SECRET_ROTATION_BUFFER_DAYS} days before expiry."
+        if policy_months is not None
+        else (
+            "Partner secret validity policy: generated by onboarding profile. Rotate at least "
+            f"{_SECRET_ROTATION_BUFFER_DAYS} days before expiry."
+        )
+    )
+
+    manifest = {
+        "api_base_url": normalized_base_url,
+        "chat_api_url": chat_api_url,
+        "deprecated_chat_alias_url": deprecated_chat_alias_url,
+        "auth_profile": {
+            "type": "oauth_client_credentials",
+            "token_url": _token_endpoint_for_manifest(token_endpoint, normalized_tenant),
+            "scope": normalized_scope,
+            "audience": normalized_audience,
+            "notes": [
+                "Use Microsoft Entra OAuth2 client_credentials.",
+                "Send Authorization: Bearer <access_token> on protected endpoints.",
+            ],
+        },
+        "required_headers": [
+            "Authorization",
+            "X-Tenant-Id",
+        ],
+        "optional_headers": [
+            "X-Project-Id",
+            "X-Correlation-Id",
+            "X-Trace-Id",
+        ],
+        "project_scope": {
+            "tenant_id": normalized_tenant,
+            "project_id": normalized_project,
+            "default_chat_workflow_id": normalized_default_workflow,
+            "default_chat_workflow_readiness": default_chat_workflow_readiness,
+        },
+        "deprecations": [
+            {
+                "endpoint": _CHATKIT_ALIAS_PATH,
+                "status": "deprecated",
+                "sunset_at": _isoformat_utc(_CHATKIT_ALIAS_SUNSET_AT),
+                "remediation": "Migrate all integrations to POST /chat before sunset.",
+            }
+        ],
+        "operator_notes": _default_operator_notes(),
+        "allowed_domains": resolved_allowed_domains,
+        "rate_limit_profile": normalized_rate_limit,
+        "secret_expiry": _secret_expiry_payload(
+            now=current_time,
+            validity_policy=policy_text,
+            issued_at=issued_at,
+            expires_at=expires_at,
+        ),
+    }
+    return manifest
 
 
 def _require_string(
@@ -400,6 +598,8 @@ def run_partner_onboarding(
     onboarding["base_url"] = str(request_data["base_url"])
     onboarding["tenant_id_pinned"] = str(request_data["tenant_id_pinned"])
     onboarding["allowed_domains"] = list(request_data.get("allowed_domains", []))
+    onboarding["rate_limit_profile"] = str(request_data.get("rate_limit_profile", "")).strip() or None
+    onboarding["secret_expiry_months"] = request_data.get("secret_expiry_months")
     return onboarding
 
 
@@ -419,7 +619,31 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
     if not client_id or not client_secret or not token_endpoint or not scope:
         raise PartnerSelfServiceError("INTERNAL", "cannot build package without onboarding credentials", 500)
 
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    generated_dt = _utc_now()
+    generated_at = _isoformat_utc(generated_dt) or ""
+    rate_limit_profile = str(onboarding.get("rate_limit_profile", "")).strip() or None
+    secret_expiry_months_raw = onboarding.get("secret_expiry_months")
+    secret_expiry_months = (
+        int(secret_expiry_months_raw)
+        if isinstance(secret_expiry_months_raw, int) and secret_expiry_months_raw > 0
+        else None
+    )
+    allowed_domains = [str(item).strip() for item in onboarding.get("allowed_domains", []) if str(item).strip()]
+
+    integration_manifest = build_integration_manifest(
+        base_url=base_url,
+        tenant_id=tenant_id,
+        token_endpoint=token_endpoint,
+        scope=scope,
+        allowed_domains=allowed_domains,
+        rate_limit_profile=rate_limit_profile,
+        secret_expiry_months=secret_expiry_months,
+        secret_issued_at=generated_at,
+        secret_expires_at=expires_at,
+        default_chat_workflow_readiness="unknown",
+    )
+    secret_expiry = integration_manifest["secret_expiry"]
+
     readme = "\n".join(
         [
             "# WorkCore Partner Onboarding Package",
@@ -429,6 +653,11 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
             f"Partner ID: {partner_id}",
             f"Pinned tenant: {tenant_id}",
             "",
+            "## Canonical endpoints",
+            f"- API base URL: {base_url}",
+            f"- Canonical chat endpoint: {integration_manifest['chat_api_url']}",
+            f"- Deprecated alias: {integration_manifest['deprecated_chat_alias_url']} (sunset at 2026-04-04T00:00:00Z)",
+            "",
             "## Token exchange",
             f"POST {token_endpoint}",
             "grant_type=client_credentials",
@@ -436,19 +665,29 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
             "Decoded JWT note: `aud` may appear as the WorkCore resource app ID instead of the scope alias.",
             "This is expected as long as the token was requested with the scope above.",
             "",
-            "## API base URL",
-            f"{base_url}",
+            "## Secret lifetime",
+            f"- client_secret_expires_at: {expires_at}",
+            f"- rotation_due_at: {secret_expiry.get('rotation_due_at') or 'unknown'}",
+            f"- warning_level: {secret_expiry.get('warning_level')}",
+            f"- warning_message: {secret_expiry.get('warning_message')}",
+            "",
+            "## Bundle contents",
+            "- .env.partner",
+            "- integration_manifest.json",
+            "- curl_examples/check_auth.sh",
+            "- curl_examples/check_project_scope.sh",
+            "- curl_examples/check_chat.sh",
             "",
             "## Verify access",
             "1. Load variables from `.env.partner`.",
-            "2. Request an access token.",
-            "3. Call `GET /projects` with `Authorization: Bearer <token>`.",
-            "",
-            "## Secret lifetime",
-            f"client_secret_expires_at={expires_at}",
+            "2. Run `./curl_examples/check_auth.sh`.",
+            "3. Set `PROJECT_ID` in `.env.partner`.",
+            "4. Run `./curl_examples/check_project_scope.sh`.",
+            "5. Run `./curl_examples/check_chat.sh`.",
             "",
             "## Security note",
             "- Treat `client_secret` as sensitive and deliver over secure channel only.",
+            "- Do not paste client secrets into issue trackers, logs, or chat channels.",
         ]
     )
 
@@ -456,21 +695,127 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
         [
             f"PARTNER_ID={partner_id}",
             f"BASE_URL={base_url}",
+            "CHAT_API_URL=${BASE_URL}/chat",
+            "DEPRECATED_CHAT_ALIAS_URL=${BASE_URL}/chatkit",
             f"TENANT_ID={tenant_id}",
+            "PROJECT_ID=",
             f"CLIENT_ID={client_id}",
             f"CLIENT_SECRET={client_secret}",
             f"TOKEN_ENDPOINT={token_endpoint}",
             f"SCOPE={scope}",
             f"CLIENT_SECRET_EXPIRES_AT={expires_at}",
+            f"SECRET_ROTATION_DUE_AT={secret_expiry.get('rotation_due_at') or ''}",
+            f"SECRET_WARNING_LEVEL={secret_expiry.get('warning_level')}",
+            f"SECRET_WARNING_MESSAGE={secret_expiry.get('warning_message')}",
             "",
             "# Decoded JWT note: `aud` may appear as the WorkCore resource app ID even when SCOPE uses the alias above.",
-            "# Example:",
-            "# TOKEN=$(curl -sS -X POST \"$TOKEN_ENDPOINT\" \\",
-            "#   -H \"Content-Type: application/x-www-form-urlencoded\" \\",
-            "#   -d \"grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET&scope=$SCOPE\" | jq -r '.access_token')",
-            "# curl -sS \"$BASE_URL/projects\" -H \"Authorization: Bearer $TOKEN\" -H \"X-Tenant-Id: $TENANT_ID\"",
+            "# Canonical chat endpoint is POST /chat. /chatkit is deprecated compatibility alias only.",
         ]
     )
+
+    check_auth_script = """#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "${ROOT}/.env.partner"
+
+if [[ -z "${TOKEN_ENDPOINT:-}" || -z "${CLIENT_ID:-}" || -z "${CLIENT_SECRET:-}" || -z "${SCOPE:-}" ]]; then
+  echo "missing required env values in .env.partner" >&2
+  exit 1
+fi
+
+token_response="$(curl -sS -X POST "${TOKEN_ENDPOINT}" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=${SCOPE}")"
+
+access_token="$(printf "%s" "${token_response}" | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("access_token",""))' 2>/dev/null || true)"
+
+if [[ -z "${access_token}" || "${access_token}" == "null" ]]; then
+  echo "auth_check=FAIL" >&2
+  printf "%s\\n" "${token_response}" >&2
+  exit 1
+fi
+
+echo "auth_check=PASS token_length=${#access_token}"
+"""
+
+    check_project_scope_script = """#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "${ROOT}/.env.partner"
+
+if [[ -z "${PROJECT_ID:-}" ]]; then
+  echo "PROJECT_ID must be set in .env.partner before running project scope check" >&2
+  exit 1
+fi
+
+token_response="$(curl -sS -X POST "${TOKEN_ENDPOINT}" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=${SCOPE}")"
+access_token="$(printf "%s" "${token_response}" | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("access_token",""))' 2>/dev/null || true)"
+if [[ -z "${access_token}" || "${access_token}" == "null" ]]; then
+  echo "could not obtain access token for project scope check" >&2
+  exit 1
+fi
+
+projects_json="$(curl -sS "${BASE_URL}/projects" \
+  -H "Authorization: Bearer ${access_token}" \
+  -H "X-Tenant-Id: ${TENANT_ID}")"
+
+if printf "%s" "${projects_json}" | grep -q "\"project_id\"[[:space:]]*:[[:space:]]*\"${PROJECT_ID}\""; then
+  echo "project_scope_check=PASS project_id=${PROJECT_ID}"
+  exit 0
+fi
+
+echo "project_scope_check=FAIL project_id=${PROJECT_ID} not found in tenant=${TENANT_ID}" >&2
+printf "%s\\n" "${projects_json}" >&2
+exit 1
+"""
+
+    check_chat_script = """#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "${ROOT}/.env.partner"
+
+if [[ -z "${PROJECT_ID:-}" ]]; then
+  echo "PROJECT_ID must be set in .env.partner before running chat check" >&2
+  exit 1
+fi
+
+token_response="$(curl -sS -X POST "${TOKEN_ENDPOINT}" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=${SCOPE}")"
+access_token="$(printf "%s" "${token_response}" | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("access_token",""))' 2>/dev/null || true)"
+if [[ -z "${access_token}" || "${access_token}" == "null" ]]; then
+  echo "could not obtain access token for chat check" >&2
+  exit 1
+fi
+
+corr_id="corr-$(date -u +%Y%m%d%H%M%S)"
+trace_id="trace-$(date -u +%Y%m%d%H%M%S)"
+chat_response="$(curl -sS --max-time 25 -N -X POST "${CHAT_API_URL}" \
+  -H "Authorization: Bearer ${access_token}" \
+  -H "X-Tenant-Id: ${TENANT_ID}" \
+  -H "X-Project-Id: ${PROJECT_ID}" \
+  -H "X-Correlation-Id: ${corr_id}" \
+  -H "X-Trace-Id: ${trace_id}" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"threads.create","metadata":{"project_id":"'"${PROJECT_ID}"'"},"params":{"input":{"content":[{"type":"input_text","text":"integration doctor ping"}],"attachments":[],"inference_options":{}}}}')"
+
+if printf "%s" "${chat_response}" | grep -q "data:"; then
+  echo "chat_check=PASS endpoint=${CHAT_API_URL}"
+  exit 0
+fi
+
+echo "chat_check=FAIL endpoint=${CHAT_API_URL}" >&2
+printf "%s\\n" "${chat_response}" >&2
+exit 1
+"""
 
     metadata = {
         "generated_at": generated_at,
@@ -481,14 +826,22 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
         "scope": scope,
         "token_endpoint": token_endpoint,
         "base_url": base_url,
+        "chat_api_url": integration_manifest["chat_api_url"],
+        "deprecated_chat_alias_url": integration_manifest["deprecated_chat_alias_url"],
         "client_secret_expires_at": expires_at,
-        "allowed_domains": list(onboarding.get("allowed_domains", [])),
+        "allowed_domains": allowed_domains,
+        "rate_limit_profile": rate_limit_profile,
+        "secret_expiry": secret_expiry,
     }
 
     stream = BytesIO()
     with zipfile.ZipFile(stream, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("README.md", readme)
         archive.writestr(".env.partner", env_content)
+        archive.writestr("integration_manifest.json", json.dumps(integration_manifest, ensure_ascii=True, indent=2, sort_keys=True))
+        archive.writestr("curl_examples/check_auth.sh", check_auth_script)
+        archive.writestr("curl_examples/check_project_scope.sh", check_project_scope_script)
+        archive.writestr("curl_examples/check_chat.sh", check_chat_script)
         archive.writestr("metadata.json", json.dumps(metadata, ensure_ascii=True, indent=2, sort_keys=True))
 
     return stream.getvalue()

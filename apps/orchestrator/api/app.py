@@ -32,6 +32,7 @@ from apps.orchestrator.api.idempotency import IdempotencyStore, create_idempoten
 from apps.orchestrator.api.ledger_store import create_run_ledger_store, runtime_events_to_ledger_entries
 from apps.orchestrator.api.partner_self_service import (
     PartnerSelfServiceError,
+    build_integration_manifest,
     build_onboarding_package_zip,
     decode_easyauth_principal,
     identity_from_easyauth_payload,
@@ -74,7 +75,10 @@ from apps.orchestrator.orchestrator_runtime import (
     ProjectOrchestratorRuntime,
     create_orchestration_store,
 )
-from apps.orchestrator.orchestrator_runtime.project_settings import normalize_project_settings
+from apps.orchestrator.orchestrator_runtime.project_settings import (
+    get_default_chat_workflow_id,
+    normalize_project_settings,
+)
 from apps.orchestrator.project_router import ProjectRouter, ProjectRouterError, RoutingRequest
 from apps.orchestrator.runtime import Edge, MultiWorkflowRuntimeService, Node, RuntimeConfig, Workflow
 from apps.orchestrator.runtime.env import get_env
@@ -110,6 +114,7 @@ _DEFAULT_AGENT_INTEGRATION_LOG_CAPACITY = 1000
 _RUN_LEDGER_FK_CONSTRAINT = "run_ledger_run_id_fkey"
 _RUN_LEDGER_FK_MAX_ATTEMPTS = 4
 _RUN_LEDGER_FK_RETRY_BASE_DELAY_SECONDS = 0.02
+_CHATKIT_ALIAS_SUNSET_AT = datetime(2026, 4, 4, 0, 0, 0, tzinfo=timezone.utc)
 
 
 class RunLedgerWriteRaceError(RuntimeError):
@@ -2645,12 +2650,19 @@ def create_app(
     async def partner_access_portal(request: Request) -> Response:
         try:
             identity = _require_partner_portal_identity(request)
+            portal_manifest = build_integration_manifest(
+                base_url=partner_portal_default_base_url,
+                tenant_id=identity.tenant_id,
+                rate_limit_profile="default",
+                secret_expiry_months=12,
+            )
             html = render_partner_portal_html(
                 {
                     "user_email": identity.user_email,
                     "user_id": identity.user_id,
                     "tenant_id": identity.tenant_id,
                     "default_base_url": partner_portal_default_base_url,
+                    "default_manifest": portal_manifest,
                 }
             )
         except PartnerSelfServiceError as exc:
@@ -2674,6 +2686,21 @@ def create_app(
                 default_base_url=partner_portal_default_base_url,
             )
             onboarding = run_partner_onboarding(request_data, extra_env=partner_portal_env_overrides)
+            onboarding_manifest = build_integration_manifest(
+                base_url=str(onboarding.get("base_url") or partner_portal_default_base_url),
+                tenant_id=str(onboarding.get("tenant_id_pinned") or request_data.get("tenant_id_pinned") or ""),
+                token_endpoint=str(onboarding.get("token_endpoint") or ""),
+                scope=str(onboarding.get("scope") or ""),
+                allowed_domains=list(onboarding.get("allowed_domains") or []),
+                rate_limit_profile=str(onboarding.get("rate_limit_profile") or request_data.get("rate_limit_profile") or ""),
+                secret_expiry_months=(
+                    request_data.get("secret_expiry_months")
+                    if isinstance(request_data.get("secret_expiry_months"), int)
+                    else None
+                ),
+                secret_issued_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                secret_expires_at=str(onboarding.get("client_secret_expires_at") or ""),
+            )
             package = build_onboarding_package_zip(onboarding, issued_by=identity.user_email)
         except json.JSONDecodeError:
             return _error(request, "INVALID_ARGUMENT", "request body must be valid JSON", 422)
@@ -2690,6 +2717,8 @@ def create_app(
                 "partner_id": request_data["partner_id"],
                 "tenant_id_pinned": request_data["tenant_id_pinned"],
                 "operator": identity.user_email,
+                "chat_api_url": onboarding_manifest.get("chat_api_url"),
+                "secret_warning_level": ((onboarding_manifest.get("secret_expiry") or {}).get("warning_level")),
             },
         )
         return Response(
@@ -2783,191 +2812,320 @@ def create_app(
             "handoff_create": f"{base_url}/handoff/packages",
             "handoff_replay_template": f"{base_url}/handoff/packages/{{handoff_id}}/replay",
             "run_ledger_template": f"{base_url}/runs/{{run_id}}/ledger",
+            "partner_access_portal": f"{base_url}/internal/partner-access",
+            "partner_onboard_package": f"{base_url}/internal/partner-access/onboard-package",
         }
 
-    def _integration_check_report(request: Request) -> Dict[str, Any]:
-        checks: list[dict[str, Any]] = []
+    async def _resolve_project_scope_readiness(
+        tenant_id: str | None,
+        project_id: str | None,
+    ) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "project_exists": None,
+            "default_workflow_id": None,
+            "default_workflow_ready": "unknown",
+            "error": None,
+        }
+        if not tenant_id or not project_id:
+            return result
 
-        def add_check(check_id: str, description: str, ok: bool, detail: str) -> None:
+        try:
+            await ctx.ensure_orchestration()
+            await ctx.ensure_workflow_store()
+        except Exception as exc:  # pragma: no cover - safety fallback
+            result["error"] = f"failed to initialize stores: {exc}"
+            return result
+
+        project = await ctx.orchestration_store.get_project(project_id, tenant_id=tenant_id)
+        if project is None:
+            result["project_exists"] = False
+            result["default_workflow_ready"] = "missing"
+            return result
+
+        result["project_exists"] = True
+        default_workflow_id = get_default_chat_workflow_id(project.settings)
+        if not default_workflow_id:
+            result["default_workflow_ready"] = "missing"
+            return result
+
+        result["default_workflow_id"] = default_workflow_id
+        try:
+            workflow = await ctx.workflow_store.get_workflow(
+                default_workflow_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+            )
+        except WorkflowNotFoundError:
+            result["default_workflow_ready"] = "missing"
+            return result
+
+        active_version_id = workflow.active_version_id
+        if not active_version_id:
+            result["default_workflow_ready"] = "missing"
+            return result
+
+        try:
+            await ctx.workflow_store.get_version(active_version_id, tenant_id=tenant_id)
+        except WorkflowNotFoundError:
+            result["default_workflow_ready"] = "missing"
+            return result
+
+        result["default_workflow_ready"] = "known_ready"
+        return result
+
+    async def _integration_check_report(request: Request) -> Dict[str, Any]:
+        checks: list[dict[str, Any]] = []
+        urls = _public_doc_urls(request)
+        now = datetime.now(timezone.utc)
+
+        tenant_header = (request.headers.get("X-Tenant-Id") or "").strip() or None
+        header_project_id = (request.headers.get("X-Project-Id") or "").strip() or None
+        query_project_id = (request.query_params.get("project_id") or "").strip() or None
+        project_id = query_project_id or header_project_id
+
+        project_scope = await _resolve_project_scope_readiness(tenant_header, project_id)
+        manifest = build_integration_manifest(
+            base_url=_public_base_url(request),
+            tenant_id=tenant_header,
+            project_id=project_id,
+            default_chat_workflow_id=project_scope.get("default_workflow_id"),
+            default_chat_workflow_readiness=str(project_scope.get("default_workflow_ready") or "unknown"),
+            audience=(get_env("APIM_OAUTH_AUDIENCE") or "").strip() or None,
+            rate_limit_profile="default",
+            secret_expiry_months=12,
+            now=now,
+        )
+
+        def add_check(
+            check_id: str,
+            *,
+            status: str,
+            severity: str,
+            code: str,
+            title: str,
+            message: str,
+            observed: Any,
+            expected: Any,
+            remediation: str,
+            docs_ref: str,
+        ) -> None:
             checks.append(
                 {
                     "id": check_id,
-                    "description": description,
-                    "ok": ok,
-                    "detail": detail,
+                    "status": status,
+                    "severity": severity,
+                    "code": code,
+                    "title": title,
+                    "message": message,
+                    "observed": observed,
+                    "expected": expected,
+                    "remediation": remediation,
+                    "docs_ref": docs_ref,
+                    "description": title,
+                    "ok": status == "PASS",
+                    "detail": message,
                 }
             )
 
-        openapi_text = ""
-        if _OPENAPI_SPEC_PATH.exists():
-            try:
-                openapi_text = _OPENAPI_SPEC_PATH.read_text(encoding="utf-8")
-                add_check("openapi_exists", "OpenAPI file is available", True, "ok")
-            except Exception as exc:
-                add_check("openapi_exists", "OpenAPI file is available", False, str(exc))
-        else:
-            add_check("openapi_exists", "OpenAPI file is available", False, "missing docs/api/openapi.yaml")
-
-        if _API_REFERENCE_PATH.exists():
-            add_check("api_reference_exists", "API reference is available", True, "ok")
-        else:
-            add_check("api_reference_exists", "API reference is available", False, "missing docs/api/reference.md")
-
-        if _WORKFLOW_AUTHORING_GUIDE_PATH.exists():
-            add_check(
-                "workflow_authoring_guide_exists",
-                "Workflow authoring guide is available",
-                True,
-                "ok",
-            )
-        else:
-            add_check(
-                "workflow_authoring_guide_exists",
-                "Workflow authoring guide is available",
-                False,
-                "missing docs/architecture/workflow-authoring-agents.md",
-            )
-
-        draft_schema = None
-        if _WORKFLOW_DRAFT_SCHEMA_PATH.exists():
-            try:
-                draft_schema = json.loads(_WORKFLOW_DRAFT_SCHEMA_PATH.read_text(encoding="utf-8"))
-                add_check("workflow_draft_schema_valid_json", "Workflow draft schema is valid JSON", True, "ok")
-            except Exception as exc:
-                add_check(
-                    "workflow_draft_schema_valid_json",
-                    "Workflow draft schema is valid JSON",
-                    False,
-                    str(exc),
-                )
-        else:
-            add_check(
-                "workflow_draft_schema_valid_json",
-                "Workflow draft schema is valid JSON",
-                False,
-                "missing docs/api/schemas/workflow-draft.schema.json",
-            )
-
-        export_schema = None
-        if _WORKFLOW_EXPORT_SCHEMA_PATH.exists():
-            try:
-                export_schema = json.loads(_WORKFLOW_EXPORT_SCHEMA_PATH.read_text(encoding="utf-8"))
-                add_check("workflow_export_schema_valid_json", "Workflow export schema is valid JSON", True, "ok")
-            except Exception as exc:
-                add_check(
-                    "workflow_export_schema_valid_json",
-                    "Workflow export schema is valid JSON",
-                    False,
-                    str(exc),
-                )
-        else:
-            add_check(
-                "workflow_export_schema_valid_json",
-                "Workflow export schema is valid JSON",
-                False,
-                "missing docs/api/schemas/workflow-export-v1.schema.json",
-            )
-
-        routing_schema = None
-        if _ROUTING_DECISION_SCHEMA_PATH.exists():
-            try:
-                routing_schema = json.loads(_ROUTING_DECISION_SCHEMA_PATH.read_text(encoding="utf-8"))
-                add_check("routing_schema_valid_json", "Routing decision schema is valid JSON", True, "ok")
-            except Exception as exc:
-                add_check(
-                    "routing_schema_valid_json",
-                    "Routing decision schema is valid JSON",
-                    False,
-                    str(exc),
-                )
-        else:
-            add_check(
-                "routing_schema_valid_json",
-                "Routing decision schema is valid JSON",
-                False,
-                "missing docs/api/schemas/routing-decision.schema.json",
-            )
-
-        if _CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.exists():
-            try:
-                json.loads(_CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.read_text(encoding="utf-8"))
-                add_check("chatkit_transcribe_schema_valid_json", "ChatKit transcribe schema is valid JSON", True, "ok")
-            except Exception as exc:
-                add_check(
-                    "chatkit_transcribe_schema_valid_json",
-                    "ChatKit transcribe schema is valid JSON",
-                    False,
-                    str(exc),
-                )
-        else:
-            add_check(
-                "chatkit_transcribe_schema_valid_json",
-                "ChatKit transcribe schema is valid JSON",
-                False,
-                "missing docs/api/schemas/chatkit-input-transcribe-request.schema.json",
-            )
-
-        if _CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.exists():
-            try:
-                json.loads(_CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.read_text(encoding="utf-8"))
-                add_check(
-                    "chatkit_widget_extension_schema_valid_json",
-                    "ChatKit widget extension schema is valid JSON",
-                    True,
-                    "ok",
-                )
-            except Exception as exc:
-                add_check(
-                    "chatkit_widget_extension_schema_valid_json",
-                    "ChatKit widget extension schema is valid JSON",
-                    False,
-                    str(exc),
-                )
-        else:
-            add_check(
-                "chatkit_widget_extension_schema_valid_json",
-                "ChatKit widget extension schema is valid JSON",
-                False,
-                "missing docs/api/schemas/chatkit-widget-extension.schema.json",
-            )
-
-        required_openapi_paths = (
-            "/agent-integration-kit",
-            "/agent-integration-kit.json",
-            "/agent-integration-test",
-            "/agent-integration-test.json",
-            "/agent-integration-test/validate-draft",
-            "/agent-integration-logs",
-            "/workflow-authoring-guide",
-            "/schemas/workflow-draft.schema.json",
-            "/schemas/workflow-export-v1.schema.json",
-            "/schemas/routing-decision.schema.json",
-            "/schemas/chatkit-input-transcribe-request.schema.json",
-            "/schemas/chatkit-widget-extension.schema.json",
-            "/projects",
-            "/projects/{project_id}/orchestrators",
-            "/projects/{project_id}/workflow-definitions",
-            "/capabilities",
-            "/capabilities/{capability_id}/versions",
-            "/chat",
-            "/chatkit",
-            "/orchestrator/messages",
-            "/orchestrator/eval/replay",
-            "/orchestrator/sessions/{session_id}/stack",
-            "/orchestrator/context/get",
-            "/orchestrator/context/set",
-            "/orchestrator/context/unset",
-            "/handoff/packages",
-            "/handoff/packages/{handoff_id}/replay",
-            "/runs/{run_id}/ledger",
-        )
-        missing_paths = [path for path in required_openapi_paths if path not in openapi_text]
+        auth_profile = manifest.get("auth_profile") if isinstance(manifest, dict) else None
+        auth_type = auth_profile.get("type") if isinstance(auth_profile, dict) else None
         add_check(
-            "openapi_has_integration_paths",
-            "OpenAPI includes integration kit/test/log and reliability endpoints",
-            len(missing_paths) == 0,
-            "ok" if not missing_paths else f"missing: {', '.join(missing_paths)}",
+            "auth_profile_canonical",
+            status="PASS" if auth_type == "oauth_client_credentials" else "FAIL",
+            severity="high",
+            code="AUTH_PROFILE_OK" if auth_type == "oauth_client_credentials" else "AUTH_PROFILE_INVALID",
+            title="Canonical auth profile is present",
+            message=(
+                "Integration manifest uses OAuth client_credentials."
+                if auth_type == "oauth_client_credentials"
+                else "Integration manifest auth profile is missing or not canonical."
+            ),
+            observed=auth_type,
+            expected="oauth_client_credentials",
+            remediation="Use OAuth2 client_credentials and remove any non-canonical auth profile.",
+            docs_ref=f"{urls['api_reference']}#authentication",
         )
+
+        auth_header = request.headers.get("Authorization")
+        bearer_token = _extract_bearer_token(auth_header)
+        if not auth_header:
+            token_status = "WARN"
+            token_code = "AUTH_TOKEN_MISSING"
+            token_message = "Authorization header was not provided for doctor run."
+        elif bearer_token is None:
+            token_status = "FAIL"
+            token_code = "AUTH_TOKEN_MALFORMED"
+            token_message = "Authorization header must use 'Bearer <token>' format."
+        elif len(bearer_token.strip()) < 20 or " " in bearer_token:
+            token_status = "FAIL"
+            token_code = "AUTH_TOKEN_OBVIOUSLY_INVALID"
+            token_message = "Authorization bearer token looks malformed or too short."
+        else:
+            token_status = "PASS"
+            token_code = "AUTH_TOKEN_SHAPE_OK"
+            token_message = "Authorization bearer token format looks valid."
+        add_check(
+            "auth_token_shape",
+            status=token_status,
+            severity="high",
+            code=token_code,
+            title="Authorization token shape",
+            message=token_message,
+            observed="present" if auth_header else "missing",
+            expected="Bearer <token>",
+            remediation="Send Authorization: Bearer <access_token> on protected API calls.",
+            docs_ref=f"{urls['api_reference']}#authentication",
+        )
+
+        add_check(
+            "tenant_header_present",
+            status="PASS" if tenant_header else "WARN",
+            severity="high",
+            code="TENANT_HEADER_OK" if tenant_header else "TENANT_HEADER_MISSING",
+            title="Tenant scope header",
+            message=(
+                "X-Tenant-Id header is present."
+                if tenant_header
+                else "X-Tenant-Id header is missing; strict multi-tenant endpoints will reject requests."
+            ),
+            observed=tenant_header or "missing",
+            expected="non-empty X-Tenant-Id",
+            remediation="Provide X-Tenant-Id on chat and other tenant-scoped calls.",
+            docs_ref=f"{urls['api_reference']}#required-integration-headers",
+        )
+
+        project_scope_source = "query.project_id" if query_project_id else "X-Project-Id" if header_project_id else "none"
+        add_check(
+            "project_scope_present_or_inferable",
+            status="PASS" if project_id else "WARN",
+            severity="high",
+            code="PROJECT_SCOPE_OK" if project_id else "PROJECT_SCOPE_MISSING",
+            title="Project scope for chat default resolution",
+            message=(
+                "Project scope is available for project-centric chat checks."
+                if project_id
+                else "No project scope was provided; project-scoped chat readiness cannot be fully validated."
+            ),
+            observed={"project_id": project_id, "source": project_scope_source},
+            expected="project_id provided via query or X-Project-Id",
+            remediation="Set project_id query parameter or X-Project-Id header when running doctor checks.",
+            docs_ref=f"{urls['api_reference']}#chat-first-integration-for-external-clients",
+        )
+
+        project_exists = project_scope.get("project_exists")
+        if project_id and tenant_header:
+            if project_exists is True:
+                project_status = "PASS"
+                project_code = "PROJECT_EXISTS"
+                project_message = "Project exists in tenant scope."
+            elif project_exists is False:
+                project_status = "FAIL"
+                project_code = "PROJECT_NOT_FOUND"
+                project_message = "Project was not found in tenant scope."
+            else:
+                project_status = "WARN"
+                project_code = "PROJECT_CHECK_SKIPPED"
+                project_message = project_scope.get("error") or "Project existence could not be validated."
+        else:
+            project_status = "WARN"
+            project_code = "PROJECT_CHECK_SKIPPED"
+            project_message = "Project existence check skipped because tenant or project scope is missing."
+        add_check(
+            "project_exists_in_tenant",
+            status=project_status,
+            severity="high",
+            code=project_code,
+            title="Project exists and is reachable in tenant",
+            message=project_message,
+            observed={"tenant_id": tenant_header, "project_id": project_id},
+            expected="project exists in tenant scope",
+            remediation="Create the project or use the correct tenant/project scope.",
+            docs_ref=urls["projects_list"],
+        )
+
+        default_workflow_id = project_scope.get("default_workflow_id")
+        add_check(
+            "default_chat_workflow_configured",
+            status=(
+                "PASS"
+                if project_exists is True and default_workflow_id
+                else "FAIL"
+                if project_exists is True and not default_workflow_id
+                else "WARN"
+            ),
+            severity="high",
+            code=(
+                "CHAT_DEFAULT_WORKFLOW_CONFIGURED"
+                if project_exists is True and default_workflow_id
+                else "CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED"
+                if project_exists is True
+                else "CHAT_DEFAULT_WORKFLOW_CHECK_SKIPPED"
+            ),
+            title="Project default chat workflow configured",
+            message=(
+                "Project default chat workflow is configured."
+                if project_exists is True and default_workflow_id
+                else "Project has no default chat workflow configured."
+                if project_exists is True
+                else "Default workflow check skipped."
+            ),
+            observed=default_workflow_id or "missing",
+            expected="projects.settings.default_chat_workflow_id",
+            remediation="Set projects.settings.default_chat_workflow_id to a published workflow id.",
+            docs_ref=urls["projects_create"],
+        )
+
+        default_ready = project_scope.get("default_workflow_ready")
+        add_check(
+            "default_chat_workflow_resolvable",
+            status=(
+                "PASS"
+                if default_ready == "known_ready"
+                else "FAIL"
+                if project_exists is True and default_workflow_id
+                else "WARN"
+            ),
+            severity="high",
+            code=(
+                "CHAT_DEFAULT_WORKFLOW_READY"
+                if default_ready == "known_ready"
+                else "CHAT_DEFAULT_WORKFLOW_NOT_FOUND"
+                if project_exists is True and default_workflow_id
+                else "CHAT_DEFAULT_WORKFLOW_RESOLUTION_SKIPPED"
+            ),
+            title="Default chat workflow is active/published/resolvable",
+            message=(
+                "Configured default workflow resolved to an active published version."
+                if default_ready == "known_ready"
+                else "Configured default workflow is missing or not published."
+                if project_exists is True and default_workflow_id
+                else "Default workflow resolvability check skipped."
+            ),
+            observed={"workflow_id": default_workflow_id, "readiness": default_ready},
+            expected="active_version_id exists and points to stored workflow version",
+            remediation="Publish the configured workflow and ensure it exists in the same tenant/project scope.",
+            docs_ref=urls["projects_create"],
+        )
+
+        chat_url = str(manifest.get("chat_api_url", ""))
+        add_check(
+            "integration_manifest_chat_canonical",
+            status="PASS" if chat_url.endswith("/chat") else "FAIL",
+            severity="critical",
+            code="CANONICAL_CHAT_URL_OK" if chat_url.endswith("/chat") else "CANONICAL_CHAT_URL_INVALID",
+            title="Integration manifest uses canonical /chat endpoint",
+            message=(
+                "chat_api_url points to canonical /chat endpoint."
+                if chat_url.endswith("/chat")
+                else "chat_api_url does not point to canonical /chat endpoint."
+            ),
+            observed=chat_url,
+            expected=".../chat",
+            remediation="Set manifest chat_api_url to canonical POST /chat.",
+            docs_ref=f"{urls['api_reference']}#chat-first-integration-for-external-clients",
+        )
+
+        openapi_text = _OPENAPI_SPEC_PATH.read_text(encoding="utf-8") if _OPENAPI_SPEC_PATH.exists() else ""
         chatkit_alias_contract_markers = (
             "  /chatkit:",
             "      deprecated: true",
@@ -2978,104 +3136,137 @@ def create_app(
         chatkit_alias_contract_ok = all(marker in openapi_text for marker in chatkit_alias_contract_markers)
         add_check(
             "openapi_chatkit_alias_policy",
-            "OpenAPI exposes /chatkit as deprecated alias with sunset + 410 lifecycle",
-            chatkit_alias_contract_ok,
-            "ok"
-            if chatkit_alias_contract_ok
-            else "missing one of: /chatkit, deprecated:true, Deprecation header, Sunset header, 410 response",
+            status="PASS" if chatkit_alias_contract_ok else "FAIL",
+            severity="medium",
+            code="CHATKIT_ALIAS_POLICY_OK" if chatkit_alias_contract_ok else "CHATKIT_ALIAS_POLICY_MISSING",
+            title="OpenAPI exposes /chatkit as deprecated alias with sunset + 410 lifecycle",
+            message=(
+                "OpenAPI alias policy markers are aligned."
+                if chatkit_alias_contract_ok
+                else "Missing one of: /chatkit, deprecated:true, Deprecation header, Sunset header, 410 response."
+            ),
+            observed="present" if chatkit_alias_contract_ok else "missing markers",
+            expected="deprecated alias documented with fixed sunset lifecycle",
+            remediation="Update OpenAPI /chatkit docs to include deprecated marker, headers, and 410 behavior.",
+            docs_ref=urls["openapi"],
         )
+
+        alias_url = str(manifest.get("deprecated_chat_alias_url") or "")
+        alias_referenced = alias_url.endswith("/chatkit")
+        alias_after_sunset = now >= _CHATKIT_ALIAS_SUNSET_AT
         add_check(
-            "integration_log_buffer_configured",
-            "Integration log buffer is configured for troubleshooting",
-            integration_logs.maxlen is not None and integration_logs.maxlen >= _MAX_AGENT_INTEGRATION_LOG_LIMIT,
-            f"capacity={integration_logs.maxlen}",
+            "deprecated_chatkit_partner_reference",
+            status=(
+                "FAIL"
+                if alias_referenced and alias_after_sunset
+                else "WARN"
+                if alias_referenced
+                else "PASS"
+            ),
+            severity="high",
+            code=(
+                "DEPRECATED_CHATKIT_REFERENCE_AFTER_SUNSET"
+                if alias_referenced and alias_after_sunset
+                else "DEPRECATED_CHATKIT_REFERENCE"
+                if alias_referenced
+                else "DEPRECATED_CHATKIT_NOT_REFERENCED"
+            ),
+            title="Deprecated /chatkit references are controlled",
+            message=(
+                "Deprecated /chatkit remains referenced as compatibility alias before sunset."
+                if alias_referenced and not alias_after_sunset
+                else "Deprecated /chatkit is still referenced after sunset and must be removed."
+                if alias_referenced and alias_after_sunset
+                else "No /chatkit references found in partner-facing manifest."
+            ),
+            observed={"deprecated_chat_alias_url": alias_url, "sunset_at": "2026-04-04T00:00:00Z"},
+            expected="compatibility alias only before sunset; removed or blocked after sunset",
+            remediation="Keep /chat canonical and remove /chatkit references from partner-facing config after sunset.",
+            docs_ref=f"{urls['api_reference']}#chat-first-integration-for-external-clients",
         )
 
-        sample_valid_draft = {
-            "nodes": [{"id": "start", "type": "start"}, {"id": "end", "type": "end"}],
-            "edges": [{"source": "start", "target": "end"}],
-            "variables_schema": {},
-        }
-        valid_errors = _validate_draft(sample_valid_draft)
+        required_headers = manifest.get("required_headers", [])
+        required_header_set = {item for item in required_headers if isinstance(item, str)}
         add_check(
-            "sample_valid_draft_passes",
-            "Sample valid draft passes runtime validation",
-            len(valid_errors) == 0,
-            "ok" if not valid_errors else "; ".join(valid_errors),
+            "required_headers_complete",
+            status="PASS" if {"Authorization", "X-Tenant-Id"}.issubset(required_header_set) else "FAIL",
+            severity="high",
+            code=(
+                "REQUIRED_HEADERS_OK"
+                if {"Authorization", "X-Tenant-Id"}.issubset(required_header_set)
+                else "REQUIRED_HEADERS_MISSING"
+            ),
+            title="Manifest required headers are complete",
+            message=(
+                "Manifest includes Authorization and X-Tenant-Id as required headers."
+                if {"Authorization", "X-Tenant-Id"}.issubset(required_header_set)
+                else "Manifest is missing one or more required headers."
+            ),
+            observed=required_headers,
+            expected=["Authorization", "X-Tenant-Id"],
+            remediation="Ensure required_headers includes Authorization and X-Tenant-Id.",
+            docs_ref=f"{urls['api_reference']}#required-integration-headers",
         )
 
-        sample_invalid_draft = {"nodes": [{"id": "start", "type": "start"}], "edges": []}
-        invalid_errors = _validate_draft(sample_invalid_draft)
+        optional_headers = manifest.get("optional_headers", [])
+        optional_header_set = {item for item in optional_headers if isinstance(item, str)}
         add_check(
-            "sample_invalid_draft_fails",
-            "Sample invalid draft fails runtime validation",
-            len(invalid_errors) > 0,
-            "ok" if invalid_errors else "expected validation errors, got none",
+            "optional_observability_headers_guidance",
+            status="PASS" if {"X-Correlation-Id", "X-Trace-Id"}.issubset(optional_header_set) else "WARN",
+            severity="medium",
+            code=(
+                "OPTIONAL_OBSERVABILITY_HEADERS_OK"
+                if {"X-Correlation-Id", "X-Trace-Id"}.issubset(optional_header_set)
+                else "OPTIONAL_OBSERVABILITY_HEADERS_INCOMPLETE"
+            ),
+            title="Optional observability headers guidance",
+            message=(
+                "Manifest includes X-Correlation-Id and X-Trace-Id guidance."
+                if {"X-Correlation-Id", "X-Trace-Id"}.issubset(optional_header_set)
+                else "Manifest optional header guidance is missing observability headers."
+            ),
+            observed=optional_headers,
+            expected=["X-Correlation-Id", "X-Trace-Id"],
+            remediation="Include X-Correlation-Id and X-Trace-Id in optional_headers guidance.",
+            docs_ref=f"{urls['api_reference']}#required-integration-headers",
         )
 
-        if isinstance(export_schema, dict):
-            export_const = (
-                export_schema.get("properties", {})
-                .get("schema_version", {})
-                .get("const")
-            )
-            add_check(
-                "export_schema_version_const",
-                "Export schema pins schema_version=workflow_export_v1",
-                export_const == "workflow_export_v1",
-                f"const={export_const!r}",
-            )
+        secret_expiry = manifest.get("secret_expiry") if isinstance(manifest, dict) else {}
+        warning_level = secret_expiry.get("warning_level") if isinstance(secret_expiry, dict) else None
+        add_check(
+            "secret_expiry_warning_level_present",
+            status="PASS" if isinstance(warning_level, str) and warning_level else "WARN",
+            severity="medium",
+            code="SECRET_EXPIRY_WARNING_PRESENT" if isinstance(warning_level, str) and warning_level else "SECRET_EXPIRY_WARNING_MISSING",
+            title="Secret expiry and rotation warning metadata",
+            message=(
+                "Manifest includes secret expiry warning level."
+                if isinstance(warning_level, str) and warning_level
+                else "Secret expiry warning metadata is missing."
+            ),
+            observed=secret_expiry,
+            expected={"warning_level": "info|warn|critical|unknown"},
+            remediation="Populate secret_expiry warning metadata in integration manifest.",
+            docs_ref=urls["integration_kit_json"],
+        )
 
-        if isinstance(draft_schema, dict):
-            node_types = (
-                draft_schema.get("$defs", {})
-                .get("nodeType", {})
-                .get("enum", [])
-            )
-            add_check(
-                "draft_schema_node_types",
-                "Draft schema declares all supported node types",
-                isinstance(node_types, list) and "start" in node_types and "end" in node_types,
-                f"node_types_count={len(node_types) if isinstance(node_types, list) else 0}",
-            )
-            set_state_config = (
-                draft_schema.get("$defs", {})
-                .get("setStateConfig", {})
-            )
-            set_state_properties = set_state_config.get("properties", {}) if isinstance(set_state_config, dict) else {}
-            supports_batch_assignments = isinstance(set_state_properties, dict) and "assignments" in set_state_properties
-            add_check(
-                "draft_schema_set_state_batch_assignments",
-                "Draft schema declares Set State batch assignments support",
-                supports_batch_assignments,
-                "ok" if supports_batch_assignments else "missing $defs.setStateConfig.properties.assignments",
-            )
-
-        if isinstance(routing_schema, dict):
-            route_types = (
-                routing_schema.get("properties", {})
-                .get("route_type", {})
-                .get("enum", [])
-            )
-            add_check(
-                "routing_schema_route_types",
-                "Routing schema declares required route_type variants",
-                isinstance(route_types, list) and "START_WORKFLOW" in route_types and "DISAMBIGUATE" in route_types,
-                f"route_types_count={len(route_types) if isinstance(route_types, list) else 0}",
-            )
-
-        passed = len([check for check in checks if check["ok"]])
+        pass_count = len([item for item in checks if item["status"] == "PASS"])
+        warn_count = len([item for item in checks if item["status"] == "WARN"])
+        fail_count = len([item for item in checks if item["status"] == "FAIL"])
         total = len(checks)
+        overall_status = "FAIL" if fail_count > 0 else "WARN" if warn_count > 0 else "PASS"
 
         return {
-            "title": "WorkCore Agent Integration Test",
+            "title": "WorkCore Agent Integration Doctor",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "correlation_id": _correlation_id(request),
-            "urls": _public_doc_urls(request),
+            "urls": urls,
+            "integration_manifest": manifest,
             "summary": {
-                "status": "PASS" if passed == total else "FAIL",
-                "passed": passed,
-                "failed": total - passed,
+                "status": overall_status,
+                "passed": pass_count,
+                "warned": warn_count,
+                "failed": fail_count,
                 "total": total,
             },
             "checks": checks,
@@ -3299,6 +3490,11 @@ def create_app(
             "",
             "## Machine-readable bundle",
             f"- JSON bundle: {urls['integration_kit_json']}",
+            "- Canonical manifest path in bundle: `integration_manifest`",
+            "- Canonical chat endpoint in manifest: `chat_api_url` (must be `/chat`)",
+            "- Deprecated compatibility alias metadata: `/chatkit` with fixed sunset + remediation",
+            f"- Internal operator onboarding portal: {urls['partner_access_portal']}",
+            f"- Internal onboarding ZIP generator: {urls['partner_onboard_package']}",
             "",
             "## Detailed troubleshooting logs",
             "- Use integration logs to debug onboarding failures quickly.",
@@ -3322,7 +3518,7 @@ def create_app(
             "6. Create/publish workflow via `/workflows` and `/workflows/{workflow_id}/publish`.",
             "7. Register workflow in project routing index via `POST /projects/{project_id}/workflow-definitions`.",
             "8. Configure project orchestrator via `POST /projects/{project_id}/orchestrators`.",
-            "9. Run integration checks and ensure status=PASS.",
+            "9. Run integration doctor checks and ensure there are no FAIL items (WARN items require remediation planning).",
             "10. For project routing, call `POST /orchestrator/messages` with `project_id`, `session_id`, `user_id`, and `message`.",
             "11. For offline routing quality checks, call `POST /orchestrator/eval/replay` with labeled cases.",
             "12. Use context API (`/orchestrator/context/get|set|unset`) for thread/session context hydration.",
@@ -3513,12 +3709,13 @@ def create_app(
             )
             return _error(request, "INTERNAL", "invalid local schema files", 500)
 
-        integration_test = _integration_check_report(request)
+        integration_test = await _integration_check_report(request)
         summary = integration_test.get("summary", {})
         payload = {
             "title": "WorkCore Agent Integration Kit",
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "urls": _public_doc_urls(request),
+            "integration_manifest": integration_test.get("integration_manifest", {}),
             "integration_test": integration_test,
             "docs": {
                 "api_reference_markdown": _API_REFERENCE_PATH.read_text(encoding="utf-8"),
@@ -3540,6 +3737,7 @@ def create_app(
             context={
                 "integration_status": summary.get("status"),
                 "checks_total": summary.get("total"),
+                "checks_warned": summary.get("warned"),
                 "checks_failed": summary.get("failed"),
             },
         )
@@ -3551,30 +3749,52 @@ def create_app(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WorkCore Agent Integration Test</title>
+  <title>WorkCore Integration Doctor</title>
   <style>
-    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; }
-    .muted { color: #666; }
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+    .muted { color: #5f6472; }
     .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
-    .ok { color: #0a7d31; font-weight: 600; }
-    .fail { color: #b00020; font-weight: 600; }
+    .pass { color: #0a7d31; font-weight: 700; }
+    .warn { color: #9a6700; font-weight: 700; }
+    .fail { color: #b00020; font-weight: 700; }
     textarea { width: 100%; min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     pre { background: #f7f7f8; padding: 12px; border-radius: 8px; overflow: auto; }
     button { padding: 8px 12px; cursor: pointer; }
     .card { border: 1px solid #e6e6e8; border-radius: 8px; padding: 12px; margin-top: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .check { border: 1px solid #e6e6e8; border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+    .manifest { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #f8fafc; padding: 8px; border-radius: 6px; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <h1>WorkCore Agent Integration Test</h1>
-  <p class="muted">Use this page to verify integration readiness and validate workflow drafts before publish.</p>
+  <h1>WorkCore Integration Doctor</h1>
+  <p class="muted">Run canonical onboarding readiness checks and review exact remediation steps.</p>
   <div class="row">
+    <input id="projectId" placeholder="Optional project_id for scope checks" style="min-width: 260px;" />
     <button id="refresh">Run checks</button>
     <a href="/agent-integration-test.json" target="_blank" rel="noopener noreferrer">Open JSON report</a>
-    <a href="/agent-integration-kit" target="_blank" rel="noopener noreferrer">Open integration kit</a>
-    <a href="/agent-integration-logs?limit=100" target="_blank" rel="noopener noreferrer">Open integration logs (auth required)</a>
+    <a href="/agent-integration-kit.json" target="_blank" rel="noopener noreferrer">Open integration manifest</a>
+    <a href="/internal/partner-access" target="_blank" rel="noopener noreferrer">Open operator onboarding portal</a>
   </div>
   <div id="summary" class="card muted">Loading...</div>
-  <div id="checks" class="card"></div>
+  <div id="manifest" class="card"></div>
+  <div class="grid">
+    <div class="card">
+      <h3 class="fail">FAIL</h3>
+      <div id="checksFail"></div>
+    </div>
+    <div class="card">
+      <h3 class="warn">WARN</h3>
+      <div id="checksWarn"></div>
+    </div>
+    <div class="card">
+      <h3 class="pass">PASS</h3>
+      <div id="checksPass"></div>
+    </div>
+  </div>
 
   <h2>Integration Logs</h2>
   <p class="muted">Use logs to troubleshoot integration errors by correlation or trace context. Bearer auth is required for this endpoint.</p>
@@ -3594,32 +3814,69 @@ def create_app(
 
   <script>
     const summaryEl = document.getElementById('summary');
-    const checksEl = document.getElementById('checks');
+    const manifestEl = document.getElementById('manifest');
+    const checksFailEl = document.getElementById('checksFail');
+    const checksWarnEl = document.getElementById('checksWarn');
+    const checksPassEl = document.getElementById('checksPass');
     const logsTokenInput = document.getElementById('logsToken');
     const logsOutput = document.getElementById('logsOutput');
     const validateOutput = document.getElementById('validateOutput');
     const draftInput = document.getElementById('draftInput');
+    const projectIdInput = document.getElementById('projectId');
+
+    function statusClass(status) {
+      if (status === 'PASS') return 'pass';
+      if (status === 'WARN') return 'warn';
+      return 'fail';
+    }
+
+    function renderCheck(check) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'check';
+      const docsRef = check.docs_ref ? `<a href="${check.docs_ref}" target="_blank" rel="noopener noreferrer">docs</a>` : '';
+      wrapper.innerHTML =
+        `<div class="row"><span class="${statusClass(check.status)}">${check.status}</span><span>${check.id}</span><span class="muted">${check.severity || ''}</span></div>` +
+        `<div><strong>${check.title || ''}</strong></div>` +
+        `<div class="muted">${check.message || ''}</div>` +
+        `<div class="muted">Observed: ${JSON.stringify(check.observed)}</div>` +
+        `<div class="muted">Expected: ${JSON.stringify(check.expected)}</div>` +
+        `<div>Remediation: ${check.remediation || ''}</div>` +
+        `<div class="muted">${docsRef}</div>`;
+      return wrapper;
+    }
 
     async function runChecks() {
       summaryEl.textContent = 'Loading...';
-      checksEl.innerHTML = '';
-      const response = await fetch('/agent-integration-test.json');
+      manifestEl.textContent = '';
+      checksFailEl.innerHTML = '';
+      checksWarnEl.innerHTML = '';
+      checksPassEl.innerHTML = '';
+
+      const projectId = (projectIdInput.value || '').trim();
+      const params = new URLSearchParams();
+      if (projectId) params.set('project_id', projectId);
+      const query = params.toString();
+      const url = query ? `/agent-integration-test.json?${query}` : '/agent-integration-test.json';
+
+      const response = await fetch(url);
       const payload = await response.json();
       const summary = payload.summary || {};
-      const statusClass = summary.status === 'PASS' ? 'ok' : 'fail';
-      summaryEl.innerHTML = '<div class=\"row\"><span class=\"' + statusClass + '\">' + (summary.status || 'UNKNOWN') + '</span>' +
-        '<span>Passed: ' + (summary.passed ?? 0) + '/' + (summary.total ?? 0) + '</span>' +
-        '<span class=\"muted\">Generated: ' + (payload.generated_at || '') + '</span></div>';
+      summaryEl.innerHTML =
+        `<div class="row"><span class="${statusClass(summary.status)}">${summary.status || 'UNKNOWN'}</span>` +
+        `<span>pass=${summary.passed ?? 0}</span><span>warn=${summary.warned ?? 0}</span><span>fail=${summary.failed ?? 0}</span>` +
+        `<span class="muted">Generated: ${payload.generated_at || ''}</span></div>`;
+
+      const manifest = payload.integration_manifest || {};
+      manifestEl.innerHTML =
+        '<h3>Canonical Manifest Snapshot</h3>' +
+        `<div class="manifest">api_base_url=${manifest.api_base_url || ''}\nchat_api_url=${manifest.chat_api_url || ''}\nauth_profile=${(manifest.auth_profile || {}).type || ''}\nsecret_warning=${((manifest.secret_expiry || {}).warning_level || '')}: ${((manifest.secret_expiry || {}).warning_message || '')}</div>`;
+
       const checks = payload.checks || [];
       checks.forEach((check) => {
-        const row = document.createElement('div');
-        row.className = 'row';
-        const cls = check.ok ? 'ok' : 'fail';
-        row.innerHTML = '<span class=\"' + cls + '\">' + (check.ok ? 'PASS' : 'FAIL') + '</span>' +
-          '<span>' + check.id + '</span>' +
-          '<span class=\"muted\">' + (check.description || '') + '</span>' +
-          '<span class=\"muted\">' + (check.detail || '') + '</span>';
-        checksEl.appendChild(row);
+        const item = renderCheck(check);
+        if (check.status === 'FAIL') checksFailEl.appendChild(item);
+        else if (check.status === 'WARN') checksWarnEl.appendChild(item);
+        else checksPassEl.appendChild(item);
       });
     }
 
@@ -3630,9 +3887,7 @@ def create_app(
         return;
       }
       const authValue = token.startsWith('Bearer ') ? token : 'Bearer ' + token;
-      const response = await fetch('/agent-integration-logs?limit=50', {
-        headers: { Authorization: authValue }
-      });
+      const response = await fetch('/agent-integration-logs?limit=50', { headers: { Authorization: authValue } });
       const payload = await response.json();
       logsOutput.textContent = JSON.stringify(payload, null, 2);
     }
@@ -3670,7 +3925,7 @@ def create_app(
         return PlainTextResponse(html, media_type="text/html")
 
     async def agent_integration_test_json(request: Request) -> JSONResponse:
-        report = _integration_check_report(request)
+        report = await _integration_check_report(request)
         summary = report.get("summary", {})
         _integration_log(
             request,
@@ -3680,6 +3935,7 @@ def create_app(
             context={
                 "integration_status": summary.get("status"),
                 "checks_total": summary.get("total"),
+                "checks_warned": summary.get("warned"),
                 "checks_failed": summary.get("failed"),
             },
         )

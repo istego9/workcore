@@ -2335,6 +2335,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("API changelog policy", markdown_response.text)
         self.assertIn("Previous API version", markdown_response.text)
         self.assertIn("Current API version", markdown_response.text)
+        self.assertIn("integration_manifest", markdown_response.text)
         self.assertIn("Special instructions and examples", markdown_response.text)
         self.assertIn("set_state.assignments[]", markdown_response.text)
         self.assertIn("Chat Frontend Integration (Fork)", markdown_response.text)
@@ -2350,12 +2351,16 @@ class ApiTests(unittest.TestCase):
         payload = json_response.json()
         self.assertEqual(payload["title"], "WorkCore Agent Integration Kit")
         self.assertIn("urls", payload)
+        self.assertIn("integration_manifest", payload)
         self.assertIn("schemas", payload)
         self.assertIn("integration_logs", payload["urls"])
         self.assertIn("projects_list", payload["urls"])
         self.assertIn("projects_create", payload["urls"])
         self.assertIn("chat_endpoint", payload["urls"])
         self.assertTrue(payload["urls"]["chat_endpoint"].endswith("/chat"))
+        self.assertTrue(payload["integration_manifest"]["chat_api_url"].endswith("/chat"))
+        self.assertTrue(payload["integration_manifest"]["deprecated_chat_alias_url"].endswith("/chatkit"))
+        self.assertEqual(payload["integration_manifest"]["auth_profile"]["type"], "oauth_client_credentials")
         self.assertIn("project_orchestrator_upsert_template", payload["urls"])
         self.assertIn("project_workflow_definition_upsert_template", payload["urls"])
         self.assertEqual(
@@ -2380,18 +2385,25 @@ class ApiTests(unittest.TestCase):
 
         integration_test_ui = self.client.get("/agent-integration-test")
         self.assertEqual(integration_test_ui.status_code, 200)
-        self.assertIn("WorkCore Agent Integration Test", integration_test_ui.text)
-        self.assertIn("Open integration logs (auth required)", integration_test_ui.text)
+        self.assertIn("WorkCore Integration Doctor", integration_test_ui.text)
+        self.assertIn("Open operator onboarding portal", integration_test_ui.text)
         self.assertIn("Bearer token for /agent-integration-logs", integration_test_ui.text)
         self.assertIn("Logs require Authorization: Bearer", integration_test_ui.text)
 
         integration_test_json = self.client.get("/agent-integration-test.json")
         self.assertEqual(integration_test_json.status_code, 200)
         report = integration_test_json.json()
-        self.assertEqual(report["summary"]["status"], "PASS")
+        self.assertEqual(report["summary"]["status"], "WARN")
         self.assertGreater(report["summary"]["total"], 0)
+        self.assertIn("warned", report["summary"])
+        self.assertIn("integration_manifest", report)
         self.assertTrue(
-            any(check.get("id") == "draft_schema_set_state_batch_assignments" for check in report["checks"])
+            any(
+                check.get("id") == "auth_profile_canonical"
+                and check.get("status") == "PASS"
+                and check.get("ok") is True
+                for check in report["checks"]
+            )
         )
         self.assertTrue(
             any(
@@ -2399,6 +2411,22 @@ class ApiTests(unittest.TestCase):
                 for check in report["checks"]
             )
         )
+        self.assertTrue(
+            any(
+                check.get("id") == "deprecated_chatkit_partner_reference"
+                and check.get("status") == "WARN"
+                for check in report["checks"]
+            )
+        )
+        first_check = report["checks"][0]
+        self.assertIn("severity", first_check)
+        self.assertIn("code", first_check)
+        self.assertIn("title", first_check)
+        self.assertIn("message", first_check)
+        self.assertIn("observed", first_check)
+        self.assertIn("expected", first_check)
+        self.assertIn("remediation", first_check)
+        self.assertIn("docs_ref", first_check)
         self.assertIn("projects_list", report["urls"])
         self.assertIn("projects_create", report["urls"])
         self.assertIn("chat_endpoint", report["urls"])
@@ -2492,6 +2520,7 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["urls"]["openapi"], "https://api.runwcr.com/openapi.yaml")
         self.assertEqual(payload["urls"]["chat_endpoint"], "https://api.runwcr.com/chat")
+        self.assertEqual(payload["integration_manifest"]["chat_api_url"], "https://api.runwcr.com/chat")
 
     def test_agent_integration_kit_falls_back_from_internal_origin_host(self):
         internal_base_url = "http://ca-orchestrator.graybush-234133fd.uaenorth.azurecontainerapps.io"
@@ -2512,6 +2541,38 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["urls"]["openapi"], "https://api.hq21.tech/openapi.yaml")
         self.assertEqual(payload["urls"]["api_reference"], "https://api.hq21.tech/api-reference")
+
+    def test_agent_integration_doctor_project_scope_checks_pass_with_valid_project_defaults(self):
+        project_id = "proj_doctor_ready"
+        workflow_id, _ = self._create_workflow(headers={"X-Project-Id": project_id, "X-Tenant-Id": "local"})
+
+        project_response = self.client.post(
+            "/projects",
+            json={
+                "project_id": project_id,
+                "project_name": "Doctor Ready",
+                "settings": {"default_chat_workflow_id": workflow_id},
+            },
+            headers={"X-Tenant-Id": "local"},
+        )
+        self.assertEqual(project_response.status_code, 201)
+
+        report_response = self.client.get(
+            "/agent-integration-test.json",
+            headers={
+                "Authorization": "Bearer test_token_abcdefghijklmnopqrstuvwxyz",
+                "X-Tenant-Id": "local",
+                "X-Project-Id": project_id,
+            },
+        )
+        self.assertEqual(report_response.status_code, 200)
+        report = report_response.json()
+        checks = {item["id"]: item for item in report["checks"]}
+        self.assertEqual(checks["project_exists_in_tenant"]["status"], "PASS")
+        self.assertEqual(checks["default_chat_workflow_configured"]["status"], "PASS")
+        self.assertEqual(checks["default_chat_workflow_resolvable"]["status"], "PASS")
+        self.assertEqual(checks["integration_manifest_chat_canonical"]["status"], "PASS")
+        self.assertIn(report["summary"]["status"], {"PASS", "WARN"})
 
     def test_agent_integration_logs_reject_invalid_limit(self):
         response = self.client.get("/agent-integration-logs", params={"limit": "bad"})
@@ -2768,12 +2829,23 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         archive = zipfile.ZipFile(io.BytesIO(response.content))
         self.assertIn("README.md", archive.namelist())
         self.assertIn(".env.partner", archive.namelist())
+        self.assertIn("integration_manifest.json", archive.namelist())
+        self.assertIn("curl_examples/check_auth.sh", archive.namelist())
+        self.assertIn("curl_examples/check_project_scope.sh", archive.namelist())
+        self.assertIn("curl_examples/check_chat.sh", archive.namelist())
         env_text = archive.read(".env.partner").decode("utf-8")
         readme_text = archive.read("README.md").decode("utf-8")
+        manifest = json.loads(archive.read("integration_manifest.json").decode("utf-8"))
         self.assertIn("CLIENT_ID=app_123", env_text)
         self.assertIn("CLIENT_SECRET=secret_abc", env_text)
+        self.assertIn("CHAT_API_URL=${BASE_URL}/chat", env_text)
+        self.assertIn("DEPRECATED_CHAT_ALIAS_URL=${BASE_URL}/chatkit", env_text)
         self.assertIn("Decoded JWT note", env_text)
         self.assertIn("Decoded JWT note", readme_text)
+        self.assertIn("Canonical chat endpoint:", readme_text)
+        self.assertEqual(manifest["auth_profile"]["type"], "oauth_client_credentials")
+        self.assertTrue(manifest["chat_api_url"].endswith("/chat"))
+        self.assertTrue(manifest["deprecated_chat_alias_url"].endswith("/chatkit"))
 
     def test_partner_portal_autogenerates_partner_and_tenant_ids(self):
         captured_request_data = {}
@@ -2850,10 +2922,14 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         archive = zipfile.ZipFile(io.BytesIO(response.content))
         readme_text = archive.read("README.md").decode("utf-8")
         env_text = archive.read(".env.partner").decode("utf-8")
+        manifest = json.loads(archive.read("integration_manifest.json").decode("utf-8"))
         metadata = json.loads(archive.read("metadata.json").decode("utf-8"))
 
         self.assertIn("https://api.runwcr.com", readme_text)
         self.assertIn("BASE_URL=https://api.runwcr.com", env_text)
+        self.assertEqual(manifest["api_base_url"], "https://api.runwcr.com")
+        self.assertEqual(manifest["allowed_domains"], ["api.runwcr.com"])
+        self.assertTrue(manifest["chat_api_url"].endswith("/chat"))
         self.assertEqual(metadata["base_url"], "https://api.runwcr.com")
         self.assertEqual(metadata["allowed_domains"], ["api.runwcr.com"])
         self.assertNotIn("https://api.hq21.tech", readme_text)
