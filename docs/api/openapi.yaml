@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.3
+  version: 0.24.4
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -280,12 +280,18 @@ paths:
   /chat:
     parameters:
       - $ref: '#/components/parameters/TenantIdRequired'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/CorrelationId'
     post:
       tags: [chatkit]
       summary: ChatKit advanced integration endpoint
       description: >
         Handles ChatKit thread/message/action requests for external clients.
         Strict multi-tenant mode requires `X-Tenant-Id` on every request.
+        For `threads.create`, workflow resolution is project-centric and additive:
+        `metadata.workflow_id` keeps explicit direct workflow mode, otherwise
+        `metadata.project_id`, otherwise `X-Project-Id`, resolves the project's
+        configured default chat workflow.
         For interactive operations (`threads.create`, `threads.add_user_message`, `threads.custom_action`)
         the response is streamed as SSE where each `data:` line is a JSON ChatKit stream event.
         For `input.transcribe` requests, the response is non-streaming JSON with transcription text.
@@ -296,12 +302,28 @@ paths:
             schema:
               $ref: '#/components/schemas/ChatKitRequest'
             examples:
-              thread_create:
-                summary: Create thread and start run
+              thread_create_project_default:
+                summary: Create thread from project default chat workflow
+                value:
+                  metadata:
+                    project_id: proj_chat
+                    external_user_id: user_42
+                    external_session_id: session_abc
+                  type: threads.create
+                  params:
+                    input:
+                      content:
+                        - type: input_text
+                          text: start
+                      attachments: []
+                      inference_options: {}
+              thread_create_explicit_workflow:
+                summary: Create thread and start run with explicit workflow override
                 value:
                   metadata:
                     workflow_id: wf_chat
                     workflow_version_id: v1
+                    project_id: proj_chat
                     external_user_id: user_42
                     external_session_id: session_abc
                   type: threads.create
@@ -377,13 +399,66 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error: { type: string }
-        '422': { $ref: '#/components/responses/ErrorResponse' }
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authorization header is invalid
+                correlation_id: corr_123
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                project_not_found:
+                  value:
+                    error:
+                      code: ERR_PROJECT_NOT_FOUND
+                      message: project not found
+                    correlation_id: corr_123
+                default_workflow_not_found:
+                  value:
+                    error:
+                      code: CHAT_DEFAULT_WORKFLOW_NOT_FOUND
+                      message: project default chat workflow is missing or not published
+                    correlation_id: corr_123
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED
+                  message: project default chat workflow is not configured
+                correlation_id: corr_123
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                tenant_required:
+                  value:
+                    error:
+                      code: ERR_TENANT_REQUIRED
+                      message: X-Tenant-Id header is required
+                    correlation_id: corr_123
+                project_scope_required:
+                  value:
+                    error:
+                      code: CHAT_PROJECT_SCOPE_REQUIRED
+                      message: metadata.project_id or X-Project-Id is required when metadata.workflow_id is omitted
+                    correlation_id: corr_123
   /chatkit:
     parameters:
       - $ref: '#/components/parameters/TenantIdRequired'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/CorrelationId'
     post:
       tags: [chatkit]
       summary: Deprecated ChatKit compatibility alias
@@ -391,7 +466,8 @@ paths:
       description: >
         Temporary compatibility alias for `POST /chat`.
         During transition window this endpoint returns the same payload/SSE contract as
-        `POST /chat` and emits deprecation lifecycle headers:
+        `POST /chat`, including the same project-centric `threads.create` resolution order
+        and typed JSON errors, and emits deprecation lifecycle headers:
         `Deprecation: true`, `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`.
         Starting April 4, 2026 at 00:00 UTC, this endpoint returns `410 Gone`.
       requestBody:
@@ -427,9 +503,23 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error: { type: string }
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authorization header is invalid
+                correlation_id: corr_123
+        '404':
+          description: Not found (same as `POST /chat`).
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '410':
           description: Deprecated endpoint sunset reached; use `POST /chat`.
           headers:
@@ -445,8 +535,20 @@ paths:
                 error:
                   code: DEPRECATED_ENDPOINT
                   message: POST /chatkit is no longer available; use POST /chat
+                correlation_id: corr_123
         '422':
           description: Validation error (same as `POST /chat`).
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: Conflict (same as `POST /chat`).
           headers:
             Deprecation:
               $ref: '#/components/headers/Deprecation'
@@ -696,6 +798,8 @@ paths:
               $ref: '#/components/schemas/ProjectUpdateRequest'
             example:
               project_name: HQ21 Production
+              settings:
+                default_chat_workflow_id: wf_chat_support
       responses:
         '200':
           description: Updated
@@ -1614,7 +1718,7 @@ components:
       example:
         error:
           code: INVALID_ARGUMENT
-          message: "workflow_id is required"
+          message: "request body must be an object"
         correlation_id: "corr_123"
 
     PartnerSelfServiceOnboardRequest:
@@ -1683,23 +1787,31 @@ components:
       type: object
       description: >
         Integration metadata forwarded by ChatKit clients.
-        `workflow_id` (and optional `workflow_version_id`) is required on `threads.create`
-        to bind a new thread to a workflow run.
+        For `threads.create`, resolution order is
+        `metadata.workflow_id` -> `metadata.project_id` -> `X-Project-Id`.
+        `metadata.workflow_id` remains fully backward-compatible, and optional
+        `workflow_version_id` still overrides the active published version in explicit mode.
       properties:
         workflow_id: { type: string }
         workflow_version_id: { type: string }
+        project_id:
+          type: string
+          description: >
+            Project scope used to resolve the project's configured default chat workflow
+            when `workflow_id` is omitted.
         external_user_id: { type: string }
         external_session_id: { type: string }
       additionalProperties: true
 
     ChatKitThreadCreateRequest:
       type: object
+      description: >
+        Starts a new thread. A caller may provide either an explicit `metadata.workflow_id`
+        or project scope only (`metadata.project_id` or `X-Project-Id`) to resolve the
+        project's default chat workflow.
       properties:
         metadata:
-          allOf:
-            - $ref: '#/components/schemas/ChatKitRequestMetadata'
-            - type: object
-              required: [workflow_id]
+          $ref: '#/components/schemas/ChatKitRequestMetadata'
         type:
           type: string
           enum: [threads.create]
@@ -2358,16 +2470,32 @@ components:
           type: string
           nullable: true
         settings:
-          type: object
+          $ref: '#/components/schemas/ProjectSettings'
       required: [project_id, project_name]
 
     ProjectUpdateRequest:
       type: object
+      description: >
+        Partial project update. Supply at least one of `project_name` or `settings`.
       properties:
         project_name:
           type: string
           description: Human-readable project display name.
-      required: [project_name]
+        settings:
+          $ref: '#/components/schemas/ProjectSettings'
+
+    ProjectSettings:
+      type: object
+      description: Additive per-project settings bag.
+      properties:
+        default_chat_workflow_id:
+          type: string
+          nullable: true
+          description: >
+            Workflow served by project-scoped `threads.create` requests when the caller
+            omits `metadata.workflow_id`. The workflow must belong to the same tenant/project
+            scope and have an active published version.
+      additionalProperties: true
 
     Project:
       type: object
@@ -2383,7 +2511,7 @@ components:
           type: string
           nullable: true
         settings:
-          type: object
+          $ref: '#/components/schemas/ProjectSettings'
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [project_id, project_name, tenant_id, settings, created_at, updated_at]

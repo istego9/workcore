@@ -274,7 +274,7 @@ curl -sS -X POST "$BASE_URL/webhooks/inbound/default" \
 <li><code>X-Tenant-Id</code> is required</li>
 <li>send <code>Authorization: Bearer &lt;WORKCORE_API_AUTH_TOKEN&gt;</code> on protected public API calls</li>
 </ul>
-<p>For <code>threads.create</code>, include <code>metadata.workflow_id</code> (required).</p>
+<p>For <code>threads.create</code>, resolution order is <code>metadata.workflow_id</code> -&gt; <code>metadata.project_id</code> -&gt; <code>X-Project-Id</code>.</p>
 <h2>9. Error model</h2>
 <p>All API errors are returned in a standard envelope:</p>
 <pre><code class="language-json">{
@@ -288,7 +288,11 @@ curl -sS -X POST "$BASE_URL/webhooks/inbound/default" \
 <p>Common integration errors:</p>
 <ul>
 <li><code>401 UNAUTHORIZED</code>: missing or invalid bearer token</li>
+<li><code>404 ERR_PROJECT_NOT_FOUND</code>: project scope does not exist in the tenant</li>
 <li><code>422 ERR_PROJECT_ID_REQUIRED</code>: missing <code>X-Project-Id</code> on workflow endpoints</li>
+<li><code>422 CHAT_PROJECT_SCOPE_REQUIRED</code>: <code>threads.create</code> omitted both <code>metadata.workflow_id</code> and project scope</li>
+<li><code>409 CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED</code>: project exists but has no <code>settings.default_chat_workflow_id</code></li>
+<li><code>404 CHAT_DEFAULT_WORKFLOW_NOT_FOUND</code>: configured default chat workflow is missing, inactive, or unpublished</li>
 <li><code>400 INVALID_ARGUMENT</code>: invalid request body/parameters</li>
 </ul>
 <h2>10. Production checklist for external teams</h2>

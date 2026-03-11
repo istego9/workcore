@@ -79,6 +79,12 @@ Transitions:
 - `project_id` is required for orchestrated chat entry.
 - `workflow_id` present => direct workflow mode.
 - `workflow_id` absent => orchestrator mode (explicit `orchestrator_id` or project default).
+- Public chat (`POST /chat`) uses the same project-first scope model for `threads.create`:
+  - `metadata.workflow_id` => direct workflow mode
+  - else `metadata.project_id` => `projects.settings.default_chat_workflow_id`
+  - else `X-Project-Id` => `projects.settings.default_chat_workflow_id`
+  - else `CHAT_PROJECT_SCOPE_REQUIRED`
+- Project-scoped chat defaults are additive and do not replace direct workflow mode.
 - message envelope supports optional `message.type`:
   - `threads.add_user_message` (default behavior)
   - `threads.custom_action` (materializes payload/action fields into run inputs)

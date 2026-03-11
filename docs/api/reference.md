@@ -199,8 +199,16 @@ Runtime validates pinned references when present.
   - `project_name` (required, human-readable display name)
   - `default_orchestrator_id` (optional)
   - `settings` (optional object, default `{}`)
+    - `default_chat_workflow_id` (optional string; workflow used by project-scoped `POST /chat` thread creation)
 - Response: `201` with `project_id`, `project_name`, `tenant_id`, `default_orchestrator_id`, `settings`, timestamps.
 - Conflict behavior: if `project_id` already exists in the same tenant, API returns `409` with `error.code = CONFLICT`.
+- Update project: `PATCH /projects/{project_id}`
+  - Partial update.
+  - Request body:
+    - `project_name` (optional)
+    - `settings` (optional object)
+      - `default_chat_workflow_id` (optional string or `null`)
+  - Supply at least one of `project_name` or `settings`.
 
 ## Project registry bootstrap endpoints
 Public project-registry bootstrap no longer requires DB-side seeding.
@@ -377,6 +385,14 @@ For full user interaction (approval/forms/files) integrate `POST /chat` in addit
   - `threads.create`
   - `threads.add_user_message`
   - `threads.custom_action`
+- `threads.create` resolution order:
+  - `metadata.workflow_id` -> explicit direct workflow mode (backward-compatible)
+  - else `metadata.project_id` -> resolve `projects.settings.default_chat_workflow_id`
+  - else `X-Project-Id` -> resolve `projects.settings.default_chat_workflow_id`
+  - else return `CHAT_PROJECT_SCOPE_REQUIRED`
+- Project-scoped thread creation requires a configured published default workflow:
+  - missing project setting -> `CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED`
+  - configured workflow missing/inactive/unpublished -> `CHAT_DEFAULT_WORKFLOW_NOT_FOUND`
 - For `threads.custom_action`:
   - Preferred canonical field: `action.action_type`
   - Backward-compatible alias field: `action.type`
@@ -387,7 +403,8 @@ For full user interaction (approval/forms/files) integrate `POST /chat` in addit
     - scalar strings are typed when safe (`true/false`, numeric literals, `null`)
     - `documents` payload passes through unchanged
     - `state_exclude_paths` / `output_include_paths` are validated using run projection path rules
-- For `threads.create` pass `metadata.workflow_id` (and optional `metadata.workflow_version_id`).
+- Backward compatibility:
+  - Existing clients that pass `metadata.workflow_id` (and optional `metadata.workflow_version_id`) continue unchanged.
 - Recommended metadata keys for reconciliation:
   - `external_user_id`
   - `external_session_id`
@@ -395,10 +412,35 @@ For full user interaction (approval/forms/files) integrate `POST /chat` in addit
   - `thread_id` (chat session identity)
   - `run_id` (workflow execution identity)
   - `interrupt_id` (human-interaction step identity)
+  - resolved `project_id`
+  - resolved `workflow_id`
+  - `chat_resolution_mode` (`explicit_workflow`, `project_default`, `header_default`)
 
 `POST /chat` uses the same OAuth access token model as other protected API endpoints.
 
-## Example: start chat thread and run (SSE)
+## Example: start chat thread from project scope only (SSE)
+```bash
+curl -N -X POST "https://api.workcore.build/chat" \
+  -H "X-Project-Id: proj_chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "project_id": "proj_chat",
+      "external_user_id": "u_77",
+      "external_session_id": "sess_123"
+    },
+    "type": "threads.create",
+    "params": {
+      "input": {
+        "content": [{"type": "input_text", "text": "start"}],
+        "attachments": [],
+        "inference_options": {}
+      }
+    }
+  }'
+```
+
+## Example: explicit workflow override remains valid
 ```bash
 curl -N -X POST "https://api.workcore.build/chat" \
   -H "Content-Type: application/json" \
@@ -406,8 +448,7 @@ curl -N -X POST "https://api.workcore.build/chat" \
     "metadata": {
       "workflow_id": "wf_chat",
       "workflow_version_id": "v1",
-      "external_user_id": "u_77",
-      "external_session_id": "sess_123"
+      "project_id": "proj_chat"
     },
     "type": "threads.create",
     "params": {

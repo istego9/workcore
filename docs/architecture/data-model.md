@@ -260,6 +260,7 @@ Project-level routing scope for orchestrated chat entry.
 - project_name (text, not null) // human-readable display name
 - default_orchestrator_id (text, nullable)
 - settings (jsonb) // per-project thresholds, limits, feature flags
+  - `default_chat_workflow_id` (text, nullable) // published workflow used by project-scoped `POST /chat` thread creation
 - created_at, updated_at (timestamptz)
 
 PK: (tenant_id, project_id)

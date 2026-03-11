@@ -27,7 +27,8 @@ Recommended:
 - `Idempotency-Key` for mutating requests
 
 For ChatKit (`POST /chat`) include integration metadata in request body:
-- `metadata.workflow_id` (required on `threads.create`)
+- `metadata.workflow_id` (optional explicit workflow override on `threads.create`)
+- `metadata.project_id` (optional project scope for project-centric `threads.create`)
 - `metadata.workflow_version_id` (optional)
 - `metadata.external_user_id` (recommended)
 - `metadata.external_session_id` (recommended)

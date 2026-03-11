@@ -7,6 +7,38 @@ The format follows a simple date-based log.
 ## 2026-03-11
 
 ### API diff vs previous version
+- Previous API version: `0.24.3`
+- Current API version: `0.24.4`
+- Compatibility: additive (public chat thread creation is now project-centric by default while explicit workflow clients remain supported)
+
+### Added
+- Public chat project-scope resolution for `threads.create`:
+  - `metadata.project_id`
+  - `X-Project-Id`
+  - per-project setting `projects.settings.default_chat_workflow_id`
+- Stable typed chat errors:
+  - `CHAT_PROJECT_SCOPE_REQUIRED`
+  - `CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED`
+  - `CHAT_DEFAULT_WORKFLOW_NOT_FOUND`
+- Thread metadata / logs now persist resolved project/workflow scope and `chat_resolution_mode`.
+
+### Changed
+- `POST /chat` now resolves new threads in this order:
+  - `metadata.workflow_id`
+  - `metadata.project_id`
+  - `X-Project-Id`
+- `POST /chatkit` inherits the same success/error behavior as `POST /chat` during the deprecation window.
+- Project update contract now supports additive settings updates for `default_chat_workflow_id`.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-03-11
+
+### API diff vs previous version
 - Previous API version: `0.24.2`
 - Current API version: `0.24.3`
 - Compatibility: additive (deprecated `/chatkit` compatibility alias restored during transition window; canonical endpoint remains `/chat`)

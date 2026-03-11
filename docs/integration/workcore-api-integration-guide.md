@@ -160,7 +160,20 @@ curl -sS -X POST "$BASE_URL/workflows/<workflow_id>/runs" \
   }'
 ```
 
-### 5.5 Poll run state
+### 5.5 Configure project default chat workflow
+```bash
+curl -sS -X PATCH "$BASE_URL/projects/$PROJECT_ID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "settings": {
+      "default_chat_workflow_id": "<workflow_id>"
+    }
+  }'
+```
+
+### 5.6 Poll run state
 ```bash
 curl -sS "$BASE_URL/runs/<run_id>" \
   -H "Authorization: Bearer $TOKEN" \
@@ -291,7 +304,15 @@ Requirements:
   - `Deprecation: true`
   - `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`
 
-For `threads.create`, include `metadata.workflow_id` (required).
+For `threads.create`, resolution order is:
+- `metadata.workflow_id` -> explicit workflow mode (backward-compatible)
+- else `metadata.project_id` -> resolve `projects.settings.default_chat_workflow_id`
+- else `X-Project-Id` -> resolve `projects.settings.default_chat_workflow_id`
+- else `CHAT_PROJECT_SCOPE_REQUIRED`
+
+Project-scoped chat defaults require a configured published workflow:
+- missing project setting -> `CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED`
+- configured workflow missing/inactive/unpublished -> `CHAT_DEFAULT_WORKFLOW_NOT_FOUND`
 
 Diagnostic checks:
 ```bash
@@ -299,10 +320,11 @@ Diagnostic checks:
 curl -N -X POST "$BASE_URL/chat" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID" \
   -H "Content-Type: application/json" \
   -d '{
     "type":"threads.create",
-    "metadata":{"workflow_id":"wf_example"},
+    "metadata":{"project_id":"'"$PROJECT_ID"'"},
     "params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}
   }'
 
@@ -310,15 +332,17 @@ curl -N -X POST "$BASE_URL/chat" \
 curl -i -X POST "$BASE_URL/chatkit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID" \
   -H "Content-Type: application/json" \
-  -d '{"type":"threads.create","metadata":{"workflow_id":"wf_example"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}}'
+  -d '{"type":"threads.create","metadata":{"project_id":"'"$PROJECT_ID"'"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}}'
 
 # starting 2026-04-04T00:00:00Z: expected 410 Gone
 curl -i -X POST "$BASE_URL/chatkit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Tenant-Id: $TENANT_ID" \
+  -H "X-Project-Id: $PROJECT_ID" \
   -H "Content-Type: application/json" \
-  -d '{"type":"threads.create","metadata":{"workflow_id":"wf_example"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}}'
+  -d '{"type":"threads.create","metadata":{"project_id":"'"$PROJECT_ID"'"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}}'
 ```
 
 ## 9. Error model
@@ -336,7 +360,11 @@ All API errors are returned in a standard envelope:
 
 Common integration errors:
 - `401 UNAUTHORIZED`: missing, expired, or invalid OAuth access token
+- `404 ERR_PROJECT_NOT_FOUND`: project scope does not exist in the tenant
 - `422 ERR_PROJECT_ID_REQUIRED`: missing `X-Project-Id` on workflow endpoints
+- `422 CHAT_PROJECT_SCOPE_REQUIRED`: `threads.create` omitted both `metadata.workflow_id` and project scope
+- `409 CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED`: project exists but has no `settings.default_chat_workflow_id`
+- `404 CHAT_DEFAULT_WORKFLOW_NOT_FOUND`: configured default chat workflow is missing, inactive, or unpublished
 - `400 BadRequest` with Azure OpenAI text:
   - `"Responses API is enabled only for api-version 2025-03-01-preview and later"`
   - Fix: set `AZURE_OPENAI_API_VERSION=2025-03-01-preview` (or newer) consistently in Key Vault and runtime environment.

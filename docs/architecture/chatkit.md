@@ -19,8 +19,17 @@ Status: Draft
 ## External client contract (supported request types)
 - `threads.create`:
   - Starts a new thread and usually starts a new run from the first user message.
-  - `metadata.workflow_id` is required for a new thread.
-  - `metadata.workflow_version_id` is optional; when omitted active/latest published version is used.
+  - Resolution order is:
+    - `metadata.workflow_id` -> explicit direct workflow mode
+    - else `metadata.project_id` -> resolve project default chat workflow
+    - else `X-Project-Id` -> resolve project default chat workflow
+    - else reject with `CHAT_PROJECT_SCOPE_REQUIRED`
+  - `metadata.workflow_id` remains backward-compatible for existing clients.
+  - `metadata.workflow_version_id` is optional; when omitted explicit mode uses the active/latest published version.
+  - Project default chat workflow is stored in `projects.settings.default_chat_workflow_id`.
+  - Project resolution failures:
+    - missing setting -> `CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED`
+    - configured workflow missing/inactive/unpublished -> `CHAT_DEFAULT_WORKFLOW_NOT_FOUND`
 - `threads.add_user_message`:
   - Appends a user message to an existing thread and continues run execution.
 - `threads.custom_action`:
@@ -34,8 +43,12 @@ Status: Draft
 ## Thread ↔ Run mapping
 - `thread.metadata.run_id` stores the active run.
 - `thread.metadata.last_event_id` tracks last streamed run event to avoid replay.
-- `thread.metadata.workflow_id` is stored for visibility.
-- `metadata.workflow_id` is required on `threads.create` to select which published workflow to run.
+- `thread.metadata.project_id`, `thread.metadata.workflow_id`, and `thread.metadata.workflow_version_id` store resolved scope.
+- `thread.metadata.chat_resolution_mode` records how the workflow was selected:
+  - `explicit_workflow`
+  - `project_default`
+  - `header_default`
+- `thread.metadata.correlation_id` is persisted for request-to-run correlation.
 - External integrators should also persist their own identifiers in metadata (for example `external_user_id`, `external_session_id`) for cross-system reconciliation.
 
 ## Message handling
@@ -111,6 +124,7 @@ Action payload fields consumed by runtime:
 - Attachments are stored in object storage (MinIO/S3-compatible); metadata tracks `object_key`.
 - In-memory stores remain available for tests/dev.
 - All ChatKit reads/writes are tenant-scoped.
+- Project chat defaults reuse `projects.settings.default_chat_workflow_id`; no separate ChatKit config table is required.
 
 ## Service deployment
 - Run ChatKit as a separate service using `apps/orchestrator/chatkit/service.py` (ASGI app).
@@ -124,6 +138,7 @@ Action payload fields consumed by runtime:
 - Single bearer profile: `/orchestrator/*` and `/chat` accept the same bearer token.
 - Split bearer profile: `/chat` requires `Authorization: Bearer <CHATKIT_AUTH_TOKEN>`.
 - ChatKit runtime enforces tenant scope from `X-Tenant-Id` and must reject requests without tenant header.
+- `X-Project-Id` is optional on `POST /chat` and participates only in `threads.create` workflow resolution.
 
 ## Idempotency (actions)
 - Actions are deduped via `idempotency_keys` (scope `chatkit_action`).
@@ -150,6 +165,7 @@ Action payload fields consumed by runtime:
 
 ## Local E2E
 - Use `scripts/chatkit_e2e.py` against a running ChatKit service.
-- Provide a workflow selection via request metadata (script reads `CHATKIT_WORKFLOW_ID` and optional `CHATKIT_WORKFLOW_VERSION_ID`).
+- Provide either explicit workflow metadata (`CHATKIT_WORKFLOW_ID`, optional `CHATKIT_WORKFLOW_VERSION_ID`)
+  or project scope (`CHATKIT_PROJECT_ID`) with a configured `projects.settings.default_chat_workflow_id`.
 - If you don't have a builder yet, create + publish a workflow via the API or run `scripts/workflow_bootstrap.py`.
 - One-step start: `scripts/chatkit_up.sh`
