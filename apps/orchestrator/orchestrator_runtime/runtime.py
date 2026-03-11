@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -212,6 +213,7 @@ class ProjectOrchestratorRuntime:
             action = decision.route_type
             chosen_workflow_id: Optional[str] = decision.workflow_id
             error_code: Optional[str] = None
+            action_error_retry_after_s: Optional[int] = None
             active_workflow_before = active_workflow_id
 
             if action == "OPERATOR":
@@ -255,6 +257,12 @@ class ProjectOrchestratorRuntime:
                             recent_decisions=replay_decisions,
                             explicit_switch_requested=explicit_switch_requested,
                         )
+                        if switch_policy_error:
+                            action_error_retry_after_s = self._switch_retry_after_seconds(
+                                switch_policy_error,
+                                policy=policy,
+                                recent_decisions=replay_decisions,
+                            )
                         required_switch_margin = min(1.0, policy.switch_margin + policy.hysteresis_margin)
                         if (
                             switch_policy_error is None
@@ -285,6 +293,7 @@ class ProjectOrchestratorRuntime:
                 error_code,
                 {"text": error_text} if error_text else {},
                 action,
+                retry_after_s=action_error_retry_after_s,
             )
             decision_trace = self._build_decision_trace(
                 mode="orchestrated",
@@ -625,6 +634,7 @@ class ProjectOrchestratorRuntime:
         run_id: Optional[str] = None
         events: List[Dict[str, Any]] = []
         error_code: Optional[str] = None
+        action_error_retry_after_s: Optional[int] = None
         message_payload = {"type": "assistant_message", "text": "Готово.", "options": []}
         from_run_id = active_state.run_id if active_state else None
 
@@ -698,6 +708,12 @@ class ProjectOrchestratorRuntime:
                         recent_decisions=recent_decisions,
                         explicit_switch_requested=explicit_switch_requested,
                     )
+                    if switch_policy_error:
+                        action_error_retry_after_s = self._switch_retry_after_seconds(
+                            switch_policy_error,
+                            policy=policy,
+                            recent_decisions=recent_decisions,
+                        )
                     required_switch_margin = min(1.0, policy.switch_margin + policy.hysteresis_margin)
                     if (
                         switch_policy_error is None
@@ -857,7 +873,18 @@ class ProjectOrchestratorRuntime:
         await self.store.save_decision(decision_record)
 
         stack = await self._stack_view(request.project_id, request.session_id, tenant_id=tenant_id)
-        action_error = self._action_error_payload(error_code, message_payload, action)
+        action_error = self._action_error_payload(
+            error_code,
+            message_payload,
+            action,
+            retry_after_s=action_error_retry_after_s,
+            correlation_id=(
+                str(metadata_with_context.get("correlation_id"))
+                if isinstance(metadata_with_context.get("correlation_id"), str)
+                and str(metadata_with_context.get("correlation_id")).strip()
+                else None
+            ),
+        )
         return {
             "decision_id": decision_id,
             "mode": "orchestrated",
@@ -1032,6 +1059,26 @@ class ProjectOrchestratorRuntime:
             return "ERR_SWITCH_EXPLICIT_REQUIRED"
         if policy.sticky and not explicit_switch_requested:
             return "ERR_STICKY_POLICY_ACTIVE"
+        return None
+
+    def _switch_retry_after_seconds(
+        self,
+        error_code: str,
+        *,
+        policy: RoutingPolicy,
+        recent_decisions: Sequence[OrchestrationDecisionRecord],
+    ) -> Optional[int]:
+        if error_code != "ERR_SWITCH_COOLDOWN_ACTIVE" or policy.cooldown_seconds <= 0:
+            return None
+        now = _now()
+        for decision in recent_decisions:
+            if decision.chosen_action != "SWITCH_WORKFLOW":
+                continue
+            elapsed_seconds = max(0.0, (now - decision.created_at).total_seconds())
+            remaining_seconds = float(policy.cooldown_seconds) - elapsed_seconds
+            if remaining_seconds <= 0:
+                return None
+            return int(math.ceil(remaining_seconds))
         return None
 
     @staticmethod
@@ -1215,6 +1262,9 @@ class ProjectOrchestratorRuntime:
         error_code: Optional[str],
         message_payload: Dict[str, Any],
         action: str,
+        *,
+        retry_after_s: Optional[int] = None,
+        correlation_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         if not isinstance(error_code, str) or not error_code.strip():
             return None
@@ -1231,8 +1281,14 @@ class ProjectOrchestratorRuntime:
         return {
             "code": code,
             "message": message,
-            "retryable": retryable,
             "category": category,
+            "retryable": retryable,
+            "retry_after_s": retry_after_s if isinstance(retry_after_s, int) and retry_after_s >= 0 else None,
+            "bad_fields": None,
+            "unsupported_feature": None,
+            "docs_ref": None,
+            "details": None,
+            "correlation_id": correlation_id,
             "action": action,
         }
 

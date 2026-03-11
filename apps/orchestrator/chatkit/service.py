@@ -79,20 +79,128 @@ def _correlation_id(request: Request) -> str:
     return correlation_id
 
 
+def _normalize_bad_fields(value) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return None
+    normalized = [
+        str(item).strip()
+        for item in value
+        if isinstance(item, str) and str(item).strip()
+    ]
+    return normalized or None
+
+
+def _default_bad_fields(code: str, message: str) -> list[str] | None:
+    normalized_code = code.strip().upper()
+    normalized_message = message.strip().lower()
+    if normalized_code == "ERR_TENANT_REQUIRED":
+        return ["X-Tenant-Id"]
+    if normalized_code == "CHAT_PROJECT_SCOPE_REQUIRED":
+        return ["metadata.project_id", "X-Project-Id"]
+    if normalized_code == "ERR_INVALID_AUDIO_INPUT":
+        if "mime" in normalized_message:
+            return ["params.mime_type"]
+        if "empty" in normalized_message or "audio payload" in normalized_message:
+            return ["params.audio_base64"]
+    return None
+
+
+def _infer_category(code: str, status_code: int, unsupported_feature: str | None) -> str:
+    normalized_code = code.strip().upper()
+    if unsupported_feature:
+        return "unsupported_feature"
+    if normalized_code == "UNAUTHORIZED":
+        return "auth"
+    if normalized_code in {"CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED"}:
+        return "configuration"
+    if normalized_code in {"DEPRECATED_ENDPOINT"}:
+        return "route"
+    if normalized_code in {"ERR_TRANSCRIPTION_UNAVAILABLE"}:
+        return "transient"
+    if normalized_code in {"NOT_FOUND"} or normalized_code.endswith("NOT_FOUND"):
+        return "not_found"
+    if status_code in {401, 403}:
+        return "auth"
+    if status_code in {400, 422}:
+        return "validation"
+    if status_code == 404:
+        return "not_found"
+    if status_code in {429, 503}:
+        return "transient"
+    if status_code >= 500:
+        return "internal"
+    return "validation"
+
+
+def _infer_retryable(category: str) -> bool | None:
+    if category == "transient":
+        return True
+    if category in {
+        "auth",
+        "validation",
+        "configuration",
+        "not_found",
+        "conflict",
+        "unsupported_feature",
+        "internal",
+        "route",
+        "action",
+    }:
+        return False
+    return None
+
+
 def _error_response(
     request: Request,
     code: str,
     message: str,
     status_code: int,
     *,
+    category: str | None = None,
+    retryable: bool | None = None,
+    retry_after_s: int | None = None,
+    bad_fields: list[str] | None = None,
+    unsupported_feature: str | None = None,
+    docs_ref: str | None = None,
     details: Any = None,
 ) -> JSONResponse:
-    error = {"code": code, "message": message}
-    if details is not None:
-        error["details"] = details
+    correlation_id = _correlation_id(request)
+    resolved_unsupported_feature = (
+        unsupported_feature.strip()
+        if isinstance(unsupported_feature, str) and unsupported_feature.strip()
+        else (
+            "input.transcribe"
+            if code == "ERR_TRANSCRIPTION_UNAVAILABLE" and "not configured" in message.lower()
+            else None
+        )
+    )
+    resolved_bad_fields = _normalize_bad_fields(bad_fields) or _default_bad_fields(code, message)
+    resolved_category = category or _infer_category(code, status_code, resolved_unsupported_feature)
+    resolved_retryable = retryable if isinstance(retryable, bool) else _infer_retryable(resolved_category)
+    resolved_retry_after_s = retry_after_s if isinstance(retry_after_s, int) and retry_after_s >= 0 else None
+    error = {
+        "code": code,
+        "message": message,
+        "category": resolved_category,
+        "retryable": resolved_retryable,
+        "retry_after_s": resolved_retry_after_s,
+        "bad_fields": resolved_bad_fields,
+        "unsupported_feature": resolved_unsupported_feature,
+        "docs_ref": docs_ref,
+        "details": details,
+        "correlation_id": correlation_id,
+    }
+    response_headers: dict[str, str] = {}
+    if resolved_retry_after_s is not None and status_code in {429, 503}:
+        response_headers["Retry-After"] = str(resolved_retry_after_s)
     return JSONResponse(
-        {"error": error, "correlation_id": _correlation_id(request)},
+        {"error": error, "correlation_id": correlation_id},
         status_code=status_code,
+        headers=response_headers or None,
     )
 
 

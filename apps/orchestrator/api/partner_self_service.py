@@ -55,6 +55,7 @@ _PARTNER_HOST_POLICY_BY_PARTNER_ID: dict[str, str] = {
 }
 _CHAT_API_PATH = "/chat"
 _CHATKIT_ALIAS_PATH = "/chatkit"
+_INTEGRATION_CAPABILITIES_PATH = "/integration-capabilities"
 _CHATKIT_ALIAS_SUNSET_AT = datetime(2026, 4, 4, 0, 0, 0, tzinfo=timezone.utc)
 _DEFAULT_SCOPE = "api://workcore-partner-api/.default"
 _DEFAULT_TOKEN_ENDPOINT_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -298,6 +299,7 @@ def _default_operator_notes() -> list[str]:
     return [
         "Canonical chat endpoint is POST /chat.",
         "POST /chatkit is a deprecated compatibility alias until 2026-04-04T00:00:00Z.",
+        "Machine-readable capability negotiation endpoint is GET /integration-capabilities.",
         "Canonical host behavior is controlled by integration_manifest.host_policy.",
         "Thread creation resolution order: metadata.workflow_id -> metadata.project_id -> X-Project-Id.",
         "Do not use API key auth for public integrations; use OAuth client_credentials.",
@@ -327,6 +329,7 @@ def build_integration_manifest(
     normalized_base_url = _base_url_without_trailing_slash(base_url)
     chat_api_url = f"{normalized_base_url}{_CHAT_API_PATH}"
     deprecated_chat_alias_url = f"{normalized_base_url}{_CHATKIT_ALIAS_PATH}"
+    integration_capabilities_url = f"{normalized_base_url}{_INTEGRATION_CAPABILITIES_PATH}"
 
     normalized_scope = (scope or "").strip() or _DEFAULT_SCOPE
     normalized_tenant = (tenant_id or "").strip() or None
@@ -366,6 +369,7 @@ def build_integration_manifest(
     manifest = {
         "api_base_url": normalized_base_url,
         "chat_api_url": chat_api_url,
+        "integration_capabilities_url": integration_capabilities_url,
         "host_policy": manifest_host_policy,
         "deprecated_chat_alias_url": deprecated_chat_alias_url,
         "auth_profile": {

@@ -721,19 +721,180 @@ def create_app(
         body.setdefault("correlation_id", _correlation_id(request))
         return JSONResponse(body, status_code=status_code)
 
+    def _normalize_error_field_list(value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        candidates = value
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        if not isinstance(candidates, (list, tuple, set)):
+            return None
+        items = [
+            str(item).strip()
+            for item in candidates
+            if isinstance(item, str) and str(item).strip()
+        ]
+        return items or None
+
+    def _default_bad_fields(code: str, message: str) -> list[str] | None:
+        normalized_code = code.strip().upper()
+        normalized_message = message.strip().lower()
+        if normalized_code == "ERR_TENANT_REQUIRED":
+            return ["X-Tenant-Id"]
+        if normalized_code == "ERR_PROJECT_ID_REQUIRED":
+            if "x-project-id" in normalized_message:
+                return ["X-Project-Id"]
+            return ["project_id"]
+        if normalized_code == "INVALID_ARGUMENT":
+            if "inputs must be an object" in normalized_message:
+                return ["inputs"]
+            if "metadata must be an object" in normalized_message:
+                return ["metadata"]
+            if "request body must be an object" in normalized_message:
+                return ["request_body"]
+        return None
+
+    def _infer_error_category(
+        code: str,
+        status_code: int,
+        *,
+        explicit: str | None,
+        unsupported_feature: str | None,
+    ) -> str:
+        if explicit in {
+            "auth",
+            "validation",
+            "configuration",
+            "not_found",
+            "conflict",
+            "unsupported_feature",
+            "transient",
+            "internal",
+            "route",
+            "action",
+        }:
+            return str(explicit)
+
+        normalized_code = code.strip().upper()
+        if unsupported_feature:
+            return "unsupported_feature"
+        if normalized_code in {"UNAUTHORIZED", "FORBIDDEN"}:
+            return "auth"
+        if normalized_code in {"NOT_FOUND"} or normalized_code.endswith("NOT_FOUND"):
+            return "not_found"
+        if normalized_code in {"CONFLICT"}:
+            return "conflict"
+        if normalized_code == "ERR_WORKFLOW_ENGINE_UNAVAILABLE":
+            return "transient"
+        if normalized_code == "UNSUPPORTED_FEATURE":
+            return "unsupported_feature"
+        if normalized_code.endswith("_NOT_CONFIGURED") or normalized_code in {"ERR_ORCHESTRATOR_NOT_IN_PROJECT"}:
+            return "configuration"
+        if status_code in {401, 403}:
+            return "auth"
+        if status_code in {400, 422}:
+            return "validation"
+        if status_code == 404:
+            return "not_found"
+        if status_code == 409:
+            return "conflict"
+        if status_code in {429, 503}:
+            return "transient"
+        if status_code >= 500:
+            return "internal"
+        return "configuration"
+
+    def _infer_retryable(category: str, status_code: int, explicit: bool | None) -> bool | None:
+        if isinstance(explicit, bool):
+            return explicit
+        if category == "transient":
+            return True
+        if category in {
+            "auth",
+            "validation",
+            "configuration",
+            "not_found",
+            "conflict",
+            "unsupported_feature",
+            "route",
+            "action",
+        }:
+            return False
+        if status_code >= 500:
+            return None
+        return False
+
     def _error(
         request: Request,
         code: str,
         message: str,
         status_code: int,
         details: Optional[Any] = None,
+        *,
+        category: str | None = None,
+        retryable: bool | None = None,
+        retry_after_s: int | None = None,
+        bad_fields: list[str] | None = None,
+        unsupported_feature: str | None = None,
+        docs_ref: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> JSONResponse:
-        error: Dict[str, Any] = {"code": code, "message": message}
-        if details is not None:
-            error["details"] = details
+        correlation_id = _correlation_id(request)
+        resolved_retry_after_s = retry_after_s if isinstance(retry_after_s, int) and retry_after_s >= 0 else None
+        if resolved_retry_after_s is None and isinstance(details, dict):
+            details_retry_after = details.get("retry_after_s")
+            if isinstance(details_retry_after, int) and details_retry_after >= 0:
+                resolved_retry_after_s = details_retry_after
+
+        resolved_unsupported_feature = (
+            unsupported_feature.strip()
+            if isinstance(unsupported_feature, str) and unsupported_feature.strip()
+            else (
+                details.get("unsupported_feature").strip()
+                if isinstance(details, dict)
+                and isinstance(details.get("unsupported_feature"), str)
+                and str(details.get("unsupported_feature")).strip()
+                else None
+            )
+        )
+        resolved_bad_fields = _normalize_error_field_list(bad_fields)
+        if resolved_bad_fields is None and isinstance(details, dict):
+            resolved_bad_fields = _normalize_error_field_list(details.get("bad_fields"))
+        if resolved_bad_fields is None:
+            resolved_bad_fields = _default_bad_fields(code, message)
+
+        resolved_category = _infer_error_category(
+            code,
+            status_code,
+            explicit=category,
+            unsupported_feature=resolved_unsupported_feature,
+        )
+        resolved_retryable = _infer_retryable(resolved_category, status_code, retryable)
+        resolved_docs_ref = docs_ref.strip() if isinstance(docs_ref, str) and docs_ref.strip() else None
+
+        error: Dict[str, Any] = {
+            "code": code,
+            "message": message,
+            "category": resolved_category,
+            "retryable": resolved_retryable,
+            "retry_after_s": resolved_retry_after_s,
+            "bad_fields": resolved_bad_fields,
+            "unsupported_feature": resolved_unsupported_feature,
+            "docs_ref": resolved_docs_ref,
+            "details": details,
+            "correlation_id": correlation_id,
+        }
+        response_headers = dict(headers or {})
+        if (
+            resolved_retry_after_s is not None
+            and status_code in {429, 503}
+            and "Retry-After" not in response_headers
+        ):
+            response_headers["Retry-After"] = str(resolved_retry_after_s)
         return JSONResponse(
-            {"error": error, "correlation_id": _correlation_id(request)},
+            {"error": error, "correlation_id": correlation_id},
             status_code=status_code,
+            headers=response_headers or None,
         )
 
     def _truncate_text(value: Any, max_len: int = 600) -> str:
@@ -1757,6 +1918,10 @@ def create_app(
                     str(exc),
                     503,
                     details=_workflow_engine_error_details(exc),
+                    retry_after_s=max(
+                        1,
+                        int(_RUN_LEDGER_FK_RETRY_BASE_DELAY_SECONDS * (2 ** max(exc.attempts - 1, 0))),
+                    ),
                 )
             await _run_store_save(run, tenant_id=tenant)
             return _json(request, run_to_dict(run), status_code=201)
@@ -1900,12 +2065,21 @@ def create_app(
                     run_id=None,
                     tenant_id=tenant,
                 )
+                retry_after_s = (
+                    max(
+                        1,
+                        int(_RUN_LEDGER_FK_RETRY_BASE_DELAY_SECONDS * (2 ** max(exc.attempts - 1, 0))),
+                    )
+                    if isinstance(exc, RunLedgerWriteRaceError)
+                    else None
+                )
                 return _error(
                     request,
                     "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
                     str(exc),
                     503,
                     details=_workflow_engine_error_details(exc),
+                    retry_after_s=retry_after_s,
                 )
             await _run_store_save(run, tenant_id=tenant)
             handoff_record = await ctx.handoff_store.update_status(
@@ -1993,12 +2167,21 @@ def create_app(
                 )
                 return _error(request, code, message, 400)
             except Exception as exc:
+                retry_after_s = (
+                    max(
+                        1,
+                        int(_RUN_LEDGER_FK_RETRY_BASE_DELAY_SECONDS * (2 ** max(exc.attempts - 1, 0))),
+                    )
+                    if isinstance(exc, RunLedgerWriteRaceError)
+                    else None
+                )
                 return _error(
                     request,
                     "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
                     str(exc),
                     503,
                     details=_workflow_engine_error_details(exc),
+                    retry_after_s=retry_after_s,
                 )
 
             await _run_store_save(run, tenant_id=tenant)
@@ -2132,7 +2315,14 @@ def create_app(
                 return _error(request, exc.code, exc.message, exc.status_code)
             except WorkflowEngineAdapterError as exc:
                 status = 503 if exc.retryable else 500
-                return _error(request, exc.code, exc.message, status, details=exc.details)
+                return _error(
+                    request,
+                    exc.code,
+                    exc.message,
+                    status,
+                    details=exc.details,
+                    retryable=exc.retryable,
+                )
             except Exception as exc:
                 return _error(request, "INTERNAL", str(exc), 500)
             return _json(request, payload)
@@ -2650,6 +2840,73 @@ def create_app(
         )
         return PlainTextResponse(content, media_type="text/markdown")
 
+    async def integration_capabilities(request: Request) -> JSONResponse:
+        urls = _public_doc_urls(request)
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "api_version": _openapi_api_version(),
+            "error_contract": {
+                "schema_id": "platform_error_envelope",
+                "schema_version": "1.0.0",
+                "categories": [
+                    "auth",
+                    "validation",
+                    "configuration",
+                    "not_found",
+                    "conflict",
+                    "unsupported_feature",
+                    "transient",
+                    "internal",
+                    "route",
+                    "action",
+                ],
+                "representative_codes": [
+                    "INVALID_ARGUMENT",
+                    "ERR_PROJECT_ID_REQUIRED",
+                    "ERR_PROJECT_NOT_FOUND",
+                    "CHAT_PROJECT_SCOPE_REQUIRED",
+                    "UNSUPPORTED_FEATURE",
+                    "ERR_WORKFLOW_ENGINE_UNAVAILABLE",
+                ],
+            },
+            "auth": {
+                "type": "oauth_client_credentials",
+                "required_headers": ["Authorization", "X-Tenant-Id"],
+                "optional_headers": ["X-Project-Id", "X-Correlation-Id", "X-Trace-Id"],
+            },
+            "chat": {
+                "canonical_endpoint": "/chat",
+                "deprecated_alias": "/chatkit",
+                "deprecated_alias_sunset": _CHATKIT_ALIAS_SUNSET_AT.isoformat().replace("+00:00", "Z"),
+                "project_scoped_thread_create": True,
+                "input_transcribe": True,
+                "streaming_sse": True,
+            },
+            "runtime_features": {
+                "projection_controls": {
+                    "state_exclude_paths": True,
+                    "output_include_paths": True,
+                },
+                "document_payload": {
+                    "artifact_ref_default": True,
+                },
+                "capability_registry": True,
+                "workflow_version_pinning": True,
+            },
+            "docs": {
+                "api_reference": urls["api_reference"],
+                "integration_guide": urls["integration_kit_markdown"],
+            },
+        }
+        _integration_log(
+            request,
+            "integration.capabilities.read",
+            "Integration capabilities negotiation payload returned",
+            status_code=200,
+            context={"api_version": payload["api_version"]},
+        )
+        return _json(request, payload)
+
     async def partner_access_portal(request: Request) -> Response:
         try:
             identity = _require_partner_portal_identity(request)
@@ -2784,11 +3041,27 @@ def create_app(
             return partner_portal_default_base_url.rstrip("/")
         return base_url
 
+    def _openapi_api_version() -> str:
+        if not _OPENAPI_SPEC_PATH.exists():
+            return "unknown"
+        try:
+            for line in _OPENAPI_SPEC_PATH.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("version:"):
+                    continue
+                version = stripped.split(":", 1)[1].strip().strip("'\"")
+                if version:
+                    return version
+        except Exception:
+            return "unknown"
+        return "unknown"
+
     def _public_doc_urls(request: Request) -> Dict[str, str]:
         base_url = _public_base_url(request)
         return {
             "integration_kit_markdown": f"{base_url}/agent-integration-kit",
             "integration_kit_json": f"{base_url}/agent-integration-kit.json",
+            "integration_capabilities": f"{base_url}/integration-capabilities",
             "integration_test_ui": f"{base_url}/agent-integration-test",
             "integration_test_json": f"{base_url}/agent-integration-test.json",
             "integration_logs": f"{base_url}/agent-integration-logs",
@@ -3226,6 +3499,32 @@ def create_app(
             remediation="Set manifest chat_api_url to canonical POST /chat.",
             docs_ref=f"{urls['api_reference']}#chat-first-integration-for-external-clients",
         )
+        integration_capabilities_url = str(manifest.get("integration_capabilities_url", "")).strip()
+        expected_integration_capabilities_url = urls.get("integration_capabilities", "").strip()
+        capabilities_url_ok = bool(integration_capabilities_url) and (
+            not expected_integration_capabilities_url
+            or integration_capabilities_url.rstrip("/") == expected_integration_capabilities_url.rstrip("/")
+        )
+        add_check(
+            "integration_capabilities_contract_url_present",
+            status="PASS" if capabilities_url_ok else "FAIL",
+            severity="high",
+            code=(
+                "INTEGRATION_CAPABILITIES_URL_OK"
+                if capabilities_url_ok
+                else "INTEGRATION_CAPABILITIES_URL_MISSING_OR_INVALID"
+            ),
+            title="Integration manifest exposes negotiation endpoint",
+            message=(
+                "integration_capabilities_url points to the public negotiation contract endpoint."
+                if capabilities_url_ok
+                else "integration_capabilities_url is missing or does not match canonical endpoint."
+            ),
+            observed=integration_capabilities_url or "missing",
+            expected=expected_integration_capabilities_url or ".../integration-capabilities",
+            remediation="Set integration_manifest.integration_capabilities_url to GET /integration-capabilities.",
+            docs_ref=f"{urls['api_reference']}#integration-capability-negotiation",
+        )
 
         openapi_text = _OPENAPI_SPEC_PATH.read_text(encoding="utf-8") if _OPENAPI_SPEC_PATH.exists() else ""
         chatkit_alias_contract_markers = (
@@ -3565,6 +3864,7 @@ def create_app(
             f"- OpenAPI: {urls['openapi']}",
             f"- API reference: {urls['api_reference']}",
             f"- Workflow authoring guide: {urls['workflow_authoring_guide']}",
+            f"- Integration capabilities (negotiation): {urls['integration_capabilities']}",
             f"- Workflow draft schema: {urls['workflow_draft_schema']}",
             f"- Workflow export schema: {urls['workflow_export_schema']}",
             f"- Routing decision schema: {urls['routing_decision_schema']}",
@@ -3596,6 +3896,7 @@ def create_app(
             "- Canonical manifest path in bundle: `integration_manifest`",
             "- Canonical host policy in manifest: `host_policy` (request_host vs pinned partner policy)",
             "- Canonical chat endpoint in manifest: `chat_api_url` (must be `/chat`)",
+            "- Canonical negotiation endpoint in manifest: `integration_capabilities_url` (`GET /integration-capabilities`)",
             "- Deprecated compatibility alias metadata: `/chatkit` with fixed sunset + remediation",
             f"- Internal operator onboarding portal: {urls['partner_access_portal']}",
             f"- Internal onboarding ZIP generator: {urls['partner_onboard_package']}",
@@ -4187,6 +4488,7 @@ def create_app(
         Route("/health", health),
         Route("/openapi.yaml", openapi_spec),
         Route("/api-reference", api_reference),
+        Route("/integration-capabilities", integration_capabilities),
         Route("/internal/partner-access", partner_access_portal),
         Route("/internal/partner-access/onboard-package", partner_access_onboard_package, methods=["POST"]),
         Route("/workflow-authoring-guide", workflow_authoring_guide),
@@ -4261,6 +4563,7 @@ def create_app(
                     request.url.path == "/health"
                     or request.url.path == "/openapi.yaml"
                     or request.url.path == "/api-reference"
+                    or request.url.path == "/integration-capabilities"
                     or request.url.path == "/workflow-authoring-guide"
                     or request.url.path == "/agent-integration-kit"
                     or request.url.path == "/agent-integration-kit.json"
