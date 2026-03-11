@@ -21,10 +21,7 @@ export const e2eBaseUrl = baseUrlRaw;
 export const apiBaseUrl = stripTrailingSlash(
   process.env.E2E_API_BASE_URL || `${baseUrl.protocol}//${inferredApiHost}${basePort}`
 );
-// `E2E_CHATKIT_API_URL` remains as a deprecated compatibility alias during migration.
-export const chatApiUrl = stripTrailingSlash(
-  process.env.E2E_CHAT_API_URL || process.env.E2E_CHATKIT_API_URL || `${apiBaseUrl}/chat`
-);
+export const chatApiUrl = stripTrailingSlash(process.env.E2E_CHAT_API_URL || `${apiBaseUrl}/chat`);
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 

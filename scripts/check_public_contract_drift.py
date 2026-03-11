@@ -20,6 +20,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency gate
 
 ROOT = Path(__file__).resolve().parent.parent
 SUNSET_HTTP_DATE = "Sat, 04 Apr 2026 00:00:00 GMT"
+SUNSET_ISO_TIMESTAMP = "2026-04-04T00:00:00Z"
 
 
 def _read_text(path: Path, errors: list[str]) -> str:
@@ -93,6 +94,96 @@ def main() -> int:
     if not isinstance(headers, dict) or "Deprecation" not in headers or "Sunset" not in headers:
         errors.append("OpenAPI components.headers must define both `Deprecation` and `Sunset`")
 
+    schemas = ((openapi_data.get("components") or {}).get("schemas") or {}) if isinstance(openapi_data, dict) else {}
+    if not isinstance(schemas, dict):
+        errors.append("OpenAPI components.schemas must be a mapping")
+        schemas = {}
+
+    integration_manifest_schema = schemas.get("IntegrationManifest")
+    if not isinstance(integration_manifest_schema, dict):
+        errors.append("OpenAPI must define components.schemas.IntegrationManifest")
+    else:
+        manifest_props = integration_manifest_schema.get("properties", {})
+        if not isinstance(manifest_props, dict):
+            errors.append("IntegrationManifest.properties must be a mapping")
+        else:
+            required_manifest_props = (
+                "api_base_url",
+                "chat_api_url",
+                "deprecated_chat_alias_url",
+                "auth_profile",
+                "required_headers",
+                "optional_headers",
+                "project_scope",
+                "deprecations",
+                "secret_expiry",
+            )
+            for key in required_manifest_props:
+                if key not in manifest_props:
+                    errors.append(f"IntegrationManifest must define `{key}`")
+
+    kit_schema = schemas.get("AgentIntegrationKit")
+    if not isinstance(kit_schema, dict):
+        errors.append("OpenAPI must define components.schemas.AgentIntegrationKit")
+    else:
+        kit_props = kit_schema.get("properties", {})
+        if not isinstance(kit_props, dict) or "integration_manifest" not in kit_props:
+            errors.append("AgentIntegrationKit must expose `integration_manifest`")
+
+    report_schema = schemas.get("AgentIntegrationCheckReport")
+    if not isinstance(report_schema, dict):
+        errors.append("OpenAPI must define components.schemas.AgentIntegrationCheckReport")
+    else:
+        report_props = report_schema.get("properties", {})
+        if not isinstance(report_props, dict):
+            errors.append("AgentIntegrationCheckReport.properties must be a mapping")
+        else:
+            if "integration_manifest" not in report_props:
+                errors.append("AgentIntegrationCheckReport must expose `integration_manifest`")
+            summary = report_props.get("summary")
+            if isinstance(summary, dict):
+                summary_props = summary.get("properties", {})
+                if isinstance(summary_props, dict):
+                    warned = summary_props.get("warned")
+                    if not isinstance(warned, dict):
+                        errors.append("AgentIntegrationCheckReport.summary must include `warned` counter")
+            else:
+                errors.append("AgentIntegrationCheckReport.summary must be defined")
+
+    check_schema = schemas.get("AgentIntegrationCheckItem")
+    if not isinstance(check_schema, dict):
+        errors.append("OpenAPI must define components.schemas.AgentIntegrationCheckItem")
+    else:
+        check_props = check_schema.get("properties", {})
+        if not isinstance(check_props, dict):
+            errors.append("AgentIntegrationCheckItem.properties must be a mapping")
+        else:
+            for key in (
+                "status",
+                "severity",
+                "code",
+                "title",
+                "message",
+                "observed",
+                "expected",
+                "remediation",
+                "docs_ref",
+            ):
+                if key not in check_props:
+                    errors.append(f"AgentIntegrationCheckItem must define `{key}`")
+            status_schema = check_props.get("status")
+            if isinstance(status_schema, dict):
+                enum_values = status_schema.get("enum", [])
+                if not isinstance(enum_values, list) or set(enum_values) != {"PASS", "WARN", "FAIL"}:
+                    errors.append("AgentIntegrationCheckItem.status enum must be exactly PASS/WARN/FAIL")
+            else:
+                errors.append("AgentIntegrationCheckItem.status must be an enum")
+
+    if "/chat" not in openapi_text:
+        errors.append("OpenAPI must document canonical `/chat` references for onboarding surfaces")
+    if "chat_api_url" not in openapi_text:
+        errors.append("OpenAPI must include `chat_api_url` in onboarding manifest contract")
+
     reference_text = _read_text(ROOT / "docs" / "api" / "reference.md", errors)
     for required_snippet in (
         "POST /chat",
@@ -103,6 +194,10 @@ def main() -> int:
     ):
         if required_snippet not in reference_text:
             errors.append(f"docs/api/reference.md missing required chat lifecycle snippet: `{required_snippet}`")
+    if "integration_manifest" not in reference_text:
+        errors.append("docs/api/reference.md must document `integration_manifest`")
+    if "status` (`PASS` | `WARN` | `FAIL`)" not in reference_text:
+        errors.append("docs/api/reference.md must document doctor check PASS/WARN/FAIL statuses")
 
     guide_text = _read_text(ROOT / "docs" / "integration" / "workcore-api-integration-guide.md", errors)
     for required_snippet in (
@@ -115,6 +210,10 @@ def main() -> int:
                 "docs/integration/workcore-api-integration-guide.md missing required chat lifecycle snippet: "
                 f"`{required_snippet}`"
             )
+    if "integration_manifest" not in guide_text:
+        errors.append("Integration guide must document `integration_manifest`")
+    if "Canonical onboarding manifest expectations" not in guide_text:
+        errors.append("Integration guide must document canonical onboarding manifest expectations")
 
     cutover_text = _read_text(ROOT / "docs" / "integration" / "chat-cutover-notice-2026-03-04.md", errors)
     for required_snippet in (
@@ -131,6 +230,22 @@ def main() -> int:
             )
     if re.search(r"https?://chatkit\.", cutover_text):
         errors.append("Cutover notice must not advertise `chatkit.*` hostnames as public API hosts")
+
+    def _ensure_chatkit_mentions_are_deprecated(label: str, text: str) -> None:
+        if "/chatkit" not in text:
+            return
+        lowered = text.lower()
+        if "deprecated" not in lowered and "compatibility alias" not in lowered:
+            errors.append(f"{label} references `/chatkit` without deprecation context")
+        if SUNSET_HTTP_DATE not in text and SUNSET_ISO_TIMESTAMP not in text:
+            errors.append(f"{label} references `/chatkit` without explicit sunset marker")
+
+    _ensure_chatkit_mentions_are_deprecated("docs/api/reference.md", reference_text)
+    _ensure_chatkit_mentions_are_deprecated("docs/integration/workcore-api-integration-guide.md", guide_text)
+    _ensure_chatkit_mentions_are_deprecated(
+        "docs/integration/chat-cutover-notice-2026-03-04.md",
+        cutover_text,
+    )
 
     runtime_targets = (
         ROOT / "apps" / "orchestrator" / "chatkit" / "app.py",
@@ -151,6 +266,9 @@ def main() -> int:
     integration_kit_text = _read_text(ROOT / "apps" / "orchestrator" / "api" / "app.py", errors)
     for required_snippet in (
         "openapi_chatkit_alias_policy",
+        "integration_manifest_chat_canonical",
+        "deprecated_chatkit_partner_reference",
+        "secret_expiry_warning_level_present",
         "/chat",
         "/chatkit",
         "Deprecation",
@@ -162,6 +280,26 @@ def main() -> int:
                 "apps/orchestrator/api/app.py missing integration check snippet for chat alias policy: "
                 f"`{required_snippet}`"
             )
+
+    onboarding_text = _read_text(ROOT / "apps" / "orchestrator" / "api" / "partner_self_service.py", errors)
+    for required_snippet in (
+        'chat_api_url = f"{normalized_base_url}{_CHAT_API_PATH}"',
+        '"deprecated_chat_alias_url"',
+        '"integration_manifest.json"',
+        '"curl_examples/check_auth.sh"',
+        '"curl_examples/check_project_scope.sh"',
+        '"curl_examples/check_chat.sh"',
+        "sunset at 2026-04-04T00:00:00Z",
+    ):
+        if required_snippet not in onboarding_text:
+            errors.append(
+                "partner onboarding package generator missing expected canonical onboarding snippet: "
+                f"`{required_snippet}`"
+            )
+    _ensure_chatkit_mentions_are_deprecated("apps/orchestrator/api/partner_self_service.py", onboarding_text)
+
+    if SUNSET_ISO_TIMESTAMP not in onboarding_text and SUNSET_ISO_TIMESTAMP not in reference_text:
+        errors.append("Sunset timestamp must remain visible in partner-facing onboarding content")
 
     if errors:
         print("Public chat contract drift detected:", file=sys.stderr)
