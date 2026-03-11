@@ -82,6 +82,7 @@ import {
 } from './project-chat-settings';
 import { normalizeSchemaTypeLabel } from './template-variable-types';
 import { shouldAutoCreateWorkflow } from './workflow-auto-create';
+import { RunDebugPanel } from './run-debug/RunDebugPanel';
 import './styles.css';
 
 const statusTone = {
@@ -830,6 +831,7 @@ function TemplateTextarea({
 export default function App() {
   const [integrationOpen, { open: openIntegration, close: closeIntegration }] = useDisclosure(false);
   const [runHistoryOpen, { open: openRunHistory, close: closeRunHistory }] = useDisclosure(false);
+  const [runDebugOpen, { open: openRunDebug, close: closeRunDebug }] = useDisclosure(false);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     if (typeof window === 'undefined') return 'builder';
     const params = new URLSearchParams(window.location.search);
@@ -904,6 +906,8 @@ export default function App() {
   const [runHistoryRaw, setRunHistoryRaw] = useState<RunRecord[]>([]);
   const [runHistoryLoading, setRunHistoryLoading] = useState(false);
   const [runHistoryExpandedId, setRunHistoryExpandedId] = useState<string | null>(null);
+  const [runDebugRunId, setRunDebugRunId] = useState<string | null>(null);
+  const [runDebugSeedRun, setRunDebugSeedRun] = useState<RunRecord | null>(null);
   const [historyWorkflowScope, setHistoryWorkflowScope] = useState<HistoryWorkflowScope>('selected');
   const [historyProjectScope, setHistoryProjectScope] = useState<HistoryProjectScope>('active');
   const [historyInputRateUsdPer1M, setHistoryInputRateUsdPer1M] = useState(
@@ -2034,6 +2038,29 @@ export default function App() {
   const handleCloseRunHistory = () => {
     setRunHistoryExpandedId(null);
     closeRunHistory();
+  };
+
+  const handleOpenRunDebug = (run: RunRecord) => {
+    setRunDebugRunId(run.run_id);
+    setRunDebugSeedRun(run);
+    openRunDebug();
+  };
+
+  const handleCloseRunDebug = () => {
+    closeRunDebug();
+  };
+
+  const handleRunDebugUpdated = (updatedRun: RunRecord) => {
+    setRunHistoryRaw((previous) => {
+      let found = false;
+      const next = previous.map((item) => {
+        if (item.run_id !== updatedRun.run_id) return item;
+        found = true;
+        return { ...item, ...updatedRun };
+      });
+      return found ? next : [updatedRun, ...previous];
+    });
+    setRunDebugSeedRun(updatedRun);
   };
 
   const chatPageUrl = useMemo(() => {
@@ -3927,6 +3954,14 @@ export default function App() {
                           >
                             {isExpanded ? 'Hide details' : 'Show details'}
                           </Button>
+                          <Button
+                            size="xs"
+                            variant="light"
+                            onClick={() => handleOpenRunDebug(run)}
+                            data-testid={`open-run-debug-${run.run_id}`}
+                          >
+                            Open Run Debug
+                          </Button>
                         </Stack>
                       </Group>
                       <Group gap={6} mt="xs" wrap="wrap">
@@ -4149,6 +4184,17 @@ export default function App() {
           </ScrollArea>
         </Stack>
       </Modal>
+
+      <RunDebugPanel
+        opened={runDebugOpen}
+        runId={runDebugRunId}
+        seedRun={runDebugSeedRun}
+        inputRateUsdPer1M={historyInputRateUsdPer1M}
+        outputRateUsdPer1M={historyOutputRateUsdPer1M}
+        onClose={handleCloseRunDebug}
+        onStatus={setStatus}
+        onRunUpdated={handleRunDebugUpdated}
+      />
 
       <Modal opened={integrationOpen} onClose={closeIntegration} title="Agent integration kit" centered size="lg">
         <Stack gap="sm">

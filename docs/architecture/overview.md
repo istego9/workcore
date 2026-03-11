@@ -11,7 +11,7 @@ Status: Draft (Phase 0)
 - Integrate via webhooks and MCP.
 
 ## System boundaries (logical)
-- Builder UI: graph editor, validation, draft/publish UI, run view.
+- Builder UI: graph editor, validation, draft/publish UI, execution history, run debug inspector.
 - Workflow Service: workflows, drafts, publish/rollback, versions.
 - Capability Registry Service: versioned capability contracts and step-level capability pin validation.
 - Orchestrator Service: project routing, intent orchestration, runs, node_runs, interrupts, execution semantics.

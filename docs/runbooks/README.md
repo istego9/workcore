@@ -12,6 +12,7 @@ Each runbook should include:
 
 Recommended initial runbooks:
 - `orchestrator-runtime.md`
+- `run-debug-inspector.md`
 - `chatkit-integration.md`
 - `streaming-sse.md`
 - `webhooks-delivery.md`
