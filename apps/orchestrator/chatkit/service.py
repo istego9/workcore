@@ -382,7 +382,7 @@ def create_service_app() -> Starlette:
                     request,
                     "DEPRECATED_ENDPOINT",
                     "POST /chatkit is no longer available; use POST /chat",
-                    410,
+                    status_code=410,
                 )
             )
         if is_chatkit_alias:
