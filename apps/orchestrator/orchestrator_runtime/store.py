@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 import asyncpg
 
+from apps.orchestrator.orchestrator_runtime.project_settings import merge_project_settings
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -205,7 +207,8 @@ class OrchestrationStore(Protocol):
         self,
         project_id: str,
         tenant_id: str,
-        project_name: str,
+        project_name: Optional[str] = None,
+        settings: Optional[Dict[str, Any]] = None,
     ) -> Optional[ProjectRecord]:
         ...
 
@@ -422,13 +425,17 @@ class InMemoryOrchestrationStore:
         self,
         project_id: str,
         tenant_id: str,
-        project_name: str,
+        project_name: Optional[str] = None,
+        settings: Optional[Dict[str, Any]] = None,
     ) -> Optional[ProjectRecord]:
         key = (tenant_id, project_id)
         existing = self.projects.get(key)
         if existing is None:
             return None
-        existing.project_name = _resolve_project_name(project_id, project_name)
+        if project_name is not None:
+            existing.project_name = _resolve_project_name(project_id, project_name)
+        if settings is not None:
+            existing.settings = merge_project_settings(existing.settings, settings)
         existing.updated_at = _now()
         return existing
 
@@ -892,16 +899,31 @@ class PostgresOrchestrationStore:
         self,
         project_id: str,
         tenant_id: str,
-        project_name: str,
+        project_name: Optional[str] = None,
+        settings: Optional[Dict[str, Any]] = None,
     ) -> Optional[ProjectRecord]:
+        existing = await self.get_project(project_id, tenant_id)
+        if existing is None:
+            return None
+        resolved_project_name = (
+            _resolve_project_name(project_id, project_name)
+            if project_name is not None
+            else existing.project_name
+        )
+        resolved_settings = (
+            merge_project_settings(existing.settings, settings)
+            if settings is not None
+            else existing.settings
+        )
         row = await self.pool.fetchrow(
             """
             update projects
-            set project_name = $1, updated_at = now()
-            where project_id = $2 and tenant_id = $3
+            set project_name = $1, settings = $2::jsonb, updated_at = now()
+            where project_id = $3 and tenant_id = $4
             returning project_id, project_name, tenant_id, default_orchestrator_id, settings, created_at, updated_at
             """,
-            _resolve_project_name(project_id, project_name),
+            resolved_project_name,
+            _jsonb(resolved_settings),
             project_id,
             tenant_id,
         )

@@ -91,7 +91,7 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
 
         workflow = await self._resolve_workflow(thread, context)
         if not workflow:
-            yield ErrorEvent(message="workflow_id is required", allow_retry=False)
+            yield ErrorEvent(message="workflow_id could not be resolved", allow_retry=False)
             return
         workflow_id, workflow_version_id = workflow
 
@@ -107,7 +107,17 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         )
         await self._run_store_save(context, run)
         thread.metadata["run_id"] = run.id
+        run_project_id = run.metadata.get("project_id") if isinstance(run.metadata, dict) else None
+        if run_project_id:
+            thread.metadata["project_id"] = str(run_project_id)
         thread.metadata["workflow_id"] = run.workflow_id
+        thread.metadata["workflow_version_id"] = run.version_id
+        resolution_mode = run.metadata.get("chat_resolution_mode") if isinstance(run.metadata, dict) else None
+        if resolution_mode:
+            thread.metadata["chat_resolution_mode"] = str(resolution_mode)
+        correlation_id = run.metadata.get("correlation_id") if isinstance(run.metadata, dict) else None
+        if correlation_id:
+            thread.metadata["correlation_id"] = str(correlation_id)
         thread.metadata["last_event_id"] = None
         await self.store.save_thread(thread, context=context)
 
@@ -217,12 +227,17 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         workflow_version_id = metadata.get("workflow_version_id")
 
         request_metadata = context.request_metadata or {}
-        if not workflow_id and request_metadata.get("workflow_id"):
-            workflow_id = request_metadata.get("workflow_id")
-            workflow_version_id = request_metadata.get("workflow_version_id")
-            thread.metadata["workflow_id"] = workflow_id
-            if workflow_version_id:
-                thread.metadata["workflow_version_id"] = workflow_version_id
+        persisted = False
+        if request_metadata.get("workflow_id"):
+            workflow_id = workflow_id or request_metadata.get("workflow_id")
+            workflow_version_id = workflow_version_id or request_metadata.get("workflow_version_id")
+        for key in ("project_id", "workflow_id", "workflow_version_id", "chat_resolution_mode", "correlation_id"):
+            value = request_metadata.get(key)
+            if value is None or thread.metadata.get(key) == value:
+                continue
+            thread.metadata[key] = value
+            persisted = True
+        if persisted:
             await self.store.save_thread(thread, context=context)
 
         if not workflow_id:

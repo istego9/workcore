@@ -74,6 +74,7 @@ from apps.orchestrator.orchestrator_runtime import (
     ProjectOrchestratorRuntime,
     create_orchestration_store,
 )
+from apps.orchestrator.orchestrator_runtime.project_settings import normalize_project_settings
 from apps.orchestrator.project_router import ProjectRouter, ProjectRouterError, RoutingRequest
 from apps.orchestrator.runtime import Edge, MultiWorkflowRuntimeService, Node, RuntimeConfig, Workflow
 from apps.orchestrator.runtime.env import get_env
@@ -1096,10 +1097,10 @@ def create_app(
                 400,
             )
         settings = payload.get("settings")
-        if settings is None:
-            settings = {}
-        if not isinstance(settings, dict):
-            return _error(request, "INVALID_ARGUMENT", "settings must be an object", 400)
+        try:
+            settings = normalize_project_settings(settings)
+        except ValueError as exc:
+            return _error(request, "INVALID_ARGUMENT", str(exc), 400)
 
         await ctx.ensure_orchestration()
         if ctx.orchestration_store is None:
@@ -1149,8 +1150,20 @@ def create_app(
         if not project_id:
             return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
         project_name_raw = payload.get("project_name")
-        if not isinstance(project_name_raw, str) or not project_name_raw.strip():
-            return _error(request, "INVALID_ARGUMENT", "project_name is required", 400)
+        project_name: Optional[str] = None
+        if project_name_raw is not None:
+            if not isinstance(project_name_raw, str) or not project_name_raw.strip():
+                return _error(request, "INVALID_ARGUMENT", "project_name must be a non-empty string", 400)
+            project_name = project_name_raw.strip()
+        settings_raw = payload.get("settings")
+        settings: Optional[Dict[str, Any]] = None
+        if settings_raw is not None:
+            try:
+                settings = normalize_project_settings(settings_raw)
+            except ValueError as exc:
+                return _error(request, "INVALID_ARGUMENT", str(exc), 400)
+        if project_name is None and settings is None:
+            return _error(request, "INVALID_ARGUMENT", "project_name or settings is required", 400)
 
         await ctx.ensure_orchestration()
         if ctx.orchestration_store is None:
@@ -1160,7 +1173,8 @@ def create_app(
         project = await ctx.orchestration_store.update_project(
             project_id=project_id,
             tenant_id=tenant,
-            project_name=project_name_raw.strip(),
+            project_name=project_name,
+            settings=settings,
         )
         if project is None:
             return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)

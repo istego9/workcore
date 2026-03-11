@@ -303,6 +303,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(bad_settings.status_code, 400)
         self.assertEqual(bad_settings.json()["error"]["code"], "INVALID_ARGUMENT")
 
+        bad_default_chat_workflow = self.client.post(
+            "/projects",
+            json={
+                "project_id": "proj_bad_chat_default",
+                "project_name": "Bad Chat Default",
+                "settings": {"default_chat_workflow_id": 17},
+            },
+        )
+        self.assertEqual(bad_default_chat_workflow.status_code, 400)
+        self.assertEqual(bad_default_chat_workflow.json()["error"]["code"], "INVALID_ARGUMENT")
+
     def test_create_project_returns_conflict_when_duplicate(self):
         first = self.client.post("/projects", json={"project_id": "proj_dup", "project_name": "Dup Project"})
         self.assertEqual(first.status_code, 201)
@@ -354,24 +365,79 @@ class ApiTests(unittest.TestCase):
         project_id = "proj_update_me"
         create_response = self.client.post(
             "/projects",
-            json={"project_id": project_id, "project_name": "Before Name"},
+            json={
+                "project_id": project_id,
+                "project_name": "Before Name",
+                "settings": {"orchestrator_enabled": True},
+            },
         )
         self.assertEqual(create_response.status_code, 201)
 
         response = self.client.patch(
             f"/projects/{project_id}",
-            json={"project_name": "After Name"},
+            json={
+                "project_name": "After Name",
+                "settings": {"default_chat_workflow_id": "wf_chat_default"},
+            },
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["project_id"], project_id)
         self.assertEqual(payload["project_name"], "After Name")
         self.assertEqual(payload["tenant_id"], "local")
+        self.assertEqual(
+            payload["settings"],
+            {
+                "orchestrator_enabled": True,
+                "default_chat_workflow_id": "wf_chat_default",
+            },
+        )
+
+    def test_update_project_accepts_settings_only_and_allows_clearing_chat_default(self):
+        project_id = "proj_update_settings_only"
+        create_response = self.client.post(
+            "/projects",
+            json={
+                "project_id": project_id,
+                "project_name": "Project Settings Only",
+                "settings": {
+                    "orchestrator_enabled": True,
+                    "default_chat_workflow_id": "wf_chat_default",
+                },
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        response = self.client.patch(
+            f"/projects/{project_id}",
+            json={"settings": {"default_chat_workflow_id": None}},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["project_name"], "Project Settings Only")
+        self.assertEqual(
+            payload["settings"],
+            {
+                "orchestrator_enabled": True,
+                "default_chat_workflow_id": None,
+            },
+        )
 
     def test_update_project_validates_payload_and_scope(self):
-        missing_name = self.client.patch("/projects/proj_any", json={})
-        self.assertEqual(missing_name.status_code, 400)
-        self.assertEqual(missing_name.json()["error"]["code"], "INVALID_ARGUMENT")
+        missing_fields = self.client.patch("/projects/proj_any", json={})
+        self.assertEqual(missing_fields.status_code, 400)
+        self.assertEqual(missing_fields.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_name = self.client.patch("/projects/proj_any", json={"project_name": ""})
+        self.assertEqual(bad_name.status_code, 400)
+        self.assertEqual(bad_name.json()["error"]["code"], "INVALID_ARGUMENT")
+
+        bad_settings = self.client.patch(
+            "/projects/proj_any",
+            json={"settings": {"default_chat_workflow_id": []}},
+        )
+        self.assertEqual(bad_settings.status_code, 400)
+        self.assertEqual(bad_settings.json()["error"]["code"], "INVALID_ARGUMENT")
 
         not_found = self.client.patch("/projects/proj_missing", json={"project_name": "Updated"})
         self.assertEqual(not_found.status_code, 404)

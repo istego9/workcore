@@ -341,6 +341,197 @@ class ChatKitTests(unittest.TestCase):
         self.assertEqual(run.status, "COMPLETED")
         self.assertEqual(run.node_outputs.get("agent"), {"message": "hi"})
 
+    def test_http_chat_explicit_workflow_mode_persists_resolution_metadata(self):
+        store = InMemoryChatKitStore()
+        app = create_chatkit_app(
+            self._workflow(),
+            store=store,
+            project_defaults={"proj_chat": self.workflow_id},
+        )
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            metadata={"workflow_id": self.workflow_id, "project_id": "proj_chat"},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+
+        response = client.post(
+            "/chat",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 200)
+        thread = next(iter(store.threads.values()))
+        self.assertEqual(thread.metadata.get("project_id"), "proj_chat")
+        self.assertEqual(thread.metadata.get("workflow_id"), self.workflow_id)
+        self.assertEqual(thread.metadata.get("workflow_version_id"), self.workflow_version_id)
+        self.assertEqual(thread.metadata.get("chat_resolution_mode"), "explicit_workflow")
+        self.assertTrue(thread.metadata.get("correlation_id"))
+
+    def test_http_chat_threads_create_with_project_metadata_only_starts_successfully(self):
+        store = InMemoryChatKitStore()
+        app = create_chatkit_app(
+            self._workflow(),
+            store=store,
+            project_defaults={"proj_chat": self.workflow_id},
+        )
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            metadata={"project_id": "proj_chat"},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+
+        response = client.post(
+            "/chat",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("thread.created", response.text)
+        thread = next(iter(store.threads.values()))
+        self.assertEqual(thread.metadata.get("project_id"), "proj_chat")
+        self.assertEqual(thread.metadata.get("workflow_id"), self.workflow_id)
+        self.assertEqual(thread.metadata.get("workflow_version_id"), self.workflow_version_id)
+        self.assertEqual(thread.metadata.get("chat_resolution_mode"), "project_default")
+
+    def test_http_chat_threads_create_with_project_header_only_starts_successfully(self):
+        store = InMemoryChatKitStore()
+        app = create_chatkit_app(
+            self._workflow(),
+            store=store,
+            project_defaults={"proj_chat": self.workflow_id},
+        )
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+
+        response = client.post(
+            "/chat",
+            content=req.model_dump_json(),
+            headers={
+                "X-Tenant-Id": "tenant_test",
+                "X-Project-Id": "proj_chat",
+                "Content-Type": "application/json",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("thread.created", response.text)
+        thread = next(iter(store.threads.values()))
+        self.assertEqual(thread.metadata.get("project_id"), "proj_chat")
+        self.assertEqual(thread.metadata.get("workflow_id"), self.workflow_id)
+        self.assertEqual(thread.metadata.get("chat_resolution_mode"), "header_default")
+
+    def test_http_chat_missing_project_scope_returns_typed_error(self):
+        app = create_chatkit_app(self._workflow())
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+
+        response = client.post(
+            "/chat",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 422)
+        payload = response.json()
+        self.assertEqual(payload["error"]["code"], "CHAT_PROJECT_SCOPE_REQUIRED")
+        self.assertTrue(payload["correlation_id"])
+
+        alias = client.post(
+            "/chatkit",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(alias.status_code, 422)
+        self.assertEqual(alias.json()["error"]["code"], "CHAT_PROJECT_SCOPE_REQUIRED")
+        self.assertEqual(alias.headers.get("Deprecation"), "true")
+        self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
+
+    def test_http_chat_project_without_default_workflow_returns_typed_error(self):
+        app = create_chatkit_app(
+            self._workflow(),
+            project_defaults={"proj_chat": None},
+        )
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            metadata={"project_id": "proj_chat"},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+
+        response = client.post(
+            "/chat",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED")
+
+        alias = client.post(
+            "/chatkit",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(alias.status_code, 409)
+        self.assertEqual(alias.json()["error"]["code"], "CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED")
+        self.assertEqual(alias.headers.get("Deprecation"), "true")
+        self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
+
+    def test_http_chat_broken_default_workflow_returns_typed_error(self):
+        app = create_chatkit_app(
+            self._workflow(),
+            project_defaults={"proj_chat": "wf_missing"},
+        )
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            metadata={"project_id": "proj_chat"},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+
+        response = client.post(
+            "/chat",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "CHAT_DEFAULT_WORKFLOW_NOT_FOUND")
+
     def test_http_chatkit_requires_tenant_header(self):
         app = create_chatkit_app(self._workflow())
         client = TestClient(app)
@@ -410,6 +601,37 @@ class ChatKitTests(unittest.TestCase):
         self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
         self.assertIsNone(canonical.headers.get("Deprecation"))
         self.assertIsNone(canonical.headers.get("Sunset"))
+
+    def test_http_chatkit_alias_parity_for_project_header_resolution(self):
+        app = create_chatkit_app(
+            self._workflow(),
+            project_defaults={"proj_chat": self.workflow_id},
+        )
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+        headers = {
+            "X-Tenant-Id": "tenant_test",
+            "X-Project-Id": "proj_chat",
+            "Content-Type": "application/json",
+        }
+        canonical = client.post("/chat", content=req.model_dump_json(), headers=headers)
+        alias = client.post("/chatkit", content=req.model_dump_json(), headers=headers)
+        self.assertEqual(canonical.status_code, 200)
+        self.assertEqual(alias.status_code, 200)
+        self.assertIn("text/event-stream", canonical.headers.get("content-type", ""))
+        self.assertIn("text/event-stream", alias.headers.get("content-type", ""))
+        self.assertIn("thread.created", canonical.text)
+        self.assertIn("thread.created", alias.text)
+        self.assertEqual(alias.headers.get("Deprecation"), "true")
+        self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
 
     def test_http_chatkit_alias_payload_parity_for_transcribe(self):
         async def fake_transcriber(audio_input, context):

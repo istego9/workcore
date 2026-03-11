@@ -17,12 +17,18 @@ from starlette.routing import Route
 from chatkit.server import NonStreamingResult, StreamingResult
 
 from apps.orchestrator.api.store import PostgresRunStore
+from apps.orchestrator.api.workflow_store import PostgresWorkflowStore, WorkflowNotFoundError
 from apps.orchestrator.chatkit.config import ChatKitConfig
 from apps.orchestrator.chatkit.context import ChatKitContext
 from apps.orchestrator.chatkit.idempotency import IdempotencyStore
 from apps.orchestrator.chatkit.runtime_service import ChatKitRuntimeService
 from apps.orchestrator.chatkit.object_store import MinioAttachmentStore
 from apps.orchestrator.chatkit.pg_store import PostgresChatKitStore
+from apps.orchestrator.chatkit.scope_resolution import (
+    CHAT_RESOLUTION_MODE_ERROR,
+    ChatThreadResolutionError,
+    resolve_thread_create_scope,
+)
 from apps.orchestrator.chatkit.server import (
     InvalidTranscriptionInputError,
     TranscriptionUnavailableError,
@@ -37,6 +43,8 @@ from apps.orchestrator.executors import (
     MockAgentExecutor,
     mcp_client_from_env,
 )
+from apps.orchestrator.orchestrator_runtime.project_settings import get_default_chat_workflow_id
+from apps.orchestrator.orchestrator_runtime.store import PostgresOrchestrationStore
 from apps.orchestrator.runtime import Edge, Node, SimpleEvaluator, Workflow, CelEvaluator
 from apps.orchestrator.streaming import EventPublisher, InMemoryEventBus, InMemoryEventStore
 from apps.orchestrator.runtime.env import get_env
@@ -59,6 +67,33 @@ def _attach_chatkit_alias_headers(response: Response) -> Response:
     response.headers["Deprecation"] = _CHATKIT_ALIAS_DEPRECATION
     response.headers["Sunset"] = _CHATKIT_ALIAS_SUNSET_HTTP_DATE
     return response
+
+
+def _correlation_id(request: Request) -> str:
+    existing = getattr(request.state, "correlation_id", None)
+    if isinstance(existing, str) and existing:
+        return existing
+    incoming = (request.headers.get("X-Correlation-Id") or "").strip()
+    correlation_id = incoming or f"corr_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')[:18]}"
+    request.state.correlation_id = correlation_id
+    return correlation_id
+
+
+def _error_response(
+    request: Request,
+    code: str,
+    message: str,
+    status_code: int,
+    *,
+    details: Any = None,
+) -> JSONResponse:
+    error = {"code": code, "message": message}
+    if details is not None:
+        error["details"] = details
+    return JSONResponse(
+        {"error": error, "correlation_id": _correlation_id(request)},
+        status_code=status_code,
+    )
 
 
 def _audio_filename_from_media_type(media_type: str) -> str:
@@ -200,6 +235,8 @@ def create_service_app() -> Starlette:
         cfg = ChatKitConfig.from_env()
         pool = await asyncpg.create_pool(cfg.database_url)
         store = PostgresChatKitStore(pool)
+        orchestration_store = PostgresOrchestrationStore(pool)
+        workflow_store = PostgresWorkflowStore(pool)
 
         client = Minio(
             cfg.object_endpoint,
@@ -274,25 +311,78 @@ def create_service_app() -> Starlette:
         app.state.pool = pool
         app.state.service = service
         app.state.config = cfg
+        app.state.orchestration_store = orchestration_store
+        app.state.workflow_store = workflow_store
 
         try:
             yield
         finally:
             await pool.close()
 
+    async def resolve_project_default_workflow(project_id: str, tenant_id: str) -> tuple[str, str | None]:
+        orchestration_store: PostgresOrchestrationStore = app.state.orchestration_store
+        workflow_store: PostgresWorkflowStore = app.state.workflow_store
+
+        project = await orchestration_store.get_project(project_id, tenant_id)
+        if project is None:
+            raise ChatThreadResolutionError("ERR_PROJECT_NOT_FOUND", "project not found", 404, project_id=project_id)
+
+        default_workflow_id = get_default_chat_workflow_id(project.settings)
+        if not default_workflow_id:
+            raise ChatThreadResolutionError(
+                "CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED",
+                "project default chat workflow is not configured",
+                409,
+                project_id=project_id,
+            )
+
+        try:
+            workflow = await workflow_store.get_workflow(
+                default_workflow_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+            )
+        except WorkflowNotFoundError as exc:
+            raise ChatThreadResolutionError(
+                "CHAT_DEFAULT_WORKFLOW_NOT_FOUND",
+                "project default chat workflow is missing or not published",
+                404,
+                project_id=project_id,
+                workflow_id=default_workflow_id,
+            ) from exc
+
+        active_version_id = workflow.active_version_id
+        if not active_version_id:
+            raise ChatThreadResolutionError(
+                "CHAT_DEFAULT_WORKFLOW_NOT_FOUND",
+                "project default chat workflow is missing or not published",
+                404,
+                project_id=project_id,
+                workflow_id=default_workflow_id,
+            )
+
+        try:
+            await workflow_store.get_version(active_version_id, tenant_id=tenant_id)
+        except WorkflowNotFoundError as exc:
+            raise ChatThreadResolutionError(
+                "CHAT_DEFAULT_WORKFLOW_NOT_FOUND",
+                "project default chat workflow is missing or not published",
+                404,
+                project_id=project_id,
+                workflow_id=default_workflow_id,
+            ) from exc
+        return default_workflow_id, active_version_id
+
     async def chatkit(request: Request):
         is_chatkit_alias = request.url.path == _CHATKIT_ALIAS_PATH
         if is_chatkit_alias and _chatkit_alias_is_sunset():
             logger.warning("chatkit.alias.sunset_enforced path=%s", request.url.path)
             return _attach_chatkit_alias_headers(
-                JSONResponse(
-                    {
-                        "error": {
-                            "code": "DEPRECATED_ENDPOINT",
-                            "message": "POST /chatkit is no longer available; use POST /chat",
-                        }
-                    },
-                    status_code=410,
+                _error_response(
+                    request,
+                    "DEPRECATED_ENDPOINT",
+                    "POST /chatkit is no longer available; use POST /chat",
+                    410,
                 )
             )
         if is_chatkit_alias:
@@ -302,26 +392,68 @@ def create_service_app() -> Starlette:
         if token:
             auth_header = request.headers.get("Authorization", "")
             if auth_header != f"Bearer {token}":
-                response = JSONResponse({"error": "unauthorized"}, status_code=401)
+                response = _error_response(request, "UNAUTHORIZED", "Authorization header is invalid", 401)
                 return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
 
         tenant_id = (request.headers.get("X-Tenant-Id") or "").strip()
         if not tenant_id:
-            response = JSONResponse(
-                {"error": {"code": "ERR_TENANT_REQUIRED", "message": "X-Tenant-Id header is required"}},
-                status_code=422,
-            )
+            response = _error_response(request, "ERR_TENANT_REQUIRED", "X-Tenant-Id header is required", 422)
             return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
 
         body = await request.body()
         metadata = {}
+        request_type = ""
         try:
             parsed = json.loads(body.decode("utf-8"))
-            metadata = parsed.get("metadata") or {}
+            request_type = str(parsed.get("type") or "").strip() if isinstance(parsed, dict) else ""
+            metadata = parsed.get("metadata") or {} if isinstance(parsed, dict) else {}
         except Exception:
             metadata = {}
         metadata = dict(metadata)
         metadata["tenant_id"] = tenant_id
+        metadata["correlation_id"] = _correlation_id(request)
+        if request_type == "threads.create":
+            header_project_id = (request.headers.get("X-Project-Id") or "").strip() or None
+            try:
+                resolved_scope = await resolve_thread_create_scope(
+                    metadata,
+                    header_project_id,
+                    tenant_id,
+                    resolve_project_default_workflow,
+                )
+            except ChatThreadResolutionError as exc:
+                logger.warning(
+                    "chatkit.thread_resolution mode=%s tenant_id=%s project_id=%s workflow_id=%s error_code=%s path=%s",
+                    CHAT_RESOLUTION_MODE_ERROR,
+                    tenant_id,
+                    exc.project_id or metadata.get("project_id") or header_project_id or "",
+                    exc.workflow_id or metadata.get("workflow_id") or "",
+                    exc.code,
+                    request.url.path,
+                )
+                response = _error_response(
+                    request,
+                    exc.code,
+                    exc.message,
+                    exc.status_code,
+                    details=exc.details,
+                )
+                return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
+            metadata["chat_resolution_mode"] = resolved_scope.mode
+            if resolved_scope.project_id:
+                metadata["project_id"] = resolved_scope.project_id
+            metadata["workflow_id"] = resolved_scope.workflow_id
+            if resolved_scope.workflow_version_id:
+                metadata["workflow_version_id"] = resolved_scope.workflow_version_id
+            logger.info(
+                "chatkit.thread_resolution mode=%s tenant_id=%s project_id=%s workflow_id=%s workflow_version_id=%s path=%s",
+                resolved_scope.mode,
+                tenant_id,
+                resolved_scope.project_id or "",
+                resolved_scope.workflow_id,
+                resolved_scope.workflow_version_id or "",
+                request.url.path,
+            )
 
         base_ctx = request.app.state.context
         ctx = ChatKitContext(
@@ -334,16 +466,10 @@ def create_service_app() -> Starlette:
         try:
             result = await request.app.state.server.process(body, ctx)
         except InvalidTranscriptionInputError as exc:
-            response = JSONResponse(
-                {"error": {"code": "ERR_INVALID_AUDIO_INPUT", "message": str(exc)}},
-                status_code=422,
-            )
+            response = _error_response(request, "ERR_INVALID_AUDIO_INPUT", str(exc), 422)
             return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
         except TranscriptionUnavailableError as exc:
-            response = JSONResponse(
-                {"error": {"code": "ERR_TRANSCRIPTION_UNAVAILABLE", "message": str(exc)}},
-                status_code=503,
-            )
+            response = _error_response(request, "ERR_TRANSCRIPTION_UNAVAILABLE", str(exc), 503)
             return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
 
         if isinstance(result, StreamingResult):
