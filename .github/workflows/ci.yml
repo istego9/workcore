@@ -233,3 +233,77 @@ jobs:
           done
 
           E2E_BASE_URL="http://127.0.0.1:4173" E2E_WORKERS=1 npm run test:e2e:smoke
+
+  fullstack-chat-contract:
+    needs: changes
+    if: needs.changes.outputs.builder == 'true' || needs.changes.outputs.orchestrator == 'true' || needs.changes.outputs.specs == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        if: steps.checkout1.outcome != 'success'
+        id: checkout2
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success'
+        id: checkout3
+        uses: actions/checkout@v4
+        continue-on-error: true
+      - name: Fail if checkout failed after retries
+        if: steps.checkout1.outcome != 'success' && steps.checkout2.outcome != 'success' && steps.checkout3.outcome != 'success'
+        run: exit 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/builder/package-lock.json
+
+      - name: Install builder dependencies
+        working-directory: apps/builder
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: apps/builder
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare local DNS aliases
+        run: |
+          echo "127.0.0.1 workcore.build api.workcore.build chatkit.workcore.build" | sudo tee -a /etc/hosts
+
+      - name: Prepare docker env
+        run: cp .env.docker.example .env.docker
+
+      - name: Start full stack
+        run: docker compose --env-file .env.docker -f docker-compose.workcore.yml up -d --build --wait
+
+      - name: Run full-stack chat contract acceptance
+        env:
+          E2E_BASE_URL: http://workcore.build:8080
+          E2E_API_BASE_URL: http://api.workcore.build:8080
+          E2E_CHATKIT_API_URL: http://api.workcore.build:8080/chat
+          E2E_API_AUTH_TOKEN: dev_workcore_api_token
+          ACCEPTANCE_URL: http://workcore.build:8080/?e2e=1
+        run: ./scripts/e2e_suite.sh
+
+      - name: Upload acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-package
+          path: artifacts/acceptance
+          if-no-files-found: ignore
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose --env-file .env.docker -f docker-compose.workcore.yml logs --tail=200
+
+      - name: Shutdown full stack
+        if: always()
+        run: docker compose --env-file .env.docker -f docker-compose.workcore.yml down -v
