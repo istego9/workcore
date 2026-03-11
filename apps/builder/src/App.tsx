@@ -115,7 +115,8 @@ const inferChatApiUrl = () => {
 };
 
 const appOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
-const CHATKIT_PAGE = import.meta.env.VITE_CHATKIT_PAGE || `${appOrigin}/chatkit.html`;
+// `VITE_CHATKIT_PAGE` remains as a deprecated alias for compatibility during migration.
+const CHAT_PAGE = import.meta.env.VITE_CHAT_PAGE || import.meta.env.VITE_CHATKIT_PAGE || `${appOrigin}/chatkit.html`;
 const CHAT_FORK_PAGE = import.meta.env.VITE_CHAT_FORK_PAGE || `${appOrigin}/chat-fork.html`;
 // `VITE_CHATKIT_API_URL` remains as a deprecated alias for compatibility during migration.
 const CHAT_API_URL =
@@ -124,11 +125,11 @@ const CHATKIT_DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY || '';
 const CHATKIT_AUTH_TOKEN = import.meta.env.VITE_CHATKIT_AUTH_TOKEN || '';
 const CHAT_FRONTEND_MODE = (import.meta.env.VITE_CHAT_FRONTEND_MODE || 'chatkit').toLowerCase();
 const resolveChatPage = () => {
-  if (typeof window === 'undefined') return CHATKIT_PAGE;
+  if (typeof window === 'undefined') return CHAT_PAGE;
   const override = new URLSearchParams(window.location.search).get('chat_ui');
   if (override === 'fork') return CHAT_FORK_PAGE;
-  if (override === 'chatkit') return CHATKIT_PAGE;
-  return CHAT_FRONTEND_MODE === 'fork' ? CHAT_FORK_PAGE : CHATKIT_PAGE;
+  if (override === 'chatkit') return CHAT_PAGE;
+  return CHAT_FRONTEND_MODE === 'fork' ? CHAT_FORK_PAGE : CHAT_PAGE;
 };
 const EXPORT_SCHEMA_VERSION = 'workflow_export_v1';
 
@@ -2001,7 +2002,7 @@ export default function App() {
     closeRunHistory();
   };
 
-  const chatkitUrl = useMemo(() => {
+  const chatPageUrl = useMemo(() => {
     if (!workflowId) return '';
     const url = new URL(resolveChatPage(), window.location.origin);
     url.searchParams.set('api_url', CHAT_API_URL);
@@ -2026,12 +2027,12 @@ export default function App() {
     return url.toString();
   }, [workflowId, activeVersionId, projectId, tenantId]);
 
-  const chatkitEmbedUrl = useMemo(() => {
-    if (!chatkitUrl) return '';
-    const url = new URL(chatkitUrl);
+  const chatEmbedUrl = useMemo(() => {
+    if (!chatPageUrl) return '';
+    const url = new URL(chatPageUrl);
     url.searchParams.set('embed', '1');
     return url.toString();
-  }, [chatkitUrl]);
+  }, [chatPageUrl]);
 
   const handleOpenChat = async () => {
     if (!workflowId) {
@@ -2045,7 +2046,7 @@ export default function App() {
         return;
       }
     }
-    if (!chatkitUrl) {
+    if (!chatPageUrl) {
       setStatus({ tone: 'warn', label: 'Chat link not ready yet' });
       return;
     }
@@ -2225,17 +2226,17 @@ export default function App() {
               setMetaDirty(true);
             }}
           />
-          {chatkitUrl && (
+          {chatPageUrl && (
             <Group align="end" gap="xs" wrap="nowrap">
               <TextInput
                 label="Chat link"
-                value={chatkitUrl}
+                value={chatPageUrl}
                 readOnly
                 style={{ flex: 1 }}
                 data-testid="chat-link"
                 aria-label="Chat link"
               />
-              <CopyButton value={chatkitUrl}>
+              <CopyButton value={chatPageUrl}>
                 {({ copied, copy }) => (
                   <Button variant="light" size="sm" onClick={copy}>
                     {copied ? 'Copied' : 'Copy link'}
@@ -2970,8 +2971,8 @@ export default function App() {
                   variant="default"
                   size="sm"
                   onClick={handleOpenChat}
-                  data-testid="open-chatkit"
-                  data-chatkit-url={chatkitUrl || undefined}
+                  data-testid="open-chat"
+                  data-chat-url={chatPageUrl || undefined}
                 >
                   Open Chat
                 </Button>
@@ -3192,8 +3193,8 @@ export default function App() {
                 <Button
                   size="xs"
                   variant="light"
-                  onClick={() => window.open(chatkitUrl, '_blank', 'noopener')}
-                  disabled={!chatkitUrl}
+                  onClick={() => window.open(chatPageUrl, '_blank', 'noopener')}
+                  disabled={!chatPageUrl}
                 >
                   Open in new tab
                 </Button>
@@ -3212,10 +3213,10 @@ export default function App() {
                   border: '1px solid rgba(15, 23, 42, 0.12)'
                 }}
               >
-                {chatkitEmbedUrl ? (
+                {chatEmbedUrl ? (
                   <iframe
                     title="ChatKit"
-                    src={chatkitEmbedUrl}
+                    src={chatEmbedUrl}
                     style={{ width: '100%', height: '100%', border: 'none' }}
                   />
                 ) : (

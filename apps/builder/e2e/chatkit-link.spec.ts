@@ -10,7 +10,7 @@ import {
 } from './env';
 import { deleteProjectIfExists, deleteWorkflowIfExists } from './cleanup';
 
-test('open chat button builds chatkit url', async ({ page, request }) => {
+test('open chat button builds canonical chat url', async ({ page, request }) => {
   let workflowId: string | null = null;
   let versionId: string | null = null;
   const projectId = `proj_e2e_${Date.now()}`;
@@ -62,8 +62,8 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
     await page.getByText(workflowName).first().click();
     await expect(page.getByText(`Workflow ${workflowId}`).first()).toBeVisible();
 
-    const openChatButton = page.getByTestId('open-chatkit');
-    const dataUrl = await openChatButton.getAttribute('data-chatkit-url');
+    const openChatButton = page.getByTestId('open-chat');
+    const dataUrl = await openChatButton.getAttribute('data-chat-url');
     expect(dataUrl).toBeTruthy();
     await expect(page.getByTestId('chat-link')).toHaveValue(dataUrl!);
     const url = new URL(dataUrl!);
