@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE, deleteProject, listProjects, listRuns, listWorkflows, updateProject } from './api';
+import {
+  API_BASE,
+  cancelRun,
+  deleteProject,
+  getRun,
+  getRunLedger,
+  listProjects,
+  listRuns,
+  listWorkflows,
+  rerunNode,
+  updateProject
+} from './api';
 
 describe('api listRuns', () => {
   const fetchMock = vi.fn();
@@ -189,6 +200,79 @@ describe('api listRuns', () => {
       `${API_BASE}/projects/proj_1`,
       expect.objectContaining({
         method: 'DELETE'
+      })
+    );
+  });
+
+  it('calls GET /runs/{run_id} for run inspector refresh', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ run_id: 'run_1', status: 'RUNNING' })
+    } as Response);
+
+    await getRun('run_1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/runs/run_1`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json'
+        })
+      })
+    );
+  });
+
+  it('builds /runs/{run_id}/ledger query params for run inspector timeline', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] })
+    } as Response);
+
+    await getRunLedger('run_1', { limit: 500 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/runs/run_1/ledger?limit=500`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json'
+        })
+      })
+    );
+  });
+
+  it('calls POST /runs/{run_id}/rerun-node from run inspector actions', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ run_id: 'run_1', status: 'RUNNING' })
+    } as Response);
+
+    await rerunNode('run_1', { node_id: 'agent_1', scope: 'downstream' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/runs/run_1/rerun-node`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ node_id: 'agent_1', scope: 'downstream' })
+      })
+    );
+  });
+
+  it('calls POST /runs/{run_id}/cancel from run inspector actions', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ run_id: 'run_1', status: 'CANCELLED' })
+    } as Response);
+
+    await cancelRun('run_1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/runs/run_1/cancel`,
+      expect.objectContaining({
+        method: 'POST'
       })
     );
   });

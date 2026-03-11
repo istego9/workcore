@@ -97,10 +97,27 @@ export type RunRecord = {
     status: string;
     attempt?: number;
     output?: any;
-    last_error?: string | null;
+    last_error?: any;
     trace_id?: string | null;
     usage?: Record<string, any> | null;
   }>;
+};
+
+export type RunLedgerRecord = {
+  ledger_id: string;
+  run_id: string;
+  workflow_id: string;
+  version_id: string;
+  step_id?: string | null;
+  node_id?: string | null;
+  capability_id?: string | null;
+  capability_version?: string | null;
+  status: string;
+  event_type: string;
+  decision?: Record<string, any> | null;
+  artifacts?: string[];
+  payload?: Record<string, any>;
+  timestamp: string;
 };
 
 const request = async <T>(path: string, options?: RequestInit): Promise<ApiResult<T>> => {
@@ -265,6 +282,38 @@ export const listRuns = async (params?: {
   }
   const suffix = query.toString();
   return request(`/runs${suffix ? `?${suffix}` : ''}`);
+};
+
+export const getRun = async (runId: string): Promise<ApiResult<RunRecord>> => {
+  return request(`/runs/${encodeURIComponent(runId)}`);
+};
+
+export const getRunLedger = async (
+  runId: string,
+  params?: { limit?: number }
+): Promise<ApiResult<{ items: RunLedgerRecord[]; next_cursor?: string | null }>> => {
+  const query = new URLSearchParams();
+  if (typeof params?.limit === 'number') {
+    query.set('limit', String(params.limit));
+  }
+  const suffix = query.toString();
+  return request(`/runs/${encodeURIComponent(runId)}/ledger${suffix ? `?${suffix}` : ''}`);
+};
+
+export const rerunNode = async (
+  runId: string,
+  payload: { node_id: string; scope: 'node_only' | 'downstream' }
+): Promise<ApiResult<RunRecord>> => {
+  return request(`/runs/${encodeURIComponent(runId)}/rerun-node`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const cancelRun = async (runId: string): Promise<ApiResult<RunRecord>> => {
+  return request(`/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST'
+  });
 };
 
 export const listProjects = async (params?: {
