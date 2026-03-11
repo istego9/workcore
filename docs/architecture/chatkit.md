@@ -7,10 +7,13 @@ Status: Draft
 - Advanced integration server for ChatKit (self-hosted).
 - Thread/session storage, message streaming, widgets/actions for interrupts.
 - Mapping between ChatKit threads and workflow runs.
-- Forked frontend chat shell (optional) compatible with the same `/chatkit` contract.
+- Forked frontend chat shell (optional) compatible with the same `/chat` contract.
 
 ## Endpoints
-- `POST /chatkit` — ChatKit Server endpoint (streaming + non-streaming requests).
+- `POST /chat` — canonical ChatKit endpoint (streaming + non-streaming requests).
+- `POST /chatkit` — deprecated compatibility alias for one release window.
+  - Alias responses include `Deprecation: true` and `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`.
+  - Starting `2026-04-04T00:00:00Z`, alias returns `410 Gone`.
 - `X-Tenant-Id` is required on every ChatKit request.
 
 ## External client contract (supported request types)
@@ -58,7 +61,7 @@ Status: Draft
   - Builder embeds `openai-chatkit` page (`chatkit.html`).
 - Fork mode:
   - Builder embeds `chat-fork.html` React shell behind feature flag.
-  - Shell keeps parity with existing widget/action semantics and `/chatkit` payloads.
+  - Shell keeps parity with existing widget/action semantics and `/chat` payloads.
   - Extension renderer adds:
     - chart mapping to Nivo adapters (`chart_type` registry):
       - `bar`, `line`, `pie`, `area-bump`, `bump`
@@ -112,12 +115,14 @@ Action payload fields consumed by runtime:
 ## Service deployment
 - Run ChatKit as a separate service using `apps/orchestrator/chatkit/service.py` (ASGI app).
 - Health check: `GET /health`.
-- ChatKit endpoint: `POST /chatkit`.
+- ChatKit canonical endpoint: `POST /chat`.
+- ChatKit compatibility alias: `POST /chatkit` (deprecated lifecycle described above).
 - Example: `uvicorn apps.orchestrator.chatkit.service:app --port 8001`
 - Apply migrations with `python scripts/migrate.py` (uses `CHATKIT_DATABASE_URL` or `DATABASE_URL`).
 
 ## Auth
-- If `CHATKIT_AUTH_TOKEN` is set, `/chatkit` requires `Authorization: Bearer <token>`.
+- Single bearer profile: `/orchestrator/*` and `/chat` accept the same bearer token.
+- Split bearer profile: `/chat` requires `Authorization: Bearer <CHATKIT_AUTH_TOKEN>`.
 - ChatKit runtime enforces tenant scope from `X-Tenant-Id` and must reject requests without tenant header.
 
 ## Idempotency (actions)
@@ -127,14 +132,14 @@ Action payload fields consumed by runtime:
 - Idempotency reservation starts after action payload validation succeeds, so invalid submit payloads do not lock retries.
 
 ## Delivery and fallback strategy for third-party clients
-- Primary: consume ChatKit SSE response stream from `POST /chatkit`.
+- Primary: consume ChatKit SSE response stream from `POST /chat`.
 - Run-level fallback: subscribe to `GET /runs/{run_id}/stream` using `Last-Event-ID` for reconnect.
 - Webhook fallback: subscribe to outbound webhook events (`interrupt_created`, `run_completed`, `run_failed`, `node_failed`) for offline or delayed consumer scenarios.
 - Persist `thread_id`, `run_id`, and open `interrupt_id` in the external system so retries and reconnects stay idempotent.
 
 ## STT dictation flow (MVP)
 - Frontend captures short audio snippets through browser `MediaRecorder`.
-- Frontend sends `input.transcribe` to `POST /chatkit`.
+- Frontend sends `input.transcribe` to `POST /chat`.
 - Backend validates mime/size guardrails and calls configured transcriber.
 - Response text is inserted into composer draft; user confirms send manually.
 

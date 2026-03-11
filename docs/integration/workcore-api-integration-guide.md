@@ -282,10 +282,14 @@ curl -sS -X DELETE "$BASE_URL/webhooks/outbound/<subscription_id>" \
 ## 8. Chat endpoint
 Chat endpoint is on the same API host:
 - `POST /chat`
+- `POST /chatkit` (deprecated compatibility alias during transition window)
 
 Requirements:
 - `X-Tenant-Id` is required
 - send `Authorization: Bearer <access_token>` obtained from Entra OAuth token endpoint
+- when using deprecated alias `POST /chatkit` before sunset, expect headers:
+  - `Deprecation: true`
+  - `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`
 
 For `threads.create`, include `metadata.workflow_id` (required).
 
@@ -302,7 +306,14 @@ curl -N -X POST "$BASE_URL/chat" \
     "params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}
   }'
 
-# expected after cutover: 404
+# compatibility alias (before 2026-04-04T00:00:00Z): same behavior as /chat + deprecation headers
+curl -i -X POST "$BASE_URL/chatkit" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"threads.create","metadata":{"workflow_id":"wf_example"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[],"inference_options":{}}}}'
+
+# starting 2026-04-04T00:00:00Z: expected 410 Gone
 curl -i -X POST "$BASE_URL/chatkit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Tenant-Id: $TENANT_ID" \

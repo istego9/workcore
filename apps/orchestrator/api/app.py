@@ -2936,6 +2936,7 @@ def create_app(
             "/capabilities",
             "/capabilities/{capability_id}/versions",
             "/chat",
+            "/chatkit",
             "/orchestrator/messages",
             "/orchestrator/eval/replay",
             "/orchestrator/sessions/{session_id}/stack",
@@ -2953,11 +2954,21 @@ def create_app(
             len(missing_paths) == 0,
             "ok" if not missing_paths else f"missing: {', '.join(missing_paths)}",
         )
+        chatkit_alias_contract_markers = (
+            "  /chatkit:",
+            "      deprecated: true",
+            "Deprecation",
+            "Sunset",
+            "'410':",
+        )
+        chatkit_alias_contract_ok = all(marker in openapi_text for marker in chatkit_alias_contract_markers)
         add_check(
-            "openapi_chatkit_path_removed",
-            "OpenAPI no longer exposes deprecated /chatkit path",
-            "  /chatkit:" not in openapi_text,
-            "ok" if "  /chatkit:" not in openapi_text else "deprecated /chatkit path found",
+            "openapi_chatkit_alias_policy",
+            "OpenAPI exposes /chatkit as deprecated alias with sunset + 410 lifecycle",
+            chatkit_alias_contract_ok,
+            "ok"
+            if chatkit_alias_contract_ok
+            else "missing one of: /chatkit, deprecated:true, Deprecation header, Sunset header, 410 response",
         )
         add_check(
             "integration_log_buffer_configured",
@@ -3327,6 +3338,9 @@ def create_app(
             "",
             "### Option B: headless integration against ChatKit API",
             f"- Endpoint: {public_base_url}/chat",
+            "- Canonical path: `POST /chat`.",
+            "- Compatibility alias: `POST /chatkit` (deprecated; emits `Deprecation: true` + `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`).",
+            "- Sunset behavior: starting `2026-04-04T00:00:00Z`, `POST /chatkit` returns `410 Gone`; keep all integrations on `POST /chat`.",
             "- Required header: `X-Tenant-Id`",
             "- Auth profile: use the same `Authorization: Bearer <WORKCORE_API_AUTH_TOKEN>` as orchestrator calls on the public API host.",
             "- Request types:",

@@ -367,7 +367,11 @@ Use `Idempotency-Key` on handoff endpoints for retry-safe delivery.
 
 ## Chat-first integration for external clients
 For full user interaction (approval/forms/files) integrate `POST /chat` in addition to run APIs.
-- Deprecated path notice: `POST /chatkit` is removed from the public contract and should return `404`.
+- Canonical public endpoint: `POST /chat`.
+- Compatibility alias (deprecated): `POST /chatkit`.
+  - During transition window, `/chatkit` returns the same payload/SSE behavior as `/chat`.
+  - `/chatkit` responses include `Deprecation: true` and `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`.
+  - Starting `2026-04-04T00:00:00Z`, `/chatkit` returns `410 Gone`.
 
 - Supported interactive request types:
   - `threads.create`

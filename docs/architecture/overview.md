@@ -65,7 +65,7 @@ Ordering guarantees:
 - Streaming Service: /runs/{run_id}/stream (SSE)
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*
 - ChatKit Server: chat sessions/threads, widget/actions endpoints
-- Chat Frontend Shell: render chat timeline/composer/widgets over `/chatkit` contract
+- Chat Frontend Shell: render chat timeline/composer/widgets over canonical `/chat` contract (`/chatkit` is a deprecated compatibility alias during transition window)
 - MCP Bridge Service: internal `/internal/mcp/call` + `/health`
 
 ## Persistence and storage

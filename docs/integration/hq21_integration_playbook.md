@@ -26,11 +26,16 @@ Recommended:
 - `X-User-Id`
 - `Idempotency-Key` for mutating requests
 
-For ChatKit (`POST /chatkit`) include integration metadata in request body:
+For ChatKit (`POST /chat`) include integration metadata in request body:
 - `metadata.workflow_id` (required on `threads.create`)
 - `metadata.workflow_version_id` (optional)
 - `metadata.external_user_id` (recommended)
 - `metadata.external_session_id` (recommended)
+
+Deprecated compatibility alias:
+- `POST /chatkit` remains available until `2026-04-04T00:00:00Z`
+- alias responses include `Deprecation: true` and `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`
+- on/after `2026-04-04T00:00:00Z` alias returns `410 Gone`
 
 ## Field mapping (HQ21 -> WorkCore)
 Minimum run-start mapping:
@@ -49,7 +54,7 @@ Run correlation storage in HQ21:
 1. Create or fetch target workflow.
 2. Publish workflow version.
 3. Start user interaction via chat:
-   - `POST /chatkit` with `type=threads.create`
+   - `POST /chat` with `type=threads.create`
    - persist returned `thread_id`
 4. Continue user interaction via chat:
    - `type=threads.add_user_message` for regular messages

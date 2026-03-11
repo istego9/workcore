@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.2
+  version: 0.24.3
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -381,6 +381,81 @@ paths:
                 properties:
                   error: { type: string }
         '422': { $ref: '#/components/responses/ErrorResponse' }
+  /chatkit:
+    parameters:
+      - $ref: '#/components/parameters/TenantIdRequired'
+    post:
+      tags: [chatkit]
+      summary: Deprecated ChatKit compatibility alias
+      deprecated: true
+      description: >
+        Temporary compatibility alias for `POST /chat`.
+        During transition window this endpoint returns the same payload/SSE contract as
+        `POST /chat` and emits deprecation lifecycle headers:
+        `Deprecation: true`, `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`.
+        Starting April 4, 2026 at 00:00 UTC, this endpoint returns `410 Gone`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatKitRequest'
+      responses:
+        '200':
+          description: Same response contract as `POST /chat` during transition window.
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ChatKitJsonResponse'
+                  - $ref: '#/components/schemas/ChatKitTranscriptionResult'
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized (missing/invalid OAuth access token)
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+        '410':
+          description: Deprecated endpoint sunset reached; use `POST /chat`.
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: DEPRECATED_ENDPOINT
+                  message: POST /chatkit is no longer available; use POST /chat
+        '422':
+          description: Validation error (same as `POST /chat`).
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /orchestrator/messages:
     parameters:
       - $ref: '#/components/parameters/TenantId'
@@ -1369,6 +1444,19 @@ components:
       name: X-MS-CLIENT-PRINCIPAL
       description: Base64-encoded EasyAuth principal header from Microsoft Entra protected frontend.
 
+  headers:
+    Deprecation:
+      description: >
+        Deprecation lifecycle marker for compatibility aliases. Value is `true` when endpoint is deprecated.
+      schema:
+        type: string
+        example: "true"
+    Sunset:
+      description: HTTP-date when the deprecated endpoint becomes unavailable.
+      schema:
+        type: string
+        example: Sat, 04 Apr 2026 00:00:00 GMT
+
   parameters:
     WorkflowId:
       in: path
@@ -1503,6 +1591,7 @@ components:
                 - ERR_WORKFLOW_NOT_IN_PROJECT
                 - ERR_WORKFLOW_ENGINE_UNAVAILABLE
                 - ERR_LLM_UNAVAILABLE
+                - DEPRECATED_ENDPOINT
                 - ERR_LLM_BAD_SCHEMA_OUTPUT
                 - ERR_CANCEL_NOT_ALLOWED
                 - ERR_CONTEXT_FETCH_FAILED

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
+import logging
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -22,6 +24,25 @@ from apps.orchestrator.executors import IntegrationHTTPEgressPolicy, Integration
 from apps.orchestrator.runtime.env import get_env
 from apps.orchestrator.runtime import SimpleEvaluator
 from apps.orchestrator.streaming import EventPublisher, InMemoryEventBus, InMemoryEventStore
+
+_CHAT_ENDPOINT_PATH = "/chat"
+_CHATKIT_ALIAS_PATH = "/chatkit"
+_CHATKIT_ALIAS_DEPRECATION = "true"
+_CHATKIT_ALIAS_SUNSET_AT = datetime(2026, 4, 4, 0, 0, 0, tzinfo=timezone.utc)
+_CHATKIT_ALIAS_SUNSET_HTTP_DATE = "Sat, 04 Apr 2026 00:00:00 GMT"
+
+logger = logging.getLogger(__name__)
+
+
+def _chatkit_alias_is_sunset(now: datetime | None = None) -> bool:
+    current = now or datetime.now(timezone.utc)
+    return current >= _CHATKIT_ALIAS_SUNSET_AT
+
+
+def _attach_chatkit_alias_headers(response: Response) -> Response:
+    response.headers["Deprecation"] = _CHATKIT_ALIAS_DEPRECATION
+    response.headers["Sunset"] = _CHATKIT_ALIAS_SUNSET_HTTP_DATE
+    return response
 
 
 def create_app(
@@ -62,12 +83,30 @@ def create_app(
     base_run_store = run_store or InMemoryRunStore()
 
     async def chatkit(request: Request):
+        is_chatkit_alias = request.url.path == _CHATKIT_ALIAS_PATH
+        if is_chatkit_alias and _chatkit_alias_is_sunset():
+            logger.warning("chatkit.alias.sunset_enforced path=%s", request.url.path)
+            return _attach_chatkit_alias_headers(
+                JSONResponse(
+                    {
+                        "error": {
+                            "code": "DEPRECATED_ENDPOINT",
+                            "message": "POST /chatkit is no longer available; use POST /chat",
+                        }
+                    },
+                    status_code=410,
+                )
+            )
+        if is_chatkit_alias:
+            logger.info("chatkit.alias.request path=%s sunset=%s", request.url.path, _CHATKIT_ALIAS_SUNSET_HTTP_DATE)
+
         tenant_id = (request.headers.get("X-Tenant-Id") or "").strip()
         if not tenant_id:
-            return JSONResponse(
+            response = JSONResponse(
                 {"error": {"code": "ERR_TENANT_REQUIRED", "message": "X-Tenant-Id header is required"}},
                 status_code=422,
             )
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
         body = await request.body()
         metadata = {}
         try:
@@ -87,20 +126,29 @@ def create_app(
         try:
             result = await server.process(body, ctx)
         except InvalidTranscriptionInputError as exc:
-            return JSONResponse(
+            response = JSONResponse(
                 {"error": {"code": "ERR_INVALID_AUDIO_INPUT", "message": str(exc)}},
                 status_code=422,
             )
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
         except TranscriptionUnavailableError as exc:
-            return JSONResponse(
+            response = JSONResponse(
                 {"error": {"code": "ERR_TRANSCRIPTION_UNAVAILABLE", "message": str(exc)}},
                 status_code=503,
             )
-        if isinstance(result, StreamingResult):
-            return StreamingResponse(result, media_type="text/event-stream")
-        if isinstance(result, NonStreamingResult):
-            return Response(result.json, media_type="application/json")
-        return Response(b"{}", media_type="application/json")
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
 
-    routes = [Route("/chatkit", chatkit, methods=["POST"])]
+        if isinstance(result, StreamingResult):
+            response = StreamingResponse(result, media_type="text/event-stream")
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
+        if isinstance(result, NonStreamingResult):
+            response = Response(result.json, media_type="application/json")
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
+        response = Response(b"{}", media_type="application/json")
+        return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
+
+    routes = [
+        Route(_CHAT_ENDPOINT_PATH, chatkit, methods=["POST"]),
+        Route(_CHATKIT_ALIAS_PATH, chatkit, methods=["POST"]),
+    ]
     return Starlette(routes=routes)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import json
+import logging
 from typing import Any, Optional
 
 import asyncpg
@@ -38,6 +40,25 @@ from apps.orchestrator.executors import (
 from apps.orchestrator.runtime import Edge, Node, SimpleEvaluator, Workflow, CelEvaluator
 from apps.orchestrator.streaming import EventPublisher, InMemoryEventBus, InMemoryEventStore
 from apps.orchestrator.runtime.env import get_env
+
+_CHAT_ENDPOINT_PATH = "/chat"
+_CHATKIT_ALIAS_PATH = "/chatkit"
+_CHATKIT_ALIAS_DEPRECATION = "true"
+_CHATKIT_ALIAS_SUNSET_AT = datetime(2026, 4, 4, 0, 0, 0, tzinfo=timezone.utc)
+_CHATKIT_ALIAS_SUNSET_HTTP_DATE = "Sat, 04 Apr 2026 00:00:00 GMT"
+
+logger = logging.getLogger(__name__)
+
+
+def _chatkit_alias_is_sunset(now: datetime | None = None) -> bool:
+    current = now or datetime.now(timezone.utc)
+    return current >= _CHATKIT_ALIAS_SUNSET_AT
+
+
+def _attach_chatkit_alias_headers(response: Response) -> Response:
+    response.headers["Deprecation"] = _CHATKIT_ALIAS_DEPRECATION
+    response.headers["Sunset"] = _CHATKIT_ALIAS_SUNSET_HTTP_DATE
+    return response
 
 
 def _audio_filename_from_media_type(media_type: str) -> str:
@@ -260,18 +281,37 @@ def create_service_app() -> Starlette:
             await pool.close()
 
     async def chatkit(request: Request):
+        is_chatkit_alias = request.url.path == _CHATKIT_ALIAS_PATH
+        if is_chatkit_alias and _chatkit_alias_is_sunset():
+            logger.warning("chatkit.alias.sunset_enforced path=%s", request.url.path)
+            return _attach_chatkit_alias_headers(
+                JSONResponse(
+                    {
+                        "error": {
+                            "code": "DEPRECATED_ENDPOINT",
+                            "message": "POST /chatkit is no longer available; use POST /chat",
+                        }
+                    },
+                    status_code=410,
+                )
+            )
+        if is_chatkit_alias:
+            logger.info("chatkit.alias.request path=%s sunset=%s", request.url.path, _CHATKIT_ALIAS_SUNSET_HTTP_DATE)
+
         token = request.app.state.config.auth_token
         if token:
             auth_header = request.headers.get("Authorization", "")
             if auth_header != f"Bearer {token}":
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
+                response = JSONResponse({"error": "unauthorized"}, status_code=401)
+                return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
 
         tenant_id = (request.headers.get("X-Tenant-Id") or "").strip()
         if not tenant_id:
-            return JSONResponse(
+            response = JSONResponse(
                 {"error": {"code": "ERR_TENANT_REQUIRED", "message": "X-Tenant-Id header is required"}},
                 status_code=422,
             )
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
 
         body = await request.body()
         metadata = {}
@@ -294,27 +334,34 @@ def create_service_app() -> Starlette:
         try:
             result = await request.app.state.server.process(body, ctx)
         except InvalidTranscriptionInputError as exc:
-            return JSONResponse(
+            response = JSONResponse(
                 {"error": {"code": "ERR_INVALID_AUDIO_INPUT", "message": str(exc)}},
                 status_code=422,
             )
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
         except TranscriptionUnavailableError as exc:
-            return JSONResponse(
+            response = JSONResponse(
                 {"error": {"code": "ERR_TRANSCRIPTION_UNAVAILABLE", "message": str(exc)}},
                 status_code=503,
             )
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
+
         if isinstance(result, StreamingResult):
-            return StreamingResponse(result, media_type="text/event-stream")
+            response = StreamingResponse(result, media_type="text/event-stream")
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
         if isinstance(result, NonStreamingResult):
-            return Response(result.json, media_type="application/json")
-        return Response(b"{}", media_type="application/json")
+            response = Response(result.json, media_type="application/json")
+            return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
+        response = Response(b"{}", media_type="application/json")
+        return _attach_chatkit_alias_headers(response) if is_chatkit_alias else response
 
     async def health(_: Request) -> PlainTextResponse:
         return PlainTextResponse("ok")
 
     routes = [
         Route("/health", health),
-        Route("/chatkit", chatkit, methods=["POST"]),
+        Route(_CHAT_ENDPOINT_PATH, chatkit, methods=["POST"]),
+        Route(_CHATKIT_ALIAS_PATH, chatkit, methods=["POST"]),
     ]
 
     app = Starlette(routes=routes, lifespan=lifespan)

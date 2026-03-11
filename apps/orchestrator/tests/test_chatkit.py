@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+from unittest import mock
 
 from starlette.testclient import TestClient
 
@@ -353,16 +354,113 @@ class ChatKitTests(unittest.TestCase):
                 )
             ),
         )
-        missing_tenant = client.post("/chatkit", content=req.model_dump_json())
+        missing_tenant = client.post("/chat", content=req.model_dump_json())
         self.assertEqual(missing_tenant.status_code, 422)
         self.assertEqual(missing_tenant.json()["error"]["code"], "ERR_TENANT_REQUIRED")
+        self.assertIsNone(missing_tenant.headers.get("Deprecation"))
+        self.assertIsNone(missing_tenant.headers.get("Sunset"))
+
+        missing_tenant_alias = client.post("/chatkit", content=req.model_dump_json())
+        self.assertEqual(missing_tenant_alias.status_code, 422)
+        self.assertEqual(missing_tenant_alias.json()["error"]["code"], "ERR_TENANT_REQUIRED")
+        self.assertEqual(missing_tenant_alias.headers.get("Deprecation"), "true")
+        self.assertEqual(missing_tenant_alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
 
         with_tenant = client.post(
-            "/chatkit",
+            "/chat",
             content=req.model_dump_json(),
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(with_tenant.status_code, 200)
+        self.assertIsNone(with_tenant.headers.get("Deprecation"))
+        self.assertIsNone(with_tenant.headers.get("Sunset"))
+
+        deprecated_path = client.post(
+            "/chatkit",
+            content=req.model_dump_json(),
+            headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+        )
+        self.assertEqual(deprecated_path.status_code, 200)
+        self.assertEqual(deprecated_path.headers.get("Deprecation"), "true")
+        self.assertEqual(deprecated_path.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
+
+    def test_http_chatkit_alias_parity_for_sse_requests(self):
+        app = create_chatkit_app(self._workflow())
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            metadata={"workflow_id": self.workflow_id, "workflow_version_id": self.workflow_version_id},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+        headers = {"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"}
+        canonical = client.post("/chat", content=req.model_dump_json(), headers=headers)
+        alias = client.post("/chatkit", content=req.model_dump_json(), headers=headers)
+        self.assertEqual(canonical.status_code, 200)
+        self.assertEqual(alias.status_code, 200)
+        self.assertIn("text/event-stream", canonical.headers.get("content-type", ""))
+        self.assertIn("text/event-stream", alias.headers.get("content-type", ""))
+        self.assertIn("thread.created", canonical.text)
+        self.assertIn("thread.created", alias.text)
+        self.assertEqual(alias.headers.get("Deprecation"), "true")
+        self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
+        self.assertIsNone(canonical.headers.get("Deprecation"))
+        self.assertIsNone(canonical.headers.get("Sunset"))
+
+    def test_http_chatkit_alias_payload_parity_for_transcribe(self):
+        async def fake_transcriber(audio_input, context):
+            return "transcribed hello"
+
+        app = create_chatkit_app(self._workflow(), transcriber=fake_transcriber)
+        client = TestClient(app)
+        req = InputTranscribeReq(
+            params=InputTranscribeParams(
+                audio_base64="SGVsbG8=",
+                mime_type="audio/webm;codecs=opus",
+            )
+        )
+        headers = {"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"}
+        canonical = client.post("/chat", content=req.model_dump_json(), headers=headers)
+        alias = client.post("/chatkit", content=req.model_dump_json(), headers=headers)
+        self.assertEqual(canonical.status_code, 200)
+        self.assertEqual(alias.status_code, 200)
+        self.assertEqual(canonical.json(), alias.json())
+        self.assertEqual(alias.headers.get("Deprecation"), "true")
+        self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
+        self.assertIsNone(canonical.headers.get("Deprecation"))
+        self.assertIsNone(canonical.headers.get("Sunset"))
+
+    def test_http_chatkit_alias_returns_410_after_sunset(self):
+        app = create_chatkit_app(self._workflow())
+        client = TestClient(app)
+        req = ThreadsCreateReq(
+            metadata={"workflow_id": self.workflow_id, "workflow_version_id": self.workflow_version_id},
+            params=ThreadCreateParams(
+                input=UserMessageInput(
+                    content=[UserMessageTextContent(text="start")],
+                    attachments=[],
+                    inference_options=InferenceOptions(),
+                )
+            ),
+        )
+        headers = {"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"}
+
+        with mock.patch("apps.orchestrator.chatkit.app._chatkit_alias_is_sunset", return_value=True):
+            alias = client.post("/chatkit", content=req.model_dump_json(), headers=headers)
+
+        self.assertEqual(alias.status_code, 410)
+        self.assertEqual(alias.json()["error"]["code"], "DEPRECATED_ENDPOINT")
+        self.assertIn("POST /chat", alias.json()["error"]["message"])
+        self.assertEqual(alias.headers.get("Deprecation"), "true")
+        self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
+
+        canonical = client.post("/chat", content=req.model_dump_json(), headers=headers)
+        self.assertEqual(canonical.status_code, 200)
+        self.assertIn("text/event-stream", canonical.headers.get("content-type", ""))
 
     def test_http_chatkit_transcribe_requires_configuration(self):
         app = create_chatkit_app(self._workflow())
@@ -374,7 +472,7 @@ class ChatKitTests(unittest.TestCase):
             )
         )
         response = client.post(
-            "/chatkit",
+            "/chat",
             content=req.model_dump_json(),
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
@@ -394,7 +492,7 @@ class ChatKitTests(unittest.TestCase):
             )
         )
         response = client.post(
-            "/chatkit",
+            "/chat",
             content=req.model_dump_json(),
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
@@ -418,7 +516,7 @@ class ChatKitTests(unittest.TestCase):
             )
         )
         response = client.post(
-            "/chatkit",
+            "/chat",
             content=req.model_dump_json(),
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )

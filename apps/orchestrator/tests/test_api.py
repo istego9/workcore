@@ -2329,7 +2329,7 @@ class ApiTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                check.get("id") == "openapi_chatkit_path_removed" and check.get("ok") is True
+                check.get("id") == "openapi_chatkit_alias_policy" and check.get("ok") is True
                 for check in report["checks"]
             )
         )

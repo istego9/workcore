@@ -4,6 +4,33 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-03-11
+
+### API diff vs previous version
+- Previous API version: `0.24.2`
+- Current API version: `0.24.3`
+- Compatibility: additive (deprecated `/chatkit` compatibility alias restored during transition window; canonical endpoint remains `/chat`)
+
+### Added
+- Public OpenAPI path:
+  - `POST /chatkit` as deprecated compatibility alias for `POST /chat`
+- Deprecated alias lifecycle headers:
+  - `Deprecation: true`
+  - `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`
+- Explicit post-sunset behavior in contract/runtime:
+  - `POST /chatkit` returns `410 Gone` starting `2026-04-04T00:00:00Z`
+
+### Changed
+- Runtime parity during transition window:
+  - `POST /chat` and `POST /chatkit` now produce the same payload/SSE semantics
+- Public docs now describe one canonical chat path (`/chat`) plus compatibility alias lifecycle (`/chatkit` -> `410`)
+
+### Deprecated
+- `POST /chatkit` remains deprecated and must be migrated to `POST /chat` before sunset.
+
+### Removed
+- None.
+
 ## 2026-03-09
 
 ### API diff vs previous version

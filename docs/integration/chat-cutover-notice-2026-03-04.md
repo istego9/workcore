@@ -11,7 +11,10 @@ Hello team,
 Today (March 4, 2026) we are migrating the public chat endpoint path on the WorkCore API gateway.
 
 What changes:
-- Chat endpoint path changes from `POST /chatkit` to `POST /chat`.
+- Canonical chat endpoint is `POST /chat`.
+- `POST /chatkit` remains as a deprecated compatibility alias until `2026-04-04T00:00:00Z`.
+- Alias responses include `Deprecation: true` and `Sunset: Sat, 04 Apr 2026 00:00:00 GMT`.
+- Starting `2026-04-04T00:00:00Z`, `POST /chatkit` returns `410 Gone`.
 - The API hosts remain the same:
   - `https://api.runwcr.com`
   - `https://api.hq21.tech`
@@ -47,7 +50,7 @@ curl -N -X POST "https://api.runwcr.com/chat" \
   -H "Content-Type: application/json" \
   -d '{"type":"threads.create","metadata":{"workflow_id":"wf_example"},"params":{"input":{"content":[{"type":"input_text","text":"start"}],"attachments":[]}}}'
 
-# after cutover should return 404
+# compatibility alias (before 2026-04-04T00:00:00Z): should return 200 + deprecation headers
 curl -i -X POST "https://api.runwcr.com/chatkit" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "X-Tenant-Id: local" \
@@ -127,7 +130,7 @@ curl -N -X POST "$BASE_URL/chat" \
 
 Deprecated endpoint check:
 ```bash
-# after cutover this path must not be used by integrations
+# deprecated compatibility alias; migrate integrations to /chat before sunset
 curl -i -X POST "$BASE_URL/chatkit" \
   -H "Authorization: Bearer ${CHATKIT_TOKEN:-$WORKCORE_API_TOKEN}" \
   -H "X-Tenant-Id: $TENANT_ID" \
@@ -142,7 +145,8 @@ curl -i -X POST "$BASE_URL/chatkit" \
 Expected outcomes:
 - `/orchestrator/messages`: request is authorized (business-level `4xx` like `ERR_PROJECT_NOT_FOUND` is possible with test payloads).
 - `/chat`: request is authorized and processed by Chat transport (SSE stream).
-- `/chatkit`: deprecated; integrations must migrate to `/chat`.
+- `/chatkit` before `2026-04-04T00:00:00Z`: same transport behavior as `/chat` + deprecation headers.
+- `/chatkit` on/after `2026-04-04T00:00:00Z`: `410 Gone`.
 
 ## Post-cutover message
 
@@ -153,7 +157,7 @@ Hello team,
 Cutover is complete as of March 4, 2026.
 
 - Canonical chat endpoint: `POST /chat`
-- Deprecated endpoint: `POST /chatkit` now returns `404`
+- Deprecated endpoint: `POST /chatkit` remains compatibility alias until `2026-04-04T00:00:00Z`, then returns `410 Gone`
 - Hosts:
   - `https://api.runwcr.com`
   - `https://api.hq21.tech`
