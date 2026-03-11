@@ -110,6 +110,7 @@ def main() -> int:
             required_manifest_props = (
                 "api_base_url",
                 "chat_api_url",
+                "host_policy",
                 "deprecated_chat_alias_url",
                 "auth_profile",
                 "required_headers",
@@ -183,6 +184,8 @@ def main() -> int:
         errors.append("OpenAPI must document canonical `/chat` references for onboarding surfaces")
     if "chat_api_url" not in openapi_text:
         errors.append("OpenAPI must include `chat_api_url` in onboarding manifest contract")
+    if "host_policy" not in openapi_text:
+        errors.append("OpenAPI must include `host_policy` in onboarding manifest contract")
 
     reference_text = _read_text(ROOT / "docs" / "api" / "reference.md", errors)
     for required_snippet in (
@@ -214,6 +217,9 @@ def main() -> int:
         errors.append("Integration guide must document `integration_manifest`")
     if "Canonical onboarding manifest expectations" not in guide_text:
         errors.append("Integration guide must document canonical onboarding manifest expectations")
+    guide_lower = guide_text.lower()
+    if "primary host" in guide_lower or "alias host" in guide_lower:
+        errors.append("Integration guide must not describe onboarding host model via primary/alias language")
 
     cutover_text = _read_text(ROOT / "docs" / "integration" / "chat-cutover-notice-2026-03-04.md", errors)
     for required_snippet in (
@@ -267,6 +273,7 @@ def main() -> int:
     for required_snippet in (
         "openapi_chatkit_alias_policy",
         "integration_manifest_chat_canonical",
+        "host_policy_compliance",
         "deprecated_chatkit_partner_reference",
         "secret_expiry_warning_level_present",
         "/chat",
@@ -283,8 +290,12 @@ def main() -> int:
 
     onboarding_text = _read_text(ROOT / "apps" / "orchestrator" / "api" / "partner_self_service.py", errors)
     for required_snippet in (
+        "resolve_partner_host_policy",
+        "_PARTNER_HOST_POLICY_BY_PARTNER_ID",
+        "pinned_runwcr",
         'chat_api_url = f"{normalized_base_url}{_CHAT_API_PATH}"',
         '"deprecated_chat_alias_url"',
+        '"host_policy":',
         '"integration_manifest.json"',
         '"curl_examples/check_auth.sh"',
         '"curl_examples/check_project_scope.sh"',
@@ -296,6 +307,8 @@ def main() -> int:
                 "partner onboarding package generator missing expected canonical onboarding snippet: "
                 f"`{required_snippet}`"
             )
+    if "_EPAM_MARKER" in onboarding_text or "contains(\"epam\")" in onboarding_text:
+        errors.append("partner onboarding host logic must use explicit host policy mapping, not epam marker heuristics")
     _ensure_chatkit_mentions_are_deprecated("apps/orchestrator/api/partner_self_service.py", onboarding_text)
 
     if SUNSET_ISO_TIMESTAMP not in onboarding_text and SUNSET_ISO_TIMESTAMP not in reference_text:

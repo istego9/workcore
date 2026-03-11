@@ -2359,6 +2359,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn("chat_endpoint", payload["urls"])
         self.assertTrue(payload["urls"]["chat_endpoint"].endswith("/chat"))
         self.assertTrue(payload["integration_manifest"]["chat_api_url"].endswith("/chat"))
+        self.assertIn("host_policy", payload["integration_manifest"])
+        self.assertIn("policy_id", payload["integration_manifest"]["host_policy"])
         self.assertTrue(payload["integration_manifest"]["deprecated_chat_alias_url"].endswith("/chatkit"))
         self.assertEqual(payload["integration_manifest"]["auth_profile"]["type"], "oauth_client_credentials")
         self.assertIn("project_orchestrator_upsert_template", payload["urls"])
@@ -2571,8 +2573,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(checks["project_exists_in_tenant"]["status"], "PASS")
         self.assertEqual(checks["default_chat_workflow_configured"]["status"], "PASS")
         self.assertEqual(checks["default_chat_workflow_resolvable"]["status"], "PASS")
+        self.assertEqual(checks["host_policy_compliance"]["status"], "PASS")
         self.assertEqual(checks["integration_manifest_chat_canonical"]["status"], "PASS")
         self.assertIn(report["summary"]["status"], {"PASS", "WARN"})
+
+    def test_agent_integration_doctor_fails_when_pinned_partner_host_is_wrong(self):
+        response = self.client.get(
+            "/agent-integration-test.json",
+            params={"partner_id": "epam_future-insurance"},
+            headers={
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Host": "api.hq21.tech",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        checks = {item["id"]: item for item in payload["checks"]}
+        self.assertEqual(payload["partner_id"], "epam_future-insurance")
+        self.assertEqual(payload["integration_manifest"]["host_policy"]["policy_id"], "pinned_runwcr")
+        self.assertEqual(payload["integration_manifest"]["host_policy"]["allowed_domains"], ["api.runwcr.com"])
+        self.assertEqual(payload["integration_manifest"]["chat_api_url"], "https://api.hq21.tech/chat")
+        self.assertEqual(checks["host_policy_compliance"]["status"], "FAIL")
+        self.assertEqual(checks["host_policy_compliance"]["code"], "HOST_POLICY_PINNED_MISMATCH")
+        self.assertEqual(payload["summary"]["status"], "FAIL")
 
     def test_agent_integration_logs_reject_invalid_limit(self):
         response = self.client.get("/agent-integration-logs", params={"limit": "bad"})
@@ -2863,6 +2886,7 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
                 "base_url": request_data["base_url"],
                 "tenant_id_pinned": request_data["tenant_id_pinned"],
                 "allowed_domains": request_data["allowed_domains"],
+                "host_policy": request_data["host_policy"],
             }
 
         with mock.patch("apps.orchestrator.api.app.run_partner_onboarding", side_effect=_fake_onboarding):
@@ -2883,7 +2907,7 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         self.assertEqual(captured_request_data.get("base_url"), "https://api.hq21.tech")
         self.assertEqual(captured_request_data.get("allowed_domains"), ["api.hq21.tech"])
 
-    def test_partner_portal_forces_runwcr_for_epam_partner(self):
+    def test_partner_portal_applies_explicit_pinned_host_policy(self):
         captured_request_data = {}
 
         def _fake_onboarding(request_data, *, extra_env=None):
@@ -2899,6 +2923,7 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
                 "base_url": request_data["base_url"],
                 "tenant_id_pinned": request_data["tenant_id_pinned"],
                 "allowed_domains": request_data["allowed_domains"],
+                "host_policy": request_data["host_policy"],
             }
 
         with mock.patch("apps.orchestrator.api.app.run_partner_onboarding", side_effect=_fake_onboarding):
@@ -2906,16 +2931,17 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
                 "/internal/partner-access/onboard-package",
                 headers=self._principal_header(),
                 json={
-                    "display_name": "EPAM Future Insurance",
+                    "display_name": "Future Insurance Partner",
                     "partner_id": "epam_future-insurance",
                     "tenant_id_pinned": "epam_future-insurance",
-                    "entra_app_display_name": "workcore-partner-epam_future-insurance",
+                    "entra_app_display_name": "workcore-partner-future-insurance",
                     "base_url": "https://api.hq21.tech",
                     "allowed_domains": ["api.hq21.tech", "api.runwcr.com"],
                 },
             )
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured_request_data.get("host_policy", {}).get("policy_id"), "pinned_runwcr")
         self.assertEqual(captured_request_data.get("base_url"), "https://api.runwcr.com")
         self.assertEqual(captured_request_data.get("allowed_domains"), ["api.runwcr.com"])
 
@@ -2928,10 +2954,15 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         self.assertIn("https://api.runwcr.com", readme_text)
         self.assertIn("BASE_URL=https://api.runwcr.com", env_text)
         self.assertEqual(manifest["api_base_url"], "https://api.runwcr.com")
+        self.assertEqual(manifest["chat_api_url"], "https://api.runwcr.com/chat")
         self.assertEqual(manifest["allowed_domains"], ["api.runwcr.com"])
-        self.assertTrue(manifest["chat_api_url"].endswith("/chat"))
+        self.assertEqual(manifest["host_policy"]["policy_id"], "pinned_runwcr")
+        self.assertEqual(manifest["host_policy"]["mode"], "pinned")
+        self.assertEqual(manifest["host_policy"]["enforcement"], "required")
+        self.assertEqual(manifest["host_policy"]["allowed_domains"], ["api.runwcr.com"])
         self.assertEqual(metadata["base_url"], "https://api.runwcr.com")
         self.assertEqual(metadata["allowed_domains"], ["api.runwcr.com"])
+        self.assertEqual(metadata["host_policy"]["policy_id"], "pinned_runwcr")
         self.assertNotIn("https://api.hq21.tech", readme_text)
         self.assertNotIn("https://api.hq21.tech", env_text)
 
