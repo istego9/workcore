@@ -68,6 +68,28 @@ class ChatKitTests(unittest.TestCase):
         self.workflow_id = workflow.id
         self.workflow_version_id = workflow.version_id
 
+    def _assert_platform_error_shape(self, payload: dict, *, code: str | None = None, category: str | None = None):
+        error = payload.get("error") or {}
+        for key in (
+            "code",
+            "message",
+            "category",
+            "retryable",
+            "retry_after_s",
+            "bad_fields",
+            "unsupported_feature",
+            "docs_ref",
+            "details",
+            "correlation_id",
+        ):
+            self.assertIn(key, error)
+        self.assertIn("correlation_id", payload)
+        if code is not None:
+            self.assertEqual(error.get("code"), code)
+        if category is not None:
+            self.assertEqual(error.get("category"), category)
+        return error
+
     def test_thread_create_emits_prompt_message(self):
         req = ThreadsCreateReq(
             metadata={"workflow_id": self.workflow_id, "workflow_version_id": self.workflow_version_id},
@@ -459,7 +481,12 @@ class ChatKitTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
         payload = response.json()
-        self.assertEqual(payload["error"]["code"], "CHAT_PROJECT_SCOPE_REQUIRED")
+        error = self._assert_platform_error_shape(
+            payload,
+            code="CHAT_PROJECT_SCOPE_REQUIRED",
+            category="validation",
+        )
+        self.assertEqual(error.get("bad_fields"), ["metadata.project_id", "X-Project-Id"])
         self.assertTrue(payload["correlation_id"])
 
         alias = client.post(
@@ -468,7 +495,11 @@ class ChatKitTests(unittest.TestCase):
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(alias.status_code, 422)
-        self.assertEqual(alias.json()["error"]["code"], "CHAT_PROJECT_SCOPE_REQUIRED")
+        self._assert_platform_error_shape(
+            alias.json(),
+            code="CHAT_PROJECT_SCOPE_REQUIRED",
+            category="validation",
+        )
         self.assertEqual(alias.headers.get("Deprecation"), "true")
         self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
 
@@ -495,7 +526,11 @@ class ChatKitTests(unittest.TestCase):
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["error"]["code"], "CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED")
+        self._assert_platform_error_shape(
+            response.json(),
+            code="CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED",
+            category="configuration",
+        )
 
         alias = client.post(
             "/chatkit",
@@ -503,7 +538,11 @@ class ChatKitTests(unittest.TestCase):
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(alias.status_code, 409)
-        self.assertEqual(alias.json()["error"]["code"], "CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED")
+        self._assert_platform_error_shape(
+            alias.json(),
+            code="CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED",
+            category="configuration",
+        )
         self.assertEqual(alias.headers.get("Deprecation"), "true")
         self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
 
@@ -530,7 +569,11 @@ class ChatKitTests(unittest.TestCase):
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["error"]["code"], "CHAT_DEFAULT_WORKFLOW_NOT_FOUND")
+        self._assert_platform_error_shape(
+            response.json(),
+            code="CHAT_DEFAULT_WORKFLOW_NOT_FOUND",
+            category="not_found",
+        )
 
     def test_http_chatkit_requires_tenant_header(self):
         app = create_chatkit_app(self._workflow())
@@ -547,13 +590,23 @@ class ChatKitTests(unittest.TestCase):
         )
         missing_tenant = client.post("/chat", content=req.model_dump_json())
         self.assertEqual(missing_tenant.status_code, 422)
-        self.assertEqual(missing_tenant.json()["error"]["code"], "ERR_TENANT_REQUIRED")
+        missing_tenant_payload = missing_tenant.json()
+        missing_tenant_error = self._assert_platform_error_shape(
+            missing_tenant_payload,
+            code="ERR_TENANT_REQUIRED",
+            category="validation",
+        )
+        self.assertEqual(missing_tenant_error.get("bad_fields"), ["X-Tenant-Id"])
         self.assertIsNone(missing_tenant.headers.get("Deprecation"))
         self.assertIsNone(missing_tenant.headers.get("Sunset"))
 
         missing_tenant_alias = client.post("/chatkit", content=req.model_dump_json())
         self.assertEqual(missing_tenant_alias.status_code, 422)
-        self.assertEqual(missing_tenant_alias.json()["error"]["code"], "ERR_TENANT_REQUIRED")
+        self._assert_platform_error_shape(
+            missing_tenant_alias.json(),
+            code="ERR_TENANT_REQUIRED",
+            category="validation",
+        )
         self.assertEqual(missing_tenant_alias.headers.get("Deprecation"), "true")
         self.assertEqual(missing_tenant_alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
 
@@ -675,8 +728,12 @@ class ChatKitTests(unittest.TestCase):
             alias = client.post("/chatkit", content=req.model_dump_json(), headers=headers)
 
         self.assertEqual(alias.status_code, 410)
-        self.assertEqual(alias.json()["error"]["code"], "DEPRECATED_ENDPOINT")
-        self.assertIn("POST /chat", alias.json()["error"]["message"])
+        alias_error = self._assert_platform_error_shape(
+            alias.json(),
+            code="DEPRECATED_ENDPOINT",
+            category="route",
+        )
+        self.assertIn("POST /chat", alias_error["message"])
         self.assertEqual(alias.headers.get("Deprecation"), "true")
         self.assertEqual(alias.headers.get("Sunset"), "Sat, 04 Apr 2026 00:00:00 GMT")
 
@@ -699,7 +756,12 @@ class ChatKitTests(unittest.TestCase):
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["error"]["code"], "ERR_TRANSCRIPTION_UNAVAILABLE")
+        error = self._assert_platform_error_shape(
+            response.json(),
+            code="ERR_TRANSCRIPTION_UNAVAILABLE",
+            category="unsupported_feature",
+        )
+        self.assertEqual(error.get("unsupported_feature"), "input.transcribe")
 
     def test_http_chatkit_transcribe_validates_mime_type(self):
         async def fake_transcriber(audio_input, context):
@@ -719,7 +781,11 @@ class ChatKitTests(unittest.TestCase):
             headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
         )
         self.assertEqual(response.status_code, 422)
-        self.assertEqual(response.json()["error"]["code"], "ERR_INVALID_AUDIO_INPUT")
+        self._assert_platform_error_shape(
+            response.json(),
+            code="ERR_INVALID_AUDIO_INPUT",
+            category="validation",
+        )
 
     def test_http_chatkit_transcribe_returns_text(self):
         captured = {}

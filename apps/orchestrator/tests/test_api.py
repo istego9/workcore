@@ -116,6 +116,44 @@ class ApiTests(unittest.TestCase):
         merged.setdefault("X-Project-Id", project_id or self.default_project_id)
         return merged
 
+    def _assert_platform_error_shape(self, payload: dict, *, code: str | None = None, category: str | None = None):
+        error = payload.get("error") or {}
+        for key in (
+            "code",
+            "message",
+            "category",
+            "retryable",
+            "retry_after_s",
+            "bad_fields",
+            "unsupported_feature",
+            "docs_ref",
+            "details",
+            "correlation_id",
+        ):
+            self.assertIn(key, error)
+        self.assertIn("correlation_id", payload)
+        if code is not None:
+            self.assertEqual(error.get("code"), code)
+        if category is not None:
+            self.assertEqual(error.get("category"), category)
+        return error
+
+    def _assert_action_error_shape(self, action_error: dict):
+        for key in (
+            "code",
+            "message",
+            "category",
+            "retryable",
+            "retry_after_s",
+            "bad_fields",
+            "unsupported_feature",
+            "docs_ref",
+            "details",
+            "correlation_id",
+            "action",
+        ):
+            self.assertIn(key, action_error)
+
     def _create_workflow(self, headers=None):
         headers = self._with_project(headers)
         draft = {
@@ -898,8 +936,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["chosen_action"], "RESUME_CURRENT")
         self.assertEqual(payload["chosen_workflow_id"], wf_active)
         action_error = payload.get("action_error") or {}
+        self._assert_action_error_shape(action_error)
         self.assertEqual(action_error.get("code"), "ERR_SWITCH_DISABLED")
         self.assertEqual(action_error.get("category"), "action")
+        self.assertIsNone(action_error.get("retry_after_s"))
 
     def test_orchestrator_switch_cooldown_blocks_rapid_switches(self):
         wf_active, _ = self._create_interaction_workflow()
@@ -983,8 +1023,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(second_payload["chosen_action"], "RESUME_CURRENT")
         self.assertEqual(second_payload["chosen_workflow_id"], wf_target_a)
         action_error = second_payload.get("action_error") or {}
+        self._assert_action_error_shape(action_error)
         self.assertEqual(action_error.get("code"), "ERR_SWITCH_COOLDOWN_ACTIVE")
         self.assertTrue(action_error.get("retryable"))
+        self.assertIsInstance(action_error.get("retry_after_s"), int)
+        self.assertGreater(action_error.get("retry_after_s"), 0)
 
     def test_orchestrator_cancel_not_allowed(self):
         wf_active, _ = self._create_interaction_workflow()
@@ -1040,6 +1083,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["chosen_action"], "CANCEL")
         self.assertIn("Нельзя отменить", payload["message"]["text"])
         action_error = payload.get("action_error") or {}
+        self._assert_action_error_shape(action_error)
         self.assertEqual(action_error.get("code"), "ERR_CANCEL_NOT_ALLOWED")
         self.assertEqual(action_error.get("category"), "action")
         self.assertFalse(action_error.get("retryable"))
@@ -1080,6 +1124,7 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["chosen_action"], "CANCEL")
         action_error = payload.get("action_error") or {}
+        self._assert_action_error_shape(action_error)
         self.assertEqual(action_error.get("code"), "ERR_NO_ACTIVE_WORKFLOW")
         self.assertEqual(action_error.get("category"), "action")
         self.assertTrue(action_error.get("retryable"))
@@ -1214,8 +1259,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(items[2]["chosen_action"], "RESUME_CURRENT")
         self.assertEqual(items[2]["chosen_workflow_id"], wf_loan)
         action_error = items[2].get("action_error") or {}
+        self._assert_action_error_shape(action_error)
         self.assertEqual(action_error.get("code"), "ERR_SWITCH_COOLDOWN_ACTIVE")
         self.assertEqual(action_error.get("category"), "action")
+        self.assertIsInstance(action_error.get("retry_after_s"), int)
+        self.assertGreater(action_error.get("retry_after_s"), 0)
 
     def test_orchestrator_stack_endpoint(self):
         workflow_id, _ = self._create_workflow()
@@ -1566,7 +1614,23 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         payload = response.json()
-        self.assertEqual(payload["error"]["code"], "INVALID_ARGUMENT")
+        error = self._assert_platform_error_shape(payload, code="INVALID_ARGUMENT", category="validation")
+        self.assertEqual(error.get("bad_fields"), ["inputs"])
+
+    def test_handoff_package_validation_error_uses_platform_error_envelope(self):
+        workflow_id, version_id = self._create_workflow()
+        response = self.client.post(
+            "/handoff/packages",
+            json={
+                "workflow_id": workflow_id,
+                "version_id": version_id,
+                "package": "invalid",
+            },
+            headers=self._with_project(),
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self._assert_platform_error_shape(payload, code="INVALID_ARGUMENT", category="validation")
 
     def test_start_run_applies_state_and_output_projection_controls(self):
         workflow_id, _ = self._create_output_workflow()
@@ -1983,11 +2047,41 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 503)
         payload = response.json()
-        self.assertEqual(payload["error"]["code"], "ERR_WORKFLOW_ENGINE_UNAVAILABLE")
-        details = payload["error"].get("details") or {}
+        error = self._assert_platform_error_shape(
+            payload,
+            code="ERR_WORKFLOW_ENGINE_UNAVAILABLE",
+            category="transient",
+        )
+        self.assertTrue(error.get("retryable"))
+        self.assertIsNone(error.get("retry_after_s"))
+        self.assertIsNone(response.headers.get("Retry-After"))
+        details = error.get("details") or {}
         self.assertEqual(details.get("incident_code"), "RUN_LEDGER_RUN_NOT_VISIBLE")
         self.assertTrue(details.get("run_id"))
-        self.assertNotIn("run_ledger_run_id_fkey", payload["error"]["message"])
+        self.assertNotIn("run_ledger_run_id_fkey", error.get("message"))
+
+    def test_start_run_fk_race_error_sets_retry_after_header(self):
+        workflow_id, _ = self._create_workflow()
+        self.client.get("/health")
+        ctx = self.client.app.state.api_context
+        ctx.run_ledger_store = AlwaysFailFkLedgerStore()
+
+        response = self.client.post(
+            f"/workflows/{workflow_id}/runs",
+            json={"inputs": {}},
+            headers=self._with_project(),
+        )
+        self.assertEqual(response.status_code, 503)
+        payload = response.json()
+        error = self._assert_platform_error_shape(
+            payload,
+            code="ERR_WORKFLOW_ENGINE_UNAVAILABLE",
+            category="transient",
+        )
+        self.assertTrue(error.get("retryable"))
+        self.assertIsInstance(error.get("retry_after_s"), int)
+        self.assertGreater(error.get("retry_after_s"), 0)
+        self.assertEqual(response.headers.get("Retry-After"), str(error.get("retry_after_s")))
 
     def test_handoff_package_create_and_deterministic_replay(self):
         workflow_id, version_id = self._create_workflow()
@@ -2266,8 +2360,7 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/workflows/missing", headers=self._with_project())
         self.assertEqual(response.status_code, 404)
         payload = response.json()
-        self.assertIn("correlation_id", payload)
-        self.assertEqual(payload["error"]["code"], "NOT_FOUND")
+        self._assert_platform_error_shape(payload, code="NOT_FOUND", category="not_found")
 
     def test_start_run_unhandled_exception_returns_json_error_envelope(self):
         workflow_store = InMemoryWorkflowStore()
@@ -2310,7 +2403,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.headers.get("content-type"), "application/json")
         payload = response.json()
-        self.assertEqual(payload["error"]["code"], "INTERNAL")
+        error = self._assert_platform_error_shape(payload, code="INTERNAL", category="internal")
+        self.assertIsNone(error.get("retryable"))
         self.assertEqual(payload["correlation_id"], "corr_unhandled")
 
     def test_openapi_and_reference_endpoints(self):
@@ -2321,6 +2415,31 @@ class ApiTests(unittest.TestCase):
         reference_response = self.client.get("/api-reference")
         self.assertEqual(reference_response.status_code, 200)
         self.assertIn("WorkCore API Reference", reference_response.text)
+
+    def test_integration_capabilities_endpoint_contract(self):
+        response = self.client.get("/integration-capabilities")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        for key in (
+            "generated_at",
+            "api_version",
+            "error_contract",
+            "auth",
+            "chat",
+            "runtime_features",
+            "docs",
+        ):
+            self.assertIn(key, payload)
+        self.assertEqual(payload["chat"]["canonical_endpoint"], "/chat")
+        self.assertEqual(payload["chat"]["deprecated_alias"], "/chatkit")
+        self.assertEqual(payload["chat"]["deprecated_alias_sunset"], "2026-04-04T00:00:00Z")
+        self.assertTrue(payload["runtime_features"]["projection_controls"]["state_exclude_paths"])
+        self.assertTrue(payload["runtime_features"]["projection_controls"]["output_include_paths"])
+        self.assertTrue(payload["runtime_features"]["document_payload"]["artifact_ref_default"])
+        self.assertTrue(payload["runtime_features"]["capability_registry"])
+        self.assertTrue(payload["runtime_features"]["workflow_version_pinning"])
+        self.assertTrue(payload["docs"]["api_reference"].endswith("/api-reference"))
+        self.assertTrue(payload["docs"]["integration_guide"].endswith("/agent-integration-kit"))
 
     def test_agent_integration_kit_endpoints(self):
         markdown_response = self.client.get("/agent-integration-kit")
@@ -2354,11 +2473,16 @@ class ApiTests(unittest.TestCase):
         self.assertIn("integration_manifest", payload)
         self.assertIn("schemas", payload)
         self.assertIn("integration_logs", payload["urls"])
+        self.assertIn("integration_capabilities", payload["urls"])
         self.assertIn("projects_list", payload["urls"])
         self.assertIn("projects_create", payload["urls"])
         self.assertIn("chat_endpoint", payload["urls"])
         self.assertTrue(payload["urls"]["chat_endpoint"].endswith("/chat"))
+        self.assertTrue(payload["urls"]["integration_capabilities"].endswith("/integration-capabilities"))
         self.assertTrue(payload["integration_manifest"]["chat_api_url"].endswith("/chat"))
+        self.assertTrue(
+            payload["integration_manifest"]["integration_capabilities_url"].endswith("/integration-capabilities")
+        )
         self.assertIn("host_policy", payload["integration_manifest"])
         self.assertIn("policy_id", payload["integration_manifest"]["host_policy"])
         self.assertTrue(payload["integration_manifest"]["deprecated_chat_alias_url"].endswith("/chatkit"))
@@ -2522,7 +2646,15 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["urls"]["openapi"], "https://api.runwcr.com/openapi.yaml")
         self.assertEqual(payload["urls"]["chat_endpoint"], "https://api.runwcr.com/chat")
+        self.assertEqual(
+            payload["urls"]["integration_capabilities"],
+            "https://api.runwcr.com/integration-capabilities",
+        )
         self.assertEqual(payload["integration_manifest"]["chat_api_url"], "https://api.runwcr.com/chat")
+        self.assertEqual(
+            payload["integration_manifest"]["integration_capabilities_url"],
+            "https://api.runwcr.com/integration-capabilities",
+        )
 
     def test_agent_integration_kit_falls_back_from_internal_origin_host(self):
         internal_base_url = "http://ca-orchestrator.graybush-234133fd.uaenorth.azurecontainerapps.io"
@@ -2543,6 +2675,14 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["urls"]["openapi"], "https://api.hq21.tech/openapi.yaml")
         self.assertEqual(payload["urls"]["api_reference"], "https://api.hq21.tech/api-reference")
+        self.assertEqual(
+            payload["urls"]["integration_capabilities"],
+            "https://api.hq21.tech/integration-capabilities",
+        )
+        self.assertEqual(
+            payload["integration_manifest"]["integration_capabilities_url"],
+            "https://api.hq21.tech/integration-capabilities",
+        )
 
     def test_agent_integration_doctor_project_scope_checks_pass_with_valid_project_defaults(self):
         project_id = "proj_doctor_ready"
@@ -2575,6 +2715,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(checks["default_chat_workflow_resolvable"]["status"], "PASS")
         self.assertEqual(checks["host_policy_compliance"]["status"], "PASS")
         self.assertEqual(checks["integration_manifest_chat_canonical"]["status"], "PASS")
+        self.assertEqual(checks["integration_capabilities_contract_url_present"]["status"], "PASS")
         self.assertIn(report["summary"]["status"], {"PASS", "WARN"})
 
     def test_agent_integration_doctor_fails_when_pinned_partner_host_is_wrong(self):
@@ -2593,6 +2734,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["integration_manifest"]["host_policy"]["policy_id"], "pinned_runwcr")
         self.assertEqual(payload["integration_manifest"]["host_policy"]["allowed_domains"], ["api.runwcr.com"])
         self.assertEqual(payload["integration_manifest"]["chat_api_url"], "https://api.hq21.tech/chat")
+        self.assertEqual(
+            payload["integration_manifest"]["integration_capabilities_url"],
+            "https://api.hq21.tech/integration-capabilities",
+        )
         self.assertEqual(checks["host_policy_compliance"]["status"], "FAIL")
         self.assertEqual(checks["host_policy_compliance"]["code"], "HOST_POLICY_PINNED_MISMATCH")
         self.assertEqual(payload["summary"]["status"], "FAIL")
@@ -2742,6 +2887,9 @@ class ApiAuthTests(unittest.TestCase):
         reference_response = self.client.get("/api-reference")
         self.assertEqual(reference_response.status_code, 200)
 
+        negotiation_response = self.client.get("/integration-capabilities")
+        self.assertEqual(negotiation_response.status_code, 200)
+
         kit_response = self.client.get("/agent-integration-kit")
         self.assertEqual(kit_response.status_code, 200)
 
@@ -2868,6 +3016,7 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         self.assertIn("Canonical chat endpoint:", readme_text)
         self.assertEqual(manifest["auth_profile"]["type"], "oauth_client_credentials")
         self.assertTrue(manifest["chat_api_url"].endswith("/chat"))
+        self.assertTrue(manifest["integration_capabilities_url"].endswith("/integration-capabilities"))
         self.assertTrue(manifest["deprecated_chat_alias_url"].endswith("/chatkit"))
 
     def test_partner_portal_autogenerates_partner_and_tenant_ids(self):
@@ -2955,6 +3104,10 @@ class PartnerSelfServiceApiTests(unittest.TestCase):
         self.assertIn("BASE_URL=https://api.runwcr.com", env_text)
         self.assertEqual(manifest["api_base_url"], "https://api.runwcr.com")
         self.assertEqual(manifest["chat_api_url"], "https://api.runwcr.com/chat")
+        self.assertEqual(
+            manifest["integration_capabilities_url"],
+            "https://api.runwcr.com/integration-capabilities",
+        )
         self.assertEqual(manifest["allowed_domains"], ["api.runwcr.com"])
         self.assertEqual(manifest["host_policy"]["policy_id"], "pinned_runwcr")
         self.assertEqual(manifest["host_policy"]["mode"], "pinned")

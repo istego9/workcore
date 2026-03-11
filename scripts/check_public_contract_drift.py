@@ -90,6 +90,42 @@ def main() -> int:
             elif not _has_headers(response_410, ("Deprecation", "Sunset")):
                 errors.append("OpenAPI `POST /chatkit` `410` response must expose Deprecation + Sunset headers")
 
+    integration_capabilities_get = (paths.get("/integration-capabilities") or {}).get("get")
+    if not isinstance(integration_capabilities_get, dict):
+        errors.append("OpenAPI must define `GET /integration-capabilities`")
+    else:
+        if integration_capabilities_get.get("security") != []:
+            errors.append("OpenAPI `GET /integration-capabilities` must be public with `security: []`")
+        negotiation_text = " ".join(
+            [
+                str(integration_capabilities_get.get("summary") or ""),
+                str(integration_capabilities_get.get("description") or ""),
+            ]
+        ).lower()
+        if "negotiation" not in negotiation_text:
+            errors.append("OpenAPI `GET /integration-capabilities` must describe feature negotiation purpose")
+
+    for path_name in ("/capabilities", "/capabilities/{capability_id}/versions"):
+        path_item = paths.get(path_name)
+        if not isinstance(path_item, dict):
+            errors.append(f"OpenAPI must define `{path_name}` as capability registry surface")
+            continue
+        for method_name in ("get", "post"):
+            operation = path_item.get(method_name)
+            if not isinstance(operation, dict):
+                continue
+            operation_text = " ".join(
+                [
+                    str(operation.get("summary") or ""),
+                    str(operation.get("description") or ""),
+                ]
+            ).lower()
+            if "negotiation" in operation_text and "not client feature negotiation" not in operation_text:
+                errors.append(
+                    f"OpenAPI `{method_name.upper()} {path_name}` must remain registry-oriented, "
+                    "not a negotiation endpoint"
+                )
+
     headers = ((openapi_data.get("components") or {}).get("headers") or {}) if isinstance(openapi_data, dict) else {}
     if not isinstance(headers, dict) or "Deprecation" not in headers or "Sunset" not in headers:
         errors.append("OpenAPI components.headers must define both `Deprecation` and `Sunset`")
@@ -98,6 +134,94 @@ def main() -> int:
     if not isinstance(schemas, dict):
         errors.append("OpenAPI components.schemas must be a mapping")
         schemas = {}
+
+    platform_error_schema = schemas.get("PlatformError")
+    if not isinstance(platform_error_schema, dict):
+        errors.append("OpenAPI must define components.schemas.PlatformError")
+    else:
+        platform_error_props = platform_error_schema.get("properties", {})
+        if not isinstance(platform_error_props, dict):
+            errors.append("PlatformError.properties must be a mapping")
+        else:
+            for key in (
+                "code",
+                "message",
+                "category",
+                "retryable",
+                "retry_after_s",
+                "bad_fields",
+                "unsupported_feature",
+                "docs_ref",
+                "details",
+                "correlation_id",
+            ):
+                if key not in platform_error_props:
+                    errors.append(f"PlatformError must define `{key}`")
+            category_schema = platform_error_props.get("category")
+            if isinstance(category_schema, dict):
+                category_enum = category_schema.get("enum", [])
+                expected_categories = {
+                    "auth",
+                    "validation",
+                    "configuration",
+                    "not_found",
+                    "conflict",
+                    "unsupported_feature",
+                    "transient",
+                    "internal",
+                    "route",
+                    "action",
+                }
+                if not isinstance(category_enum, list) or not expected_categories.issubset(set(category_enum)):
+                    errors.append("PlatformError.category enum must include the full typed taxonomy")
+            else:
+                errors.append("PlatformError.category must be defined as an enum")
+
+    platform_error_envelope_schema = schemas.get("PlatformErrorEnvelope")
+    if not isinstance(platform_error_envelope_schema, dict):
+        errors.append("OpenAPI must define components.schemas.PlatformErrorEnvelope")
+    else:
+        envelope_props = platform_error_envelope_schema.get("properties", {})
+        if not isinstance(envelope_props, dict):
+            errors.append("PlatformErrorEnvelope.properties must be a mapping")
+        else:
+            error_prop = envelope_props.get("error")
+            if not isinstance(error_prop, dict) or error_prop.get("$ref") != "#/components/schemas/PlatformError":
+                errors.append("PlatformErrorEnvelope.error must reference PlatformError")
+
+    error_envelope_schema = schemas.get("ErrorEnvelope")
+    if not isinstance(error_envelope_schema, dict):
+        errors.append("OpenAPI must define components.schemas.ErrorEnvelope")
+    else:
+        all_of = error_envelope_schema.get("allOf", [])
+        if not isinstance(all_of, list) or not any(
+            isinstance(item, dict) and item.get("$ref") == "#/components/schemas/PlatformErrorEnvelope"
+            for item in all_of
+        ):
+            errors.append("ErrorEnvelope must remain a compatibility alias over PlatformErrorEnvelope")
+
+    orchestrator_action_error_schema = schemas.get("OrchestratorActionError")
+    if not isinstance(orchestrator_action_error_schema, dict):
+        errors.append("OpenAPI must define components.schemas.OrchestratorActionError")
+    else:
+        all_of = orchestrator_action_error_schema.get("allOf", [])
+        if not isinstance(all_of, list):
+            errors.append("OrchestratorActionError.allOf must be a list")
+        else:
+            has_platform_ref = any(
+                isinstance(item, dict) and item.get("$ref") == "#/components/schemas/PlatformError"
+                for item in all_of
+            )
+            has_required_action = any(
+                isinstance(item, dict)
+                and isinstance(item.get("properties"), dict)
+                and "action" in item.get("properties", {})
+                and isinstance(item.get("required"), list)
+                and "action" in item.get("required", [])
+                for item in all_of
+            )
+            if not has_platform_ref or not has_required_action:
+                errors.append("OrchestratorActionError must align as PlatformError + required action")
 
     integration_manifest_schema = schemas.get("IntegrationManifest")
     if not isinstance(integration_manifest_schema, dict):
@@ -110,6 +234,7 @@ def main() -> int:
             required_manifest_props = (
                 "api_base_url",
                 "chat_api_url",
+                "integration_capabilities_url",
                 "host_policy",
                 "deprecated_chat_alias_url",
                 "auth_profile",
@@ -122,6 +247,9 @@ def main() -> int:
             for key in required_manifest_props:
                 if key not in manifest_props:
                     errors.append(f"IntegrationManifest must define `{key}`")
+            manifest_required = integration_manifest_schema.get("required", [])
+            if not isinstance(manifest_required, list) or "integration_capabilities_url" not in manifest_required:
+                errors.append("IntegrationManifest.required must include `integration_capabilities_url`")
 
     kit_schema = schemas.get("AgentIntegrationKit")
     if not isinstance(kit_schema, dict):
@@ -130,6 +258,13 @@ def main() -> int:
         kit_props = kit_schema.get("properties", {})
         if not isinstance(kit_props, dict) or "integration_manifest" not in kit_props:
             errors.append("AgentIntegrationKit must expose `integration_manifest`")
+        urls_schema = kit_props.get("urls")
+        if isinstance(urls_schema, dict):
+            urls_props = urls_schema.get("properties", {})
+            if not isinstance(urls_props, dict) or "integration_capabilities" not in urls_props:
+                errors.append("AgentIntegrationKit.urls must include `integration_capabilities`")
+        else:
+            errors.append("AgentIntegrationKit.urls must be defined")
 
     report_schema = schemas.get("AgentIntegrationCheckReport")
     if not isinstance(report_schema, dict):
@@ -141,6 +276,13 @@ def main() -> int:
         else:
             if "integration_manifest" not in report_props:
                 errors.append("AgentIntegrationCheckReport must expose `integration_manifest`")
+            report_urls_schema = report_props.get("urls")
+            if isinstance(report_urls_schema, dict):
+                report_urls_props = report_urls_schema.get("properties", {})
+                if not isinstance(report_urls_props, dict) or "integration_capabilities" not in report_urls_props:
+                    errors.append("AgentIntegrationCheckReport.urls must include `integration_capabilities`")
+            else:
+                errors.append("AgentIntegrationCheckReport.urls must be defined")
             summary = report_props.get("summary")
             if isinstance(summary, dict):
                 summary_props = summary.get("properties", {})
@@ -191,6 +333,7 @@ def main() -> int:
     for required_snippet in (
         "POST /chat",
         "POST /chatkit",
+        "GET /integration-capabilities",
         "Deprecation: true",
         SUNSET_HTTP_DATE,
         "410 Gone",
@@ -199,6 +342,10 @@ def main() -> int:
             errors.append(f"docs/api/reference.md missing required chat lifecycle snippet: `{required_snippet}`")
     if "integration_manifest" not in reference_text:
         errors.append("docs/api/reference.md must document `integration_manifest`")
+    if "integration_capabilities_url" not in reference_text:
+        errors.append("docs/api/reference.md must document `integration_capabilities_url`")
+    if "/capabilities*" not in reference_text:
+        errors.append("docs/api/reference.md must keep capability registry/negotiation separation guidance")
     if "status` (`PASS` | `WARN` | `FAIL`)" not in reference_text:
         errors.append("docs/api/reference.md must document doctor check PASS/WARN/FAIL statuses")
 
@@ -206,6 +353,8 @@ def main() -> int:
     for required_snippet in (
         "POST /chat",
         "POST /chatkit",
+        "GET /integration-capabilities",
+        "integration_capabilities_url",
         "410 Gone",
     ):
         if required_snippet not in guide_text:
@@ -217,9 +366,23 @@ def main() -> int:
         errors.append("Integration guide must document `integration_manifest`")
     if "Canonical onboarding manifest expectations" not in guide_text:
         errors.append("Integration guide must document canonical onboarding manifest expectations")
+    if "/capabilities*" not in guide_text:
+        errors.append("Integration guide must keep capability registry/negotiation separation guidance")
     guide_lower = guide_text.lower()
     if "primary host" in guide_lower or "alias host" in guide_lower:
         errors.append("Integration guide must not describe onboarding host model via primary/alias language")
+
+    runtime_arch_text = _read_text(ROOT / "docs" / "architecture" / "runtime.md", errors)
+    for required_snippet in (
+        "PlatformErrorEnvelope",
+        "GET /integration-capabilities",
+        "/capabilities*",
+    ):
+        if required_snippet not in runtime_arch_text:
+            errors.append(
+                "docs/architecture/runtime.md missing required typed error/negotiation snippet: "
+                f"`{required_snippet}`"
+            )
 
     cutover_text = _read_text(ROOT / "docs" / "integration" / "chat-cutover-notice-2026-03-04.md", errors)
     for required_snippet in (
@@ -273,9 +436,12 @@ def main() -> int:
     for required_snippet in (
         "openapi_chatkit_alias_policy",
         "integration_manifest_chat_canonical",
+        "integration_capabilities_contract_url_present",
         "host_policy_compliance",
         "deprecated_chatkit_partner_reference",
         "secret_expiry_warning_level_present",
+        "/integration-capabilities",
+        "integration_capabilities_url",
         "/chat",
         "/chatkit",
         "Deprecation",
@@ -294,7 +460,9 @@ def main() -> int:
         "_PARTNER_HOST_POLICY_BY_PARTNER_ID",
         "pinned_runwcr",
         'chat_api_url = f"{normalized_base_url}{_CHAT_API_PATH}"',
+        'integration_capabilities_url = f"{normalized_base_url}{_INTEGRATION_CAPABILITIES_PATH}"',
         '"deprecated_chat_alias_url"',
+        '"integration_capabilities_url"',
         '"host_policy":',
         '"integration_manifest.json"',
         '"curl_examples/check_auth.sh"',
