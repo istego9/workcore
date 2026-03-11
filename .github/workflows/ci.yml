@@ -287,7 +287,7 @@ jobs:
         env:
           E2E_BASE_URL: http://workcore.build:8080
           E2E_API_BASE_URL: http://api.workcore.build:8080
-          E2E_CHATKIT_API_URL: http://api.workcore.build:8080/chat
+          E2E_CHAT_API_URL: http://api.workcore.build:8080/chat
           E2E_API_AUTH_TOKEN: dev_workcore_api_token
           ACCEPTANCE_URL: http://workcore.build:8080/?e2e=1
         run: ./scripts/e2e_suite.sh

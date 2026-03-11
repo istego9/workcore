@@ -16,8 +16,10 @@ set +a
 
 E2E_BASE_URL="${E2E_BASE_URL:-http://workcore.build}"
 E2E_API_BASE_URL="${E2E_API_BASE_URL:-http://api.workcore.build}"
-E2E_CHATKIT_API_URL="${E2E_CHATKIT_API_URL:-http://chatkit.workcore.build/chatkit}"
+# `E2E_CHATKIT_API_URL` remains as a deprecated fallback during migration.
+E2E_CHAT_API_URL="${E2E_CHAT_API_URL:-${E2E_CHATKIT_API_URL:-http://api.workcore.build/chat}}"
 E2E_API_AUTH_TOKEN="${E2E_API_AUTH_TOKEN:-${WORKCORE_API_AUTH_TOKEN:-}}"
+E2E_TENANT_ID="${E2E_TENANT_ID:-local}"
 ACCEPTANCE_TASK_ID="${ACCEPTANCE_TASK_ID:-e2e-$(date -u +%Y%m%d-%H%M%S)}"
 ACCEPTANCE_URL="${ACCEPTANCE_URL:-${E2E_BASE_URL%/}/?e2e=1}"
 ACCEPTANCE_WAIT_MS="${ACCEPTANCE_WAIT_MS:-3000}"
@@ -102,10 +104,23 @@ echo "[e2e] builder playwright"
   cd "${ROOT}/apps/builder"
   E2E_BASE_URL="${E2E_BASE_URL}" \
   E2E_API_BASE_URL="${E2E_API_BASE_URL}" \
-  E2E_CHATKIT_API_URL="${E2E_CHATKIT_API_URL}" \
+  E2E_CHAT_API_URL="${E2E_CHAT_API_URL}" \
   E2E_API_AUTH_TOKEN="${E2E_API_AUTH_TOKEN}" \
+  E2E_TENANT_ID="${E2E_TENANT_ID}" \
   npm run test:e2e
 )
+
+echo "[e2e] cleanup empty projects"
+cleanup_cmd=(
+  "${ROOT}/scripts/cleanup_empty_projects.py"
+  --base-url "${E2E_API_BASE_URL}"
+  --tenant-id "${E2E_TENANT_ID}"
+  --apply
+)
+if [[ -n "${E2E_API_AUTH_TOKEN}" ]]; then
+  cleanup_cmd+=(--auth-token "${E2E_API_AUTH_TOKEN}")
+fi
+"${cleanup_cmd[@]}"
 
 echo "[e2e] acceptance package (mandatory)"
 acceptance_cmd=(

@@ -1,7 +1,7 @@
 # ADR-0012: Project-Centric Chat Thread Resolution
 
 Date: 2026-03-11
-Status: Proposed
+Status: Accepted
 
 ## Context
 Public chat is exposed through the canonical `POST /chat` endpoint, with deprecated alias
