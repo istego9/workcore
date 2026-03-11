@@ -75,6 +75,11 @@ import {
   computeZoomedOffset
 } from './builder/viewport';
 import { normalizeProjectId } from './project-switcher';
+import {
+  buildProjectChatWorkflowOptions,
+  getProjectChatWorkflowLabel,
+  getProjectDefaultChatWorkflowId
+} from './project-chat-settings';
 import { normalizeSchemaTypeLabel } from './template-variable-types';
 import { shouldAutoCreateWorkflow } from './workflow-auto-create';
 import './styles.css';
@@ -890,6 +895,7 @@ export default function App() {
   const [projectListLoading, setProjectListLoading] = useState(false);
   const [projectEditTarget, setProjectEditTarget] = useState<ProjectRecord | null>(null);
   const [projectEditName, setProjectEditName] = useState('');
+  const [projectEditDefaultChatWorkflowId, setProjectEditDefaultChatWorkflowId] = useState('');
   const [projectEditLoading, setProjectEditLoading] = useState(false);
   const [projectDeleteTarget, setProjectDeleteTarget] = useState<ProjectRecord | null>(null);
   const [projectDeleteLoading, setProjectDeleteLoading] = useState(false);
@@ -941,6 +947,18 @@ export default function App() {
     return labels;
   }, [projectList]);
   const activeProjectId = normalizedProjectId || undefined;
+  const activeProjectRecord = useMemo(
+    () => projectList.find((item) => normalizeProjectId(item.project_id) === activeProjectId) || null,
+    [projectList, activeProjectId]
+  );
+  const activeProjectDefaultChatWorkflowId = useMemo(
+    () => getProjectDefaultChatWorkflowId(activeProjectRecord),
+    [activeProjectRecord]
+  );
+  const activeProjectChatWorkflowLabel = useMemo(
+    () => getProjectChatWorkflowLabel(activeProjectRecord, workflowList),
+    [activeProjectRecord, workflowList]
+  );
   const runHistory = useMemo(() => {
     let items = runHistoryRaw;
 
@@ -979,6 +997,15 @@ export default function App() {
         ? workflowList.filter((item) => normalizeProjectId(item.project_id) === activeProjectId)
         : workflowList,
     [workflowList, activeProjectId]
+  );
+  const projectEditWorkflowOptions = useMemo(
+    () =>
+      buildProjectChatWorkflowOptions(
+        normalizeProjectId(projectEditTarget?.project_id),
+        workflowList,
+        projectEditDefaultChatWorkflowId
+      ),
+    [projectEditTarget, workflowList, projectEditDefaultChatWorkflowId]
   );
 
   const historySummary = useMemo(
@@ -1638,11 +1665,13 @@ export default function App() {
   const openProjectEdit = (project: ProjectRecord) => {
     setProjectEditTarget(project);
     setProjectEditName(project.project_name || normalizeProjectId(project.project_id));
+    setProjectEditDefaultChatWorkflowId(getProjectDefaultChatWorkflowId(project));
   };
 
   const closeProjectEdit = () => {
     setProjectEditTarget(null);
     setProjectEditName('');
+    setProjectEditDefaultChatWorkflowId('');
   };
 
   const saveProjectEdit = async () => {
@@ -1658,7 +1687,12 @@ export default function App() {
       return;
     }
     setProjectEditLoading(true);
-    const result = await updateProject(projectScope, { project_name: nextName });
+    const result = await updateProject(projectScope, {
+      project_name: nextName,
+      settings: {
+        default_chat_workflow_id: projectEditDefaultChatWorkflowId || null
+      }
+    });
     if (result.error) {
       setStatus({ tone: 'error', label: 'Project update failed', detail: result.error.message });
       setProjectEditLoading(false);
@@ -2933,6 +2967,7 @@ export default function App() {
             <Box className="header-controls-wrap">
               <Group gap="xs" wrap="nowrap" className="header-controls">
                 <Badge variant="outline">Project {activeProjectId || '-'}</Badge>
+                <Badge variant="outline">Project chat {activeProjectChatWorkflowLabel || '-'}</Badge>
                 <Badge variant="outline">Workflow {workflowId || '-'}</Badge>
                 <Button variant="default" size="sm" onClick={() => applyViewMode('scope')}>
                   Back to projects
@@ -3190,6 +3225,9 @@ export default function App() {
                 <Text size="xs" c="dimmed">
                   Project {projectId.trim() || '—'}
                 </Text>
+                <Text size="xs" c="dimmed">
+                  Project chat {activeProjectChatWorkflowLabel || '—'}
+                </Text>
                 <Button
                   size="xs"
                   variant="light"
@@ -3368,6 +3406,7 @@ export default function App() {
                 <Group gap="xs" wrap="wrap">
                   <Badge variant="outline">Tenant {tenantId}</Badge>
                   <Badge variant="outline">Project {activeProjectId || '-'}</Badge>
+                  <Badge variant="outline">Project chat {activeProjectChatWorkflowLabel || '-'}</Badge>
                   <Badge variant="outline">Workflow {workflowId || '-'}</Badge>
                 </Group>
               </Group>
@@ -3447,6 +3486,7 @@ export default function App() {
                         projectList.map((item) => {
                           const projectScope = normalizeProjectId(item.project_id);
                           const selected = projectScope === activeProjectId;
+                          const projectChatWorkflowLabel = getProjectChatWorkflowLabel(item, workflowList);
                           return (
                             <Card
                               key={projectScope}
@@ -3462,6 +3502,11 @@ export default function App() {
                                   <Text size="xs" c="dimmed">
                                     {projectScope}
                                   </Text>
+                                  {projectChatWorkflowLabel && (
+                                    <Text size="xs" c="dimmed">
+                                      Project chat: {projectChatWorkflowLabel}
+                                    </Text>
+                                  )}
                                 </Stack>
                                 <Stack gap={6} align="flex-end">
                                   {selected && <Badge color="teal">Selected</Badge>}
@@ -3523,6 +3568,9 @@ export default function App() {
                         workflowsForActiveProject.map((item) => {
                           const workflowScope = normalizeProjectId(item.project_id);
                           const selected = item.workflow_id === workflowId;
+                          const isProjectChatWorkflow =
+                            workflowScope === activeProjectId &&
+                            item.workflow_id === activeProjectDefaultChatWorkflowId;
                           return (
                             <Card
                               key={item.workflow_id}
@@ -3536,7 +3584,18 @@ export default function App() {
                               }}
                             >
                               <Stack gap={2}>
-                                <Text fw={selected ? 700 : 600}>{item.name}</Text>
+                                <Group justify="space-between" gap="xs" wrap="nowrap">
+                                  <Text fw={selected ? 700 : 600}>{item.name}</Text>
+                                  {isProjectChatWorkflow && (
+                                    <Badge
+                                      color="blue"
+                                      variant="light"
+                                      data-testid={`project-chat-workflow-${item.workflow_id}`}
+                                    >
+                                      Project chat
+                                    </Badge>
+                                  )}
+                                </Group>
                                 <Text size="xs" c="dimmed">
                                   {item.workflow_id}
                                 </Text>
@@ -3565,6 +3624,22 @@ export default function App() {
             onChange={(event) => setProjectEditName(event.currentTarget.value)}
             data-testid="edit-project-name-input"
           />
+          <Select
+            label="Default chat workflow"
+            placeholder={
+              projectEditWorkflowOptions.length ? 'Select published workflow' : 'No published workflows in project'
+            }
+            value={projectEditDefaultChatWorkflowId || null}
+            data={projectEditWorkflowOptions}
+            onChange={(value) => setProjectEditDefaultChatWorkflowId(value || '')}
+            clearable
+            searchable
+            nothingFoundMessage="No workflows"
+            data-testid="edit-project-default-chat-workflow"
+          />
+          <Text size="xs" c="dimmed">
+            Project chat currently serves {projectEditDefaultChatWorkflowId || 'no workflow selected'}.
+          </Text>
           <Group justify="flex-end" gap="xs">
             <Button variant="default" onClick={closeProjectEdit} disabled={projectEditLoading}>
               Cancel

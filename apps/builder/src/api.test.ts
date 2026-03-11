@@ -152,6 +152,30 @@ describe('api listRuns', () => {
     );
   });
 
+  it('calls PATCH /projects/{project_id} with settings updates for project chat defaults', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        project_id: 'proj_1',
+        project_name: 'Renamed',
+        settings: { default_chat_workflow_id: 'wf_chat' }
+      })
+    } as Response);
+
+    await updateProject('proj_1', {
+      settings: { default_chat_workflow_id: 'wf_chat' }
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects/proj_1`,
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ settings: { default_chat_workflow_id: 'wf_chat' } })
+      })
+    );
+  });
+
   it('calls DELETE /projects/{project_id} for project deletion', async () => {
     fetchMock.mockResolvedValue({
       ok: true,

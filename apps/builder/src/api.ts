@@ -284,7 +284,7 @@ export const listProjects = async (params?: {
 
 export const updateProject = async (
   projectId: string,
-  payload: { project_name: string }
+  payload: { project_name?: string; settings?: Record<string, any> }
 ): Promise<ApiResult<ProjectRecord>> => {
   return request(`/projects/${projectId}`, {
     method: 'PATCH',

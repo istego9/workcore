@@ -31,9 +31,9 @@ const inferRootHost = (hostname: string) => {
 
 const inferDefaultApiUrl = () => {
   const rootHost = inferRootHost(window.location.hostname);
-  const chatkitHost = rootHost === 'localhost' ? 'chatkit.localhost' : `chatkit.${rootHost}`;
+  const apiHost = rootHost === 'localhost' ? 'api.localhost' : `api.${rootHost}`;
   const port = window.location.port ? `:${window.location.port}` : '';
-  return `${window.location.protocol}//${chatkitHost}${port}/chatkit`;
+  return `${window.location.protocol}//${apiHost}${port}/chat`;
 };
 
 const contentText = (item: ThreadItem): string => {
@@ -84,6 +84,7 @@ export default function App() {
     if (domainKey.trim()) metadata.domain_key = domainKey.trim();
     return metadata;
   }, [workflowId, workflowVersionId, projectId, domainKey]);
+  const hasChatScope = workflowId.trim() || projectId.trim();
 
   const applyEvent = (event: Parameters<typeof applyStreamEvent>[1]) => {
     setThreadState((prev) => applyStreamEvent(prev, event));
@@ -107,8 +108,8 @@ export default function App() {
       setStatus('API URL is required');
       return;
     }
-    if (!workflowId.trim()) {
-      setStatus('Workflow ID is required');
+    if (!hasChatScope) {
+      setStatus('Workflow ID or Project ID is required');
       return;
     }
     setConnected(true);
@@ -121,8 +122,8 @@ export default function App() {
       setStatus('Connect first');
       return;
     }
-    if (!workflowId.trim()) {
-      setStatus('Workflow ID is required');
+    if (!hasChatScope) {
+      setStatus('Workflow ID or Project ID is required');
       return;
     }
     if (busy) return;
@@ -225,7 +226,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (autoConnect && workflowId.trim()) {
+    if (autoConnect && hasChatScope) {
       handleConnect();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -237,7 +238,7 @@ export default function App() {
     autoStartTriggeredRef.current = true;
     void sendUserMessage(' ');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStart, connected, threadState.threadId]);
+  }, [autoStart, connected, hasChatScope, threadState.threadId]);
 
   const orderedItems = threadState.items;
   const latestProgress = threadState.progress[threadState.progress.length - 1];
