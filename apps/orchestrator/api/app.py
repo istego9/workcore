@@ -32,11 +32,14 @@ from apps.orchestrator.api.idempotency import IdempotencyStore, create_idempoten
 from apps.orchestrator.api.ledger_store import create_run_ledger_store, runtime_events_to_ledger_entries
 from apps.orchestrator.api.partner_self_service import (
     PartnerSelfServiceError,
+    public_host_policy_catalog,
+    public_partner_host_policy_bindings,
     build_integration_manifest,
     build_onboarding_package_zip,
     decode_easyauth_principal,
     identity_from_easyauth_payload,
     normalize_onboard_request,
+    resolve_partner_host_policy,
     render_partner_portal_html,
     run_partner_onboarding,
 )
@@ -2663,6 +2666,8 @@ def create_app(
                     "tenant_id": identity.tenant_id,
                     "default_base_url": partner_portal_default_base_url,
                     "default_manifest": portal_manifest,
+                    "host_policy_catalog": public_host_policy_catalog(),
+                    "partner_host_policy_bindings": public_partner_host_policy_bindings(),
                 }
             )
         except PartnerSelfServiceError as exc:
@@ -2688,6 +2693,7 @@ def create_app(
             onboarding = run_partner_onboarding(request_data, extra_env=partner_portal_env_overrides)
             onboarding_manifest = build_integration_manifest(
                 base_url=str(onboarding.get("base_url") or partner_portal_default_base_url),
+                partner_id=str(onboarding.get("partner_id") or request_data.get("partner_id") or ""),
                 tenant_id=str(onboarding.get("tenant_id_pinned") or request_data.get("tenant_id_pinned") or ""),
                 token_endpoint=str(onboarding.get("token_endpoint") or ""),
                 scope=str(onboarding.get("scope") or ""),
@@ -2700,6 +2706,13 @@ def create_app(
                 ),
                 secret_issued_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 secret_expires_at=str(onboarding.get("client_secret_expires_at") or ""),
+                host_policy=(
+                    onboarding.get("host_policy")
+                    if isinstance(onboarding.get("host_policy"), dict)
+                    else request_data.get("host_policy")
+                    if isinstance(request_data.get("host_policy"), dict)
+                    else None
+                ),
             )
             package = build_onboarding_package_zip(onboarding, issued_by=identity.user_email)
         except json.JSONDecodeError:
@@ -2881,11 +2894,14 @@ def create_app(
         tenant_header = (request.headers.get("X-Tenant-Id") or "").strip() or None
         header_project_id = (request.headers.get("X-Project-Id") or "").strip() or None
         query_project_id = (request.query_params.get("project_id") or "").strip() or None
+        query_partner_id = (request.query_params.get("partner_id") or "").strip() or None
         project_id = query_project_id or header_project_id
 
         project_scope = await _resolve_project_scope_readiness(tenant_header, project_id)
+        host_policy = resolve_partner_host_policy(partner_id=query_partner_id)
         manifest = build_integration_manifest(
             base_url=_public_base_url(request),
+            partner_id=query_partner_id,
             tenant_id=tenant_header,
             project_id=project_id,
             default_chat_workflow_id=project_scope.get("default_workflow_id"),
@@ -2893,6 +2909,7 @@ def create_app(
             audience=(get_env("APIM_OAUTH_AUDIENCE") or "").strip() or None,
             rate_limit_profile="default",
             secret_expiry_months=12,
+            host_policy=host_policy,
             now=now,
         )
 
@@ -3107,6 +3124,91 @@ def create_app(
             docs_ref=urls["projects_create"],
         )
 
+        manifest_host_policy = manifest.get("host_policy") if isinstance(manifest, dict) else {}
+        policy_mode = (
+            str(manifest_host_policy.get("mode", "")).strip().lower()
+            if isinstance(manifest_host_policy, dict)
+            else ""
+        )
+        policy_enforcement = (
+            str(manifest_host_policy.get("enforcement", "")).strip().lower()
+            if isinstance(manifest_host_policy, dict)
+            else ""
+        )
+        policy_base_url = (
+            str(manifest_host_policy.get("canonical_base_url", "")).strip()
+            if isinstance(manifest_host_policy, dict)
+            else ""
+        )
+        policy_allowed_domains = [
+            str(item).strip().lower()
+            for item in (
+                manifest_host_policy.get("allowed_domains", [])
+                if isinstance(manifest_host_policy, dict)
+                else []
+            )
+            if str(item).strip()
+        ]
+        observed_base_url = str(manifest.get("api_base_url", "")).strip()
+        observed_chat_url = str(manifest.get("chat_api_url", "")).strip()
+        observed_allowed_domains = [
+            str(item).strip().lower()
+            for item in manifest.get("allowed_domains", [])
+            if str(item).strip()
+        ]
+        expected_chat_url = f"{policy_base_url.rstrip('/')}/chat" if policy_base_url else ""
+        pinned_required = policy_mode == "pinned" and policy_enforcement == "required"
+        if pinned_required:
+            expected_host = (urlsplit(policy_base_url).hostname or "").strip().lower()
+            expected_allowed_domains = [expected_host] if expected_host else list(policy_allowed_domains)
+            host_policy_ok = (
+                observed_base_url.rstrip("/") == policy_base_url.rstrip("/")
+                and observed_chat_url == expected_chat_url
+                and set(observed_allowed_domains) == set(expected_allowed_domains)
+            )
+            host_policy_code = "HOST_POLICY_PINNED_OK" if host_policy_ok else "HOST_POLICY_PINNED_MISMATCH"
+            host_policy_message = (
+                "Pinned host policy is satisfied."
+                if host_policy_ok
+                else "Pinned host policy is violated: onboarding host must use canonical pinned base URL and domains."
+            )
+            host_policy_status = "PASS" if host_policy_ok else "FAIL"
+            host_policy_expected = {
+                "api_base_url": policy_base_url,
+                "chat_api_url": expected_chat_url,
+                "allowed_domains": expected_allowed_domains,
+            }
+        else:
+            host_policy_status = "PASS"
+            host_policy_code = "HOST_POLICY_REQUEST_HOST_OK"
+            host_policy_message = "Host policy allows request-visible public host."
+            host_policy_expected = {
+                "mode": "request_host",
+                "note": "base URL may follow public API host in integration surfaces",
+            }
+        add_check(
+            "host_policy_compliance",
+            status=host_policy_status,
+            severity="high",
+            code=host_policy_code,
+            title="Host policy compliance",
+            message=host_policy_message,
+            observed={
+                "policy": manifest_host_policy,
+                "api_base_url": observed_base_url,
+                "chat_api_url": observed_chat_url,
+                "allowed_domains": observed_allowed_domains,
+                "partner_id": query_partner_id,
+            },
+            expected=host_policy_expected,
+            remediation=(
+                "Use host_policy.canonical_base_url and host_policy.allowed_domains for this partner."
+                if pinned_required
+                else "No remediation required."
+            ),
+            docs_ref=f"{urls['api_reference']}#internal-partner-onboarding-self-service",
+        )
+
         chat_url = str(manifest.get("chat_api_url", ""))
         add_check(
             "integration_manifest_chat_canonical",
@@ -3260,6 +3362,7 @@ def create_app(
             "title": "WorkCore Agent Integration Doctor",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "correlation_id": _correlation_id(request),
+            "partner_id": query_partner_id,
             "urls": urls,
             "integration_manifest": manifest,
             "summary": {
@@ -3491,6 +3594,7 @@ def create_app(
             "## Machine-readable bundle",
             f"- JSON bundle: {urls['integration_kit_json']}",
             "- Canonical manifest path in bundle: `integration_manifest`",
+            "- Canonical host policy in manifest: `host_policy` (request_host vs pinned partner policy)",
             "- Canonical chat endpoint in manifest: `chat_api_url` (must be `/chat`)",
             "- Deprecated compatibility alias metadata: `/chatkit` with fixed sunset + remediation",
             f"- Internal operator onboarding portal: {urls['partner_access_portal']}",
@@ -3774,6 +3878,7 @@ def create_app(
   <p class="muted">Run canonical onboarding readiness checks and review exact remediation steps.</p>
   <div class="row">
     <input id="projectId" placeholder="Optional project_id for scope checks" style="min-width: 260px;" />
+    <input id="partnerId" placeholder="Optional partner_id for host policy checks" style="min-width: 260px;" />
     <button id="refresh">Run checks</button>
     <a href="/agent-integration-test.json" target="_blank" rel="noopener noreferrer">Open JSON report</a>
     <a href="/agent-integration-kit.json" target="_blank" rel="noopener noreferrer">Open integration manifest</a>
@@ -3823,6 +3928,7 @@ def create_app(
     const validateOutput = document.getElementById('validateOutput');
     const draftInput = document.getElementById('draftInput');
     const projectIdInput = document.getElementById('projectId');
+    const partnerIdInput = document.getElementById('partnerId');
 
     function statusClass(status) {
       if (status === 'PASS') return 'pass';
@@ -3853,8 +3959,10 @@ def create_app(
       checksPassEl.innerHTML = '';
 
       const projectId = (projectIdInput.value || '').trim();
+      const partnerId = (partnerIdInput.value || '').trim();
       const params = new URLSearchParams();
       if (projectId) params.set('project_id', projectId);
+      if (partnerId) params.set('partner_id', partnerId);
       const query = params.toString();
       const url = query ? `/agent-integration-test.json?${query}` : '/agent-integration-test.json';
 
@@ -3869,7 +3977,7 @@ def create_app(
       const manifest = payload.integration_manifest || {};
       manifestEl.innerHTML =
         '<h3>Canonical Manifest Snapshot</h3>' +
-        `<div class="manifest">api_base_url=${manifest.api_base_url || ''}\nchat_api_url=${manifest.chat_api_url || ''}\nauth_profile=${(manifest.auth_profile || {}).type || ''}\nsecret_warning=${((manifest.secret_expiry || {}).warning_level || '')}: ${((manifest.secret_expiry || {}).warning_message || '')}</div>`;
+        `<div class="manifest">api_base_url=${manifest.api_base_url || ''}\nchat_api_url=${manifest.chat_api_url || ''}\nhost_policy=${(manifest.host_policy || {}).policy_id || ''} (${(manifest.host_policy || {}).mode || ''})\nauth_profile=${(manifest.auth_profile || {}).type || ''}\nsecret_warning=${((manifest.secret_expiry || {}).warning_level || '')}: ${((manifest.secret_expiry || {}).warning_message || '')}</div>`;
 
       const checks = payload.checks || [];
       checks.forEach((check) => {

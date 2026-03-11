@@ -272,8 +272,9 @@
       const secretSummaryEl = document.getElementById("secret-summary");
       const secretExpiryMonthsInput = document.getElementById("secret_expiry_months");
       const rateLimitProfileInput = document.getElementById("rate_limit_profile");
-      const EPAM_BASE_URL = "https://api.runwcr.com";
-      const EPAM_ALLOWED_DOMAINS = "api.runwcr.com";
+      const hostPolicyCatalog = context.host_policy_catalog || {};
+      const partnerHostPolicyBindings = context.partner_host_policy_bindings || {};
+      const defaultHostPolicyId = "public_request_host";
 
       identityEl.textContent = `Signed in as: ${context.user_email || "unknown"} | Tenant: ${context.tenant_id || "unknown"}`;
 
@@ -294,7 +295,8 @@
       const defaultBaseUrl = context.default_base_url || "";
       const defaultManifest = context.default_manifest || {};
       const defaultAllowedDomains = hostFromBaseUrl(defaultBaseUrl);
-      let epamLockApplied = false;
+      let hostPolicyLockApplied = false;
+      let activeHostPolicy = null;
 
       const addMonths = (date, months) => {
         const result = new Date(date.getTime());
@@ -303,6 +305,20 @@
       };
 
       const isoDate = (date) => date.toISOString().replace(/\.\d{3}Z$/, "Z");
+
+      const resolveHostPolicy = () => {
+        const partnerId = (partnerIdInput.value || "").trim().toLowerCase();
+        const policyId = (partnerHostPolicyBindings[partnerId] || defaultHostPolicyId).trim();
+        const policy = hostPolicyCatalog[policyId] || {};
+        return {
+          policy_id: policy.policy_id || policyId || defaultHostPolicyId,
+          mode: policy.mode || "request_host",
+          enforcement: policy.enforcement || "advisory",
+          canonical_base_url: policy.canonical_base_url || defaultBaseUrl,
+          allowed_domains: Array.isArray(policy.allowed_domains) ? policy.allowed_domains : [],
+          notes: Array.isArray(policy.notes) ? policy.notes : [],
+        };
+      };
 
       const renderSummary = () => {
         const baseUrl = (baseUrlInput.value || defaultBaseUrl || "").trim();
@@ -321,9 +337,10 @@
           : expiryMonths <= 4
           ? "Warn: schedule rotation early."
           : "Info: healthy rotation horizon.";
+        const policy = activeHostPolicy || resolveHostPolicy();
 
         hostSummaryEl.textContent =
-          `api_base_url=${baseUrl}\nallowed_domains=${parseDomains(allowedDomainsInput.value).join(", ") || hostFromBaseUrl(baseUrl) || "n/a"}\nrate_limit_profile=${rateLimitProfile}`;
+          `host_policy=${policy.policy_id} (${policy.mode}, ${policy.enforcement})\napi_base_url=${baseUrl}\nallowed_domains=${parseDomains(allowedDomainsInput.value).join(", ") || hostFromBaseUrl(baseUrl) || "n/a"}\nrate_limit_profile=${rateLimitProfile}`;
         authSummaryEl.textContent =
           `type=oauth_client_credentials\ntoken_url=${tokenUrl}\nscope=${scope}\nrequired_headers=Authorization, X-Tenant-Id`;
         chatSummaryEl.textContent =
@@ -332,26 +349,23 @@
           `validity_policy=${expiryMonths} month(s)\nissued_at=${isoDate(now)}\nexpires_at=${isoDate(expiresAt)}\nrotation_due_at=${isoDate(rotationDueAt)}\n${warningText}`;
       };
 
-      const isEpamPartner = () =>
-        [
-          displayNameInput.value,
-          partnerIdInput.value,
-          tenantIdPinnedInput.value,
-          entraAppDisplayNameInput.value,
-        ].some((value) => value.trim().toLowerCase().includes("epam"));
-
       const applyHostPolicy = () => {
-        if (isEpamPartner()) {
-          baseUrlInput.value = EPAM_BASE_URL;
-          allowedDomainsInput.value = EPAM_ALLOWED_DOMAINS;
+        activeHostPolicy = resolveHostPolicy();
+        if (activeHostPolicy.mode === "pinned" && activeHostPolicy.enforcement === "required") {
+          const pinnedBaseUrl = (activeHostPolicy.canonical_base_url || "").trim();
+          const pinnedDomains = (activeHostPolicy.allowed_domains || []).join(", ");
+          baseUrlInput.value = pinnedBaseUrl;
+          allowedDomainsInput.value = pinnedDomains;
           baseUrlInput.readOnly = true;
           allowedDomainsInput.readOnly = true;
-          hostPolicyHintEl.textContent = "EPAM policy: onboarding package will use only https://api.runwcr.com.";
-          epamLockApplied = true;
+          hostPolicyHintEl.textContent =
+            `${activeHostPolicy.policy_id}: onboarding package is pinned to ${pinnedBaseUrl}.`;
+          hostPolicyLockApplied = true;
+          renderSummary();
           return;
         }
 
-        if (epamLockApplied) {
+        if (hostPolicyLockApplied) {
           baseUrlInput.value = defaultBaseUrl;
           allowedDomainsInput.value = defaultAllowedDomains;
         } else {
@@ -364,15 +378,15 @@
         }
         baseUrlInput.readOnly = false;
         allowedDomainsInput.readOnly = false;
-        hostPolicyHintEl.textContent = defaultBaseUrl
-          ? `Default onboarding host: ${defaultBaseUrl}`
+        hostPolicyHintEl.textContent = activeHostPolicy.policy_id
+          ? `Policy ${activeHostPolicy.policy_id}: use public onboarding host defaults.`
           : "";
-        epamLockApplied = false;
+        hostPolicyLockApplied = false;
         renderSummary();
       };
 
       applyHostPolicy();
-      for (const input of [displayNameInput, partnerIdInput, tenantIdPinnedInput, entraAppDisplayNameInput]) {
+      for (const input of [partnerIdInput]) {
         input.addEventListener("input", applyHostPolicy);
       }
       for (const input of [baseUrlInput, allowedDomainsInput, secretExpiryMonthsInput, rateLimitProfileInput]) {
@@ -399,6 +413,10 @@
           allowed_domains: parseDomains(document.getElementById("allowed_domains").value),
           base_url: document.getElementById("base_url").value.trim(),
         };
+        const resolvedPolicy = activeHostPolicy || resolveHostPolicy();
+        if (resolvedPolicy && resolvedPolicy.policy_id) {
+          payload.host_policy = resolvedPolicy.policy_id;
+        }
 
         const partnerId = document.getElementById("partner_id").value.trim();
         const tenantIdPinned = document.getElementById("tenant_id_pinned").value.trim();

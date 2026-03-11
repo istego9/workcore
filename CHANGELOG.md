@@ -20,6 +20,7 @@ The format follows a simple date-based log.
 - Enforced pinned host policy for `partner_id=epam_future-insurance`:
   - canonical base URL: `https://api.runwcr.com`
   - allowed domains: `["api.runwcr.com"]`
+- Integration doctor host policy check now fails on pinned-host mismatch and supports partner-aware evaluation with `partner_id` query parameter.
 - Integration guide wording updated: removed primary/alias host framing and switched to policy-driven host canon.
 
 ### Deprecated

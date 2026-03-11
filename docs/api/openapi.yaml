@@ -3563,6 +3563,9 @@ components:
         title: { type: string }
         generated_at: { type: string, format: date-time }
         correlation_id: { type: string }
+        partner_id:
+          type: string
+          nullable: true
         integration_manifest:
           $ref: '#/components/schemas/IntegrationManifest'
         urls:

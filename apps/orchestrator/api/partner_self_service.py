@@ -20,9 +20,39 @@ _ROOT_DIR = Path(__file__).resolve().parents[3]
 _ONBOARD_SCRIPT_PATH = _ROOT_DIR / "deploy" / "azure" / "scripts" / "apim_partner_onboard.sh"
 _PORTAL_TEMPLATE_PATH = _ROOT_DIR / "docs" / "integration" / "partner-self-service-portal.html"
 _PARTNER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
-_EPAM_MARKER = "epam"
-_EPAM_BASE_URL = "https://api.runwcr.com"
-_EPAM_ALLOWED_DOMAINS = ["api.runwcr.com"]
+_DEFAULT_HOST_POLICY_ID = "public_request_host"
+_PINNED_RUNWCR_POLICY_ID = "pinned_runwcr"
+_PINNED_RUNWCR_BASE_URL = "https://api.runwcr.com"
+_PINNED_RUNWCR_ALLOWED_DOMAINS = ["api.runwcr.com"]
+_HOST_POLICY_MODES = {"request_host", "pinned"}
+_HOST_POLICY_ENFORCEMENTS = {"advisory", "required"}
+_HOST_POLICY_CATALOG: dict[str, dict[str, Any]] = {
+    _DEFAULT_HOST_POLICY_ID: {
+        "policy_id": _DEFAULT_HOST_POLICY_ID,
+        "mode": "request_host",
+        "enforcement": "advisory",
+        "canonical_base_url": "",
+        "allowed_domains": [],
+        "notes": [
+            "Use caller-visible public API host.",
+            "Canonical chat endpoint remains POST /chat.",
+        ],
+    },
+    _PINNED_RUNWCR_POLICY_ID: {
+        "policy_id": _PINNED_RUNWCR_POLICY_ID,
+        "mode": "pinned",
+        "enforcement": "required",
+        "canonical_base_url": _PINNED_RUNWCR_BASE_URL,
+        "allowed_domains": list(_PINNED_RUNWCR_ALLOWED_DOMAINS),
+        "notes": [
+            "Partner host policy is pinned to https://api.runwcr.com.",
+            "Only api.runwcr.com is allowed in generated onboarding artifacts.",
+        ],
+    },
+}
+_PARTNER_HOST_POLICY_BY_PARTNER_ID: dict[str, str] = {
+    "epam_future-insurance": _PINNED_RUNWCR_POLICY_ID,
+}
 _CHAT_API_PATH = "/chat"
 _CHATKIT_ALIAS_PATH = "/chatkit"
 _CHATKIT_ALIAS_SUNSET_AT = datetime(2026, 4, 4, 0, 0, 0, tzinfo=timezone.utc)
@@ -83,6 +113,142 @@ def _host_from_base_url(base_url: str) -> str:
     return (parsed.hostname or "").strip().lower()
 
 
+def _normalize_partner_id(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _policy_template(policy_id: str) -> dict[str, Any]:
+    template = _HOST_POLICY_CATALOG.get(policy_id)
+    if not isinstance(template, dict):
+        raise PartnerSelfServiceError("INVALID_ARGUMENT", f"unknown host_policy `{policy_id}`", 422)
+    return {
+        "policy_id": str(template.get("policy_id") or policy_id),
+        "mode": str(template.get("mode") or "request_host"),
+        "enforcement": str(template.get("enforcement") or "advisory"),
+        "canonical_base_url": str(template.get("canonical_base_url") or ""),
+        "allowed_domains": [str(item).strip().lower() for item in template.get("allowed_domains", []) if str(item).strip()],
+        "notes": [str(item).strip() for item in template.get("notes", []) if str(item).strip()],
+    }
+
+
+def resolve_partner_host_policy(
+    *,
+    partner_id: str | None = None,
+    requested_policy_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_partner_id = _normalize_partner_id(partner_id)
+    requested = (requested_policy_id or "").strip()
+    if requested and requested not in _HOST_POLICY_CATALOG:
+        raise PartnerSelfServiceError("INVALID_ARGUMENT", f"host_policy must be one of {sorted(_HOST_POLICY_CATALOG)}", 422)
+
+    enforced_policy_id = _PARTNER_HOST_POLICY_BY_PARTNER_ID.get(normalized_partner_id)
+    resolved_policy_id = enforced_policy_id or requested or _DEFAULT_HOST_POLICY_ID
+    policy = _policy_template(resolved_policy_id)
+    if normalized_partner_id:
+        policy["partner_id"] = normalized_partner_id
+    if enforced_policy_id and requested and requested != enforced_policy_id:
+        notes = list(policy.get("notes", []))
+        notes.append(f"Requested host_policy `{requested}` overridden by enforced partner policy.")
+        policy["notes"] = notes
+    return policy
+
+
+def _normalize_manifest_host_policy(
+    *,
+    host_policy: Mapping[str, Any] | None,
+    normalized_base_url: str,
+    resolved_allowed_domains: list[str],
+    partner_id: str | None,
+) -> dict[str, Any]:
+    mode = "request_host"
+    enforcement = "advisory"
+    policy_id = _DEFAULT_HOST_POLICY_ID
+    canonical_base_url = normalized_base_url
+    notes: list[str] = []
+    host_policy_allowed_domains: list[str] = list(resolved_allowed_domains)
+    policy_partner_id = _normalize_partner_id(partner_id) or None
+
+    if isinstance(host_policy, Mapping):
+        candidate_mode = str(host_policy.get("mode") or "").strip().lower()
+        if candidate_mode in _HOST_POLICY_MODES:
+            mode = candidate_mode
+        candidate_enforcement = str(host_policy.get("enforcement") or "").strip().lower()
+        if candidate_enforcement in _HOST_POLICY_ENFORCEMENTS:
+            enforcement = candidate_enforcement
+        candidate_policy_id = str(host_policy.get("policy_id") or "").strip()
+        if candidate_policy_id:
+            policy_id = candidate_policy_id
+        candidate_canonical_base_url = _base_url_without_trailing_slash(str(host_policy.get("canonical_base_url") or ""))
+        if candidate_canonical_base_url:
+            canonical_base_url = candidate_canonical_base_url
+        candidate_allowed_domains = [
+            str(item).strip().lower()
+            for item in host_policy.get("allowed_domains", [])
+            if str(item).strip()
+        ]
+        if candidate_allowed_domains:
+            host_policy_allowed_domains = candidate_allowed_domains
+        notes = [str(item).strip() for item in host_policy.get("notes", []) if str(item).strip()]
+        candidate_partner_id = _normalize_partner_id(str(host_policy.get("partner_id") or ""))
+        if candidate_partner_id:
+            policy_partner_id = candidate_partner_id
+
+    if mode == "pinned":
+        canonical_base_url = _base_url_without_trailing_slash(canonical_base_url or normalized_base_url)
+        if not host_policy_allowed_domains:
+            pinned_host = _host_from_base_url(canonical_base_url)
+            host_policy_allowed_domains = [pinned_host] if pinned_host else []
+
+    if not host_policy_allowed_domains:
+        default_host = _host_from_base_url(normalized_base_url)
+        host_policy_allowed_domains = [default_host] if default_host else []
+
+    return {
+        "policy_id": policy_id,
+        "mode": mode,
+        "enforcement": enforcement,
+        "canonical_base_url": canonical_base_url,
+        "allowed_domains": host_policy_allowed_domains,
+        "partner_id": policy_partner_id,
+        "notes": notes,
+    }
+
+
+def apply_host_policy_to_target(
+    *,
+    base_url: str,
+    allowed_domains: list[str],
+    host_policy: Mapping[str, Any] | None,
+) -> tuple[str, list[str]]:
+    if not isinstance(host_policy, Mapping):
+        return base_url, allowed_domains
+    mode = str(host_policy.get("mode") or "").strip().lower()
+    if mode != "pinned":
+        return base_url, allowed_domains
+
+    canonical_base_url = _base_url_without_trailing_slash(str(host_policy.get("canonical_base_url") or ""))
+    if not canonical_base_url:
+        raise PartnerSelfServiceError("INTERNAL", "pinned host policy requires canonical_base_url", 500)
+    pinned_domains = [
+        str(item).strip().lower()
+        for item in host_policy.get("allowed_domains", [])
+        if str(item).strip()
+    ]
+    if not pinned_domains:
+        host = _host_from_base_url(canonical_base_url)
+        if host:
+            pinned_domains = [host]
+    return canonical_base_url, pinned_domains
+
+
+def public_host_policy_catalog() -> dict[str, dict[str, Any]]:
+    return {policy_id: _policy_template(policy_id) for policy_id in _HOST_POLICY_CATALOG}
+
+
+def public_partner_host_policy_bindings() -> dict[str, str]:
+    return dict(_PARTNER_HOST_POLICY_BY_PARTNER_ID)
+
+
 def _token_endpoint_for_manifest(explicit_endpoint: str | None, tenant_id: str | None) -> str:
     endpoint = (explicit_endpoint or "").strip()
     if endpoint:
@@ -132,6 +298,7 @@ def _default_operator_notes() -> list[str]:
     return [
         "Canonical chat endpoint is POST /chat.",
         "POST /chatkit is a deprecated compatibility alias until 2026-04-04T00:00:00Z.",
+        "Canonical host behavior is controlled by integration_manifest.host_policy.",
         "Thread creation resolution order: metadata.workflow_id -> metadata.project_id -> X-Project-Id.",
         "Do not use API key auth for public integrations; use OAuth client_credentials.",
     ]
@@ -140,6 +307,7 @@ def _default_operator_notes() -> list[str]:
 def build_integration_manifest(
     *,
     base_url: str,
+    partner_id: str | None = None,
     tenant_id: str | None = None,
     project_id: str | None = None,
     default_chat_workflow_id: str | None = None,
@@ -152,6 +320,7 @@ def build_integration_manifest(
     secret_expiry_months: int | None = None,
     secret_issued_at: str | None = None,
     secret_expires_at: str | None = None,
+    host_policy: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     current_time = now or _utc_now()
@@ -174,6 +343,12 @@ def build_integration_manifest(
         host = _host_from_base_url(normalized_base_url)
         if host:
             resolved_allowed_domains = [host]
+    manifest_host_policy = _normalize_manifest_host_policy(
+        host_policy=host_policy,
+        normalized_base_url=normalized_base_url,
+        resolved_allowed_domains=resolved_allowed_domains,
+        partner_id=partner_id,
+    )
 
     issued_at = _parse_datetime(secret_issued_at)
     expires_at = _parse_datetime(secret_expires_at)
@@ -191,6 +366,7 @@ def build_integration_manifest(
     manifest = {
         "api_base_url": normalized_base_url,
         "chat_api_url": chat_api_url,
+        "host_policy": manifest_host_policy,
         "deprecated_chat_alias_url": deprecated_chat_alias_url,
         "auth_profile": {
             "type": "oauth_client_credentials",
@@ -330,14 +506,6 @@ def _auto_partner_id(display_name: str) -> str:
     return candidate
 
 
-def _contains_epam_marker(value: str) -> bool:
-    return _EPAM_MARKER in value.strip().lower()
-
-
-def _is_epam_partner(*values: str) -> bool:
-    return any(_contains_epam_marker(value) for value in values if value)
-
-
 def normalize_onboard_request(payload: Any, *, default_base_url: str = "https://api.hq21.tech") -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise PartnerSelfServiceError("INVALID_ARGUMENT", "request body must be a JSON object", 422)
@@ -361,13 +529,20 @@ def normalize_onboard_request(payload: Any, *, default_base_url: str = "https://
         default=f"workcore-partner-{partner_id}",
     )
     rate_limit_profile = _require_string(payload, "rate_limit_profile", max_length=64, default="default")
+    requested_host_policy = _require_string(payload, "host_policy", max_length=64, default="")
     allowed_domains = _parse_allowed_domains(payload)
     base_url = _require_string(payload, "base_url", max_length=200, default=default_base_url)
     if not (base_url.startswith("https://") or base_url.startswith("http://")):
         raise PartnerSelfServiceError("INVALID_ARGUMENT", "base_url must start with http:// or https://", 422)
-    if _is_epam_partner(display_name, partner_id, tenant_id_pinned, entra_app_display_name):
-        base_url = _EPAM_BASE_URL
-        allowed_domains = list(_EPAM_ALLOWED_DOMAINS)
+    host_policy = resolve_partner_host_policy(
+        partner_id=partner_id,
+        requested_policy_id=requested_host_policy or None,
+    )
+    base_url, allowed_domains = apply_host_policy_to_target(
+        base_url=base_url,
+        allowed_domains=allowed_domains,
+        host_policy=host_policy,
+    )
 
     return {
         "partner_id": partner_id,
@@ -375,6 +550,7 @@ def normalize_onboard_request(payload: Any, *, default_base_url: str = "https://
         "entra_app_display_name": entra_app_display_name,
         "tenant_id_pinned": tenant_id_pinned,
         "allowed_domains": allowed_domains,
+        "host_policy": host_policy,
         "status": "active",
         "rate_limit_profile": rate_limit_profile,
         "secret_expiry_months": _parse_secret_expiry_months(payload),
@@ -463,6 +639,7 @@ def _build_partner_config(request_data: Mapping[str, Any]) -> dict[str, Any]:
                 "entra_app_id": "",
                 "tenant_id_pinned": request_data["tenant_id_pinned"],
                 "allowed_domains": request_data["allowed_domains"],
+                "host_policy": request_data.get("host_policy"),
                 "status": "active",
                 "rate_limit_profile": request_data["rate_limit_profile"],
                 "secret_expiry_months": request_data["secret_expiry_months"],
@@ -598,6 +775,7 @@ def run_partner_onboarding(
     onboarding["base_url"] = str(request_data["base_url"])
     onboarding["tenant_id_pinned"] = str(request_data["tenant_id_pinned"])
     onboarding["allowed_domains"] = list(request_data.get("allowed_domains", []))
+    onboarding["host_policy"] = dict(request_data.get("host_policy") or {})
     onboarding["rate_limit_profile"] = str(request_data.get("rate_limit_profile", "")).strip() or None
     onboarding["secret_expiry_months"] = request_data.get("secret_expiry_months")
     return onboarding
@@ -629,9 +807,11 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
         else None
     )
     allowed_domains = [str(item).strip() for item in onboarding.get("allowed_domains", []) if str(item).strip()]
+    host_policy = onboarding.get("host_policy") if isinstance(onboarding.get("host_policy"), Mapping) else None
 
     integration_manifest = build_integration_manifest(
         base_url=base_url,
+        partner_id=partner_id,
         tenant_id=tenant_id,
         token_endpoint=token_endpoint,
         scope=scope,
@@ -641,8 +821,10 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
         secret_issued_at=generated_at,
         secret_expires_at=expires_at,
         default_chat_workflow_readiness="unknown",
+        host_policy=host_policy,
     )
     secret_expiry = integration_manifest["secret_expiry"]
+    resolved_host_policy = integration_manifest.get("host_policy", {})
 
     readme = "\n".join(
         [
@@ -657,6 +839,9 @@ def build_onboarding_package_zip(onboarding: Mapping[str, Any], *, issued_by: st
             f"- API base URL: {base_url}",
             f"- Canonical chat endpoint: {integration_manifest['chat_api_url']}",
             f"- Deprecated alias: {integration_manifest['deprecated_chat_alias_url']} (sunset at 2026-04-04T00:00:00Z)",
+            f"- Host policy: {resolved_host_policy.get('policy_id')} ({resolved_host_policy.get('mode')}, {resolved_host_policy.get('enforcement')})",
+            f"- Host policy canonical_base_url: {resolved_host_policy.get('canonical_base_url')}",
+            f"- Host policy allowed_domains: {', '.join(resolved_host_policy.get('allowed_domains') or []) or 'n/a'}",
             "",
             "## Token exchange",
             f"POST {token_endpoint}",
@@ -830,6 +1015,7 @@ exit 1
         "deprecated_chat_alias_url": integration_manifest["deprecated_chat_alias_url"],
         "client_secret_expires_at": expires_at,
         "allowed_domains": allowed_domains,
+        "host_policy": resolved_host_policy,
         "rate_limit_profile": rate_limit_profile,
         "secret_expiry": secret_expiry,
     }
