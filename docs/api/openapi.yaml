@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.6
+  version: 0.24.7
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -17,6 +17,7 @@ security:
 tags:
   - name: projects
   - name: workflows
+  - name: integration
   - name: capabilities
   - name: runs
   - name: handoff
@@ -136,6 +137,74 @@ paths:
             text/markdown:
               schema:
                 type: string
+  /integration-capabilities:
+    get:
+      tags: [integration]
+      summary: Public integration capability negotiation contract
+      description: >
+        Read-only machine-readable surface for external client feature negotiation.
+        This endpoint is intentionally generic and does not expose tenant-specific readiness,
+        onboarding doctor checks, secret lifecycle metadata, or partner host policy details.
+        Capability contract registry endpoints remain under `/capabilities` and are not repurposed.
+      security: []
+      responses:
+        '200':
+          description: Integration capability negotiation snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationCapabilities'
+              example:
+                generated_at: '2026-03-11T15:30:00Z'
+                api_version: '0.24.7'
+                error_contract:
+                  schema_id: platform_error_envelope
+                  schema_version: '1.0.0'
+                  categories:
+                    - auth
+                    - validation
+                    - configuration
+                    - not_found
+                    - conflict
+                    - unsupported_feature
+                    - transient
+                    - internal
+                    - route
+                    - action
+                  representative_codes:
+                    - INVALID_ARGUMENT
+                    - ERR_PROJECT_ID_REQUIRED
+                    - ERR_PROJECT_NOT_FOUND
+                    - CHAT_PROJECT_SCOPE_REQUIRED
+                    - UNSUPPORTED_FEATURE
+                    - ERR_WORKFLOW_ENGINE_UNAVAILABLE
+                auth:
+                  type: oauth_client_credentials
+                  required_headers:
+                    - Authorization
+                    - X-Tenant-Id
+                  optional_headers:
+                    - X-Project-Id
+                    - X-Correlation-Id
+                    - X-Trace-Id
+                chat:
+                  canonical_endpoint: /chat
+                  deprecated_alias: /chatkit
+                  deprecated_alias_sunset: '2026-04-04T00:00:00Z'
+                  project_scoped_thread_create: true
+                  input_transcribe: true
+                  streaming_sse: true
+                runtime_features:
+                  projection_controls:
+                    state_exclude_paths: true
+                    output_include_paths: true
+                  document_payload:
+                    artifact_ref_default: true
+                  capability_registry: true
+                  workflow_version_pinning: true
+                docs:
+                  api_reference: https://api.hq21.tech/api-reference
+                  integration_guide: https://api.hq21.tech/agent-integration-kit
   /agent-integration-kit.json:
     get:
       tags: [workflows]
@@ -153,11 +222,13 @@ paths:
                 updated_at: '2026-03-11T12:30:00Z'
                 urls:
                   integration_kit_json: https://api.hq21.tech/agent-integration-kit.json
+                  integration_capabilities: https://api.hq21.tech/integration-capabilities
                   integration_test_json: https://api.hq21.tech/agent-integration-test.json
                   chat_endpoint: https://api.hq21.tech/chat
                 integration_manifest:
                   api_base_url: https://api.hq21.tech
                   chat_api_url: https://api.hq21.tech/chat
+                  integration_capabilities_url: https://api.hq21.tech/integration-capabilities
                   host_policy:
                     policy_id: public_request_host
                     mode: request_host
@@ -525,6 +596,15 @@ paths:
                       code: CHAT_PROJECT_SCOPE_REQUIRED
                       message: metadata.project_id or X-Project-Id is required when metadata.workflow_id is omitted
                     correlation_id: corr_123
+        '503':
+          description: Temporary service unavailability
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /chatkit:
     parameters:
       - $ref: '#/components/parameters/TenantIdRequired'
@@ -625,6 +705,19 @@ paths:
               $ref: '#/components/headers/Deprecation'
             Sunset:
               $ref: '#/components/headers/Sunset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: Temporary service unavailability (same as `POST /chat`).
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
           content:
             application/json:
               schema:
@@ -971,6 +1064,7 @@ paths:
     post:
       tags: [capabilities]
       summary: Register versioned capability contract
+      description: Capability contract registry write path (not client feature negotiation).
       requestBody:
         required: true
         content:
@@ -989,6 +1083,7 @@ paths:
     get:
       tags: [capabilities]
       summary: List capability versions
+      description: Capability contract registry listing path (not client feature negotiation).
       parameters:
         - in: query
           name: capability_id
@@ -1013,6 +1108,7 @@ paths:
     get:
       tags: [capabilities]
       summary: List versions for capability id
+      description: Capability contract registry version history path (not client feature negotiation).
       responses:
         '200':
           description: OK
@@ -1257,7 +1353,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Run'
         '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
         '422': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
 
   /runs/{run_id}:
     parameters:
@@ -1382,6 +1480,7 @@ paths:
         '404': { $ref: '#/components/responses/ErrorResponse' }
         '409': { $ref: '#/components/responses/ErrorResponse' }
         '422': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
 
   /handoff/packages/{handoff_id}/replay:
     parameters:
@@ -1631,6 +1730,12 @@ components:
       schema:
         type: string
         example: Sat, 04 Apr 2026 00:00:00 GMT
+    RetryAfter:
+      description: >
+        Backoff hint in seconds when the error is retryable and server-side retry window is known.
+      schema:
+        type: string
+        example: "1"
 
   parameters:
     WorkflowId:
@@ -1743,54 +1848,95 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
 
   schemas:
-    ErrorEnvelope:
+    PlatformError:
+      type: object
+      description: >
+        Additive typed platform error contract for public integration surfaces.
+        Existing consumers of `error.code`, `error.message`, and envelope-level `correlation_id`
+        remain backward-compatible.
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+        message:
+          type: string
+          description: Human-readable error summary.
+        category:
+          type: string
+          enum:
+            - auth
+            - validation
+            - configuration
+            - not_found
+            - conflict
+            - unsupported_feature
+            - transient
+            - internal
+            - route
+            - action
+          description: Coarse-grained error category for client policy handling.
+        retryable:
+          type: boolean
+          nullable: true
+          description: Whether retry is safe/reasonable based on server-side knowledge.
+        retry_after_s:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Retry delay in seconds when known.
+        bad_fields:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Field paths causing validation failure when available.
+        unsupported_feature:
+          type: string
+          nullable: true
+          description: Feature identifier when request hits unsupported capability.
+        docs_ref:
+          type: string
+          nullable: true
+          description: Optional documentation anchor/reference for remediation.
+        details:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: { type: string }
+          nullable: true
+          description: Optional structured diagnostic details.
+        correlation_id:
+          type: string
+          nullable: true
+          description: Optional correlation id duplicated on nested error object.
+      required: [code, message, category]
+
+    PlatformErrorEnvelope:
       type: object
       properties:
         error:
-          type: object
-          properties:
-            code:
-              type: string
-              enum:
-                - INVALID_ARGUMENT
-                - NOT_FOUND
-                - CONFLICT
-                - UNAUTHORIZED
-                - FORBIDDEN
-                - RATE_LIMITED
-                - PRECONDITION_FAILED
-                - INTERNAL
-                - ERR_PROJECT_ID_REQUIRED
-                - ERR_PROJECT_NOT_FOUND
-                - ERR_ORCHESTRATOR_NOT_IN_PROJECT
-                - ERR_WORKFLOW_NOT_IN_PROJECT
-                - ERR_WORKFLOW_ENGINE_UNAVAILABLE
-                - ERR_LLM_UNAVAILABLE
-                - DEPRECATED_ENDPOINT
-                - ERR_LLM_BAD_SCHEMA_OUTPUT
-                - ERR_CANCEL_NOT_ALLOWED
-                - ERR_CONTEXT_FETCH_FAILED
-                - ERR_CAPABILITY_NOT_FOUND
-                - ERR_HANDOFF_REPLAY_NOT_ALLOWED
-                - ERR_HANDOFF_NOT_FOUND
-                - projection.path_invalid
-                - artifact.not_found
-                - artifact.access_denied
-                - artifact.expired
-            message: { type: string }
-            details:
-              oneOf:
-                - type: object
-                - type: array
-                  items: { type: string }
-          required: [code, message]
-        correlation_id: { type: string }
+          $ref: '#/components/schemas/PlatformError'
+        correlation_id:
+          type: string
+          nullable: true
       required: [error]
       example:
         error:
           code: INVALID_ARGUMENT
-          message: "request body must be an object"
-        correlation_id: "corr_123"
+          message: request body must be an object
+          category: validation
+          retryable: false
+          retry_after_s: null
+          bad_fields: null
+          unsupported_feature: null
+          docs_ref: null
+          details: null
+          correlation_id: corr_123
+        correlation_id: corr_123
+
+    ErrorEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/PlatformErrorEnvelope'
 
     PartnerSelfServiceOnboardRequest:
       type: object
@@ -2272,16 +2418,14 @@ components:
       required: [mode, candidates, selected_action, reason_codes, selection_reason]
 
     OrchestratorActionError:
-      type: object
-      properties:
-        code: { type: string }
-        message: { type: string }
-        retryable: { type: boolean }
-        category:
-          type: string
-          enum: [route, action]
-        action: { type: string }
-      required: [code, message, retryable, category, action]
+      allOf:
+        - $ref: '#/components/schemas/PlatformError'
+        - type: object
+          properties:
+            action:
+              type: string
+              description: Selected orchestrator action associated with the error.
+          required: [action]
 
     OrchestratorMessageResponse:
       type: object
@@ -3299,6 +3443,106 @@ components:
         timestamp: { type: string, format: date-time }
       required: [event_id, type, run_id, workflow_id, version_id, sequence]
 
+    IntegrationCapabilities:
+      type: object
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        api_version:
+          type: string
+        error_contract:
+          type: object
+          properties:
+            schema_id: { type: string }
+            schema_version: { type: string }
+            categories:
+              type: array
+              items:
+                type: string
+                enum:
+                  - auth
+                  - validation
+                  - configuration
+                  - not_found
+                  - conflict
+                  - unsupported_feature
+                  - transient
+                  - internal
+                  - route
+                  - action
+            representative_codes:
+              type: array
+              items: { type: string }
+          required: [schema_id, schema_version, categories, representative_codes]
+        auth:
+          type: object
+          properties:
+            type: { type: string }
+            required_headers:
+              type: array
+              items: { type: string }
+            optional_headers:
+              type: array
+              items: { type: string }
+          required: [type, required_headers, optional_headers]
+        chat:
+          type: object
+          properties:
+            canonical_endpoint: { type: string }
+            deprecated_alias:
+              type: string
+              nullable: true
+            deprecated_alias_sunset:
+              type: string
+              format: date-time
+              nullable: true
+            project_scoped_thread_create: { type: boolean }
+            input_transcribe: { type: boolean }
+            streaming_sse: { type: boolean }
+          required:
+            - canonical_endpoint
+            - deprecated_alias
+            - deprecated_alias_sunset
+            - project_scoped_thread_create
+            - input_transcribe
+            - streaming_sse
+        runtime_features:
+          type: object
+          properties:
+            projection_controls:
+              type: object
+              properties:
+                state_exclude_paths: { type: boolean }
+                output_include_paths: { type: boolean }
+              required: [state_exclude_paths, output_include_paths]
+            document_payload:
+              type: object
+              properties:
+                artifact_ref_default: { type: boolean }
+              required: [artifact_ref_default]
+            capability_registry: { type: boolean }
+            workflow_version_pinning: { type: boolean }
+          required:
+            - projection_controls
+            - document_payload
+            - capability_registry
+            - workflow_version_pinning
+        docs:
+          type: object
+          properties:
+            api_reference: { type: string, format: uri }
+            integration_guide: { type: string, format: uri }
+          required: [api_reference, integration_guide]
+      required:
+        - generated_at
+        - api_version
+        - error_contract
+        - auth
+        - chat
+        - runtime_features
+        - docs
+
     AgentIntegrationKit:
       type: object
       properties:
@@ -3310,6 +3554,7 @@ components:
           properties:
             integration_kit_markdown: { type: string, format: uri }
             integration_kit_json: { type: string, format: uri }
+            integration_capabilities: { type: string, format: uri }
             integration_test_ui: { type: string, format: uri }
             integration_test_json: { type: string, format: uri }
             integration_logs: { type: string, format: uri }
@@ -3467,6 +3712,9 @@ components:
           type: string
           format: uri
           nullable: true
+        integration_capabilities_url:
+          type: string
+          format: uri
         auth_profile:
           $ref: '#/components/schemas/IntegrationAuthProfile'
         required_headers:
@@ -3495,6 +3743,7 @@ components:
       required:
         - api_base_url
         - chat_api_url
+        - integration_capabilities_url
         - host_policy
         - auth_profile
         - required_headers
@@ -3573,6 +3822,7 @@ components:
           properties:
             integration_kit_markdown: { type: string, format: uri }
             integration_kit_json: { type: string, format: uri }
+            integration_capabilities: { type: string, format: uri }
             integration_test_ui: { type: string, format: uri }
             integration_test_json: { type: string, format: uri }
             integration_logs: { type: string, format: uri }

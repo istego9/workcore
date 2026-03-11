@@ -14,6 +14,7 @@ Source-of-truth contract:
 - Agent integration entrypoint: `https://api.hq21.tech/agent-integration-kit`
 
 Canonical onboarding surfaces:
+- `GET /integration-capabilities` (public machine-readable capability negotiation contract)
 - `GET /agent-integration-kit` (human-readable guide)
 - `GET /agent-integration-kit.json` (machine-readable bundle with canonical `integration_manifest`)
 - `GET /agent-integration-test` (doctor UI)
@@ -96,6 +97,11 @@ Fetch canonical integration manifest:
 curl -sS "$BASE_URL/agent-integration-kit.json" | jq '.integration_manifest'
 ```
 
+Fetch platform negotiation contract:
+```bash
+curl -sS "$BASE_URL/integration-capabilities" | jq
+```
+
 Run integration doctor:
 ```bash
 curl -sS "$BASE_URL/agent-integration-test.json" | jq '.summary, .checks[] | {id, status, code}'
@@ -123,6 +129,10 @@ curl -sS "$BASE_URL/workflows" \
 ```
 
 ## 5. Minimal integration flow
+Contract separation:
+- `/capabilities*` is the versioned capability contract registry.
+- `GET /integration-capabilities` is the external-client negotiation surface.
+
 ### 5.1 Create project
 ```bash
 curl -sS -X POST "$BASE_URL/projects" \
@@ -332,6 +342,7 @@ For `threads.create`, resolution order is:
 
 Canonical onboarding manifest expectations:
 - `integration_manifest.chat_api_url` must always point to `/chat`
+- `integration_manifest.integration_capabilities_url` must point to `GET /integration-capabilities`
 - `integration_manifest.deprecated_chat_alias_url` may include `/chatkit` only as deprecated compatibility alias
 - `integration_manifest.host_policy` is first-class and defines canonical host behavior per partner:
   - `mode=request_host` -> use `api_base_url` from onboarding surfaces
@@ -376,17 +387,36 @@ curl -i -X POST "$BASE_URL/chatkit" \
 ```
 
 ## 9. Error model
-All API errors are returned in a standard envelope:
+All integration HTTP failures use additive typed `PlatformErrorEnvelope`:
 
 ```json
 {
   "error": {
     "code": "INVALID_ARGUMENT",
-    "message": "..."
+    "message": "...",
+    "category": "validation",
+    "retryable": false,
+    "retry_after_s": null,
+    "bad_fields": null,
+    "unsupported_feature": null,
+    "docs_ref": null,
+    "details": null,
+    "correlation_id": "corr_123"
   },
   "correlation_id": "corr_123"
 }
 ```
+
+Backward compatibility:
+- existing parsers of `error.code`, `error.message`, and top-level `correlation_id` are unchanged.
+- additional typed fields are additive and may be `null`.
+
+Retry behavior:
+- when `error.retryable=true`, client can safely retry.
+- when backoff is known, API sets `error.retry_after_s` and may emit HTTP `Retry-After` (notably on `429`/`503`).
+
+Category values:
+- `auth`, `validation`, `configuration`, `not_found`, `conflict`, `unsupported_feature`, `transient`, `internal`, `route`, `action`.
 
 Common integration errors:
 - `401 UNAUTHORIZED`: missing, expired, or invalid OAuth access token

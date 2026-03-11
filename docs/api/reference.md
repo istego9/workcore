@@ -31,6 +31,7 @@ curl -sS -X POST "https://login.microsoftonline.com/<tenant_id>/oauth2/v2.0/toke
   - `GET /health`
   - `GET /openapi.yaml`
   - `GET /api-reference`
+  - `GET /integration-capabilities`
   - `GET /workflow-authoring-guide`
   - `GET /agent-integration-kit`
   - `GET /agent-integration-kit.json`
@@ -86,17 +87,45 @@ Optional headers:
 - `Idempotency-Key` (recommended for mutating APIs)
 
 ## Error envelope
-All API errors use:
+Public integration endpoints use additive typed platform errors:
 
 ```json
 {
   "error": {
     "code": "INVALID_ARGUMENT",
-    "message": "..."
+    "message": "...",
+    "category": "validation",
+    "retryable": false,
+    "retry_after_s": null,
+    "bad_fields": null,
+    "unsupported_feature": null,
+    "docs_ref": null,
+    "details": null,
+    "correlation_id": "corr_123"
   },
   "correlation_id": "corr_123"
 }
 ```
+
+Compatibility guarantees:
+- Existing consumers of `error.code`, `error.message`, and top-level `correlation_id` continue to work unchanged.
+- Typed fields are additive and may be `null` when not known.
+
+Category taxonomy:
+- `auth`
+- `validation`
+- `configuration`
+- `not_found`
+- `conflict`
+- `unsupported_feature`
+- `transient`
+- `internal`
+- `route`
+- `action`
+
+Retry semantics:
+- When `error.retryable=true`, clients should treat error as retry-eligible.
+- If backoff is known, server sets `error.retry_after_s` and may emit HTTP `Retry-After` (for example on `429`/`503`).
 
 ## JSON schemas for workflow authoring
 - Draft payload schema: `docs/api/schemas/workflow-draft.schema.json`
@@ -178,6 +207,9 @@ Artifact read endpoint:
 - List capability versions:
   - `GET /capabilities?capability_id=...`
   - `GET /capabilities/{capability_id}/versions`
+- Registry note:
+  - `/capabilities*` is reserved for versioned capability contract registration/listing.
+  - Client feature negotiation is exposed separately via `GET /integration-capabilities`.
 
 Capability contract supports:
 - `inputs`
@@ -192,6 +224,18 @@ Workflow nodes can pin capability version through `node.config`:
 - `capability_version`
 
 Runtime validates pinned references when present.
+
+## Integration capability negotiation
+- Endpoint: `GET /integration-capabilities` (public, read-only, no auth).
+- Purpose: machine-readable external-client negotiation contract for:
+  - typed error schema/version/categories
+  - auth/header expectations
+  - canonical chat endpoint + deprecated alias lifecycle
+  - runtime feature flags (`projection_controls`, `document_payload`, capability registry, version pinning)
+- Exclusions by design:
+  - no tenant readiness checks
+  - no onboarding doctor verdicts
+  - no partner host policy or secret-expiry metadata
 
 ## Projects API
 - List projects: `GET /projects`
@@ -269,7 +313,7 @@ Common validation/error behavior:
   - switch details (`switch_from_workflow_id`, `switch_to_workflow_id`, `switch_reason`) when switching happens
 - Route/action error contract in orchestrator response:
   - `action_error` is present when router selected an action but execution is restricted/failed by policy.
-  - structure: `code`, `message`, `retryable`, `category` (`route` or `action`), `action`.
+  - structure: `PlatformError` fields (`code`, `message`, `category`, `retryable`, `retry_after_s`, `bad_fields`, `unsupported_feature`, `docs_ref`, `details`, `correlation_id`) plus required `action`.
 - Session context prefill:
   - Runtime injects persisted `session` context into workflow inputs as `inputs.context` (when available).
 - Custom action envelope on orchestrator entrypoint:
@@ -312,6 +356,7 @@ Offline routing replay/eval:
 - Canonical manifest is exposed as `integration_manifest` in the JSON bundle:
   - `api_base_url`
   - `chat_api_url` (canonical `POST /chat`)
+  - `integration_capabilities_url` (`GET /integration-capabilities`)
   - `host_policy` (partner-specific canonical host policy)
   - `deprecated_chat_alias_url` + deprecation metadata for `POST /chatkit`
   - canonical OAuth `auth_profile` (`oauth_client_credentials`)

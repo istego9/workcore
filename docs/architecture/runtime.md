@@ -14,12 +14,25 @@ Project-level orchestration adds an intent-routing layer in front of workflow ex
 - orchestrator evaluates intent and policy, then issues workflow adapter action (start/resume/cancel)
 - every inbound message produces one orchestration decision log
 - orchestrator response includes `decision_trace` with candidate scores, selected workflow/action, and selection/switch reason
-- orchestrator response includes standardized `action_error` contract (`code`, `message`, `retryable`, `category`, `action`) when route/action constraints block normal execution
+- orchestrator response includes standardized `action_error` contract (`PlatformError` + required `action`) when route/action constraints block normal execution
 - orchestrator supports offline routing replay/eval (`POST /orchestrator/eval/replay`) to evaluate routing quality without mutating runs/session state
 - session context (when present) is injected into workflow inputs as `inputs.context`
 - when `/orchestrator/messages` receives `message.type=threads.custom_action`, runtime maps:
   - `message.text` -> `inputs.action_type`
   - normalized `message.payload` fields -> flattened `inputs.*`
+
+## Public integration error + negotiation contracts
+- Public integration HTTP failures use additive `PlatformErrorEnvelope`:
+  - preserve `error.code`, `error.message`, and top-level `correlation_id` compatibility
+  - typed fields add machine-readable policy hints (`category`, `retryable`, `retry_after_s`, `bad_fields`, `unsupported_feature`, `docs_ref`)
+- `OrchestratorActionError` reuses the same `PlatformError` fields and adds required `action`.
+- Validation failures populate `category=validation` and `bad_fields` when field-level paths are known.
+- Unsupported/rollout-gated features populate `category=unsupported_feature` and `unsupported_feature`.
+- Retry hints:
+  - `retryable=true` when runtime knows retry can help
+  - `retry_after_s` and HTTP `Retry-After` are emitted when server knows a concrete backoff window.
+- Feature negotiation is exposed separately via `GET /integration-capabilities` (public read-only).
+- Capability contract registry remains under `/capabilities*` (versioned contract registration/listing), intentionally separate from negotiation.
 
 ## Run lifecycle
 Statuses:

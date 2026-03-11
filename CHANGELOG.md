@@ -7,6 +7,41 @@ The format follows a simple date-based log.
 ## 2026-03-11
 
 ### API diff vs previous version
+- Previous API version: `0.24.6`
+- Current API version: `0.24.7`
+- Compatibility: additive (typed error fields and negotiation endpoint added without removing existing error envelope keys)
+
+### Added
+- New public read-only negotiation endpoint:
+  - `GET /integration-capabilities`
+- New shared OpenAPI schemas:
+  - `PlatformError`
+  - `PlatformErrorEnvelope`
+- New manifest field for onboarding/discovery:
+  - `integration_manifest.integration_capabilities_url` (in `/agent-integration-kit.json` and onboarding ZIP `integration_manifest.json`)
+- New ADR:
+  - `docs/adr/ADR-0014-typed-error-contract-and-capability-negotiation.md`
+
+### Changed
+- `ErrorEnvelope` now aligns to the additive platform-typed error contract while preserving existing `error.code`, `error.message`, and `correlation_id` compatibility.
+- `OrchestratorActionError` now reuses the shared platform error structure and keeps required `action`.
+- Public integration surfaces now emit additive typed error fields (`category`, `retryable`, `retry_after_s`, `bad_fields`, `unsupported_feature`, `docs_ref`, nested `correlation_id`) on failures:
+  - `POST /chat`
+  - `POST /chatkit`
+  - `POST /orchestrator/messages`
+  - `POST /workflows/{workflow_id}/runs`
+  - `POST /handoff/packages`
+- Public drift sentinel now enforces negotiation endpoint presence and shared error-contract alignment across OpenAPI/docs/runtime references.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-03-11
+
+### API diff vs previous version
 - Previous API version: `0.24.5`
 - Current API version: `0.24.6`
 - Compatibility: additive (existing onboarding endpoints preserved; host policy is now explicit in manifest/doctor contracts)
