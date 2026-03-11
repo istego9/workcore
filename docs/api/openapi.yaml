@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.4
+  version: 0.24.5
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -139,15 +139,42 @@ paths:
   /agent-integration-kit.json:
     get:
       tags: [workflows]
-      summary: Integration kit for external agents (JSON bundle)
+      summary: Integration kit for external agents (JSON bundle + canonical manifest)
       security: []
       responses:
         '200':
-          description: Machine-readable integration bundle
+          description: Machine-readable integration bundle with canonical integration manifest and doctor report
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentIntegrationKit'
+              example:
+                title: WorkCore Agent Integration Kit
+                updated_at: '2026-03-11T12:30:00Z'
+                urls:
+                  integration_kit_json: https://api.hq21.tech/agent-integration-kit.json
+                  integration_test_json: https://api.hq21.tech/agent-integration-test.json
+                  chat_endpoint: https://api.hq21.tech/chat
+                integration_manifest:
+                  api_base_url: https://api.hq21.tech
+                  chat_api_url: https://api.hq21.tech/chat
+                  auth_profile:
+                    type: oauth_client_credentials
+                    scope: api://workcore-partner-api/.default
+                  required_headers:
+                    - Authorization
+                    - X-Tenant-Id
+                  optional_headers:
+                    - X-Project-Id
+                    - X-Correlation-Id
+                    - X-Trace-Id
+                integration_test:
+                  summary:
+                    status: WARN
+                    passed: 8
+                    warned: 2
+                    failed: 0
+                    total: 10
   /agent-integration-test:
     get:
       tags: [workflows]
@@ -163,15 +190,42 @@ paths:
   /agent-integration-test.json:
     get:
       tags: [workflows]
-      summary: Integration readiness test report
+      summary: Integration doctor report
       security: []
+      parameters:
+        - in: query
+          name: project_id
+          required: false
+          schema:
+            type: string
+          description: Optional project scope override for project readiness checks.
       responses:
         '200':
-          description: Integration check report with PASS/FAIL summary
+          description: Doctor-style machine-readable readiness report with PASS/WARN/FAIL checks
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentIntegrationCheckReport'
+              example:
+                title: WorkCore Agent Integration Doctor
+                generated_at: '2026-03-11T12:30:00Z'
+                summary:
+                  status: WARN
+                  passed: 7
+                  warned: 3
+                  failed: 0
+                  total: 10
+                checks:
+                  - id: auth_profile_canonical
+                    status: PASS
+                    severity: medium
+                    code: AUTH_PROFILE_OK
+                    title: Canonical auth profile is configured
+                    message: OAuth client_credentials profile is available.
+                    observed: oauth_client_credentials
+                    expected: oauth_client_credentials
+                    remediation: Keep current auth profile.
+                    docs_ref: /api-reference#authentication
   /agent-integration-test/validate-draft:
     post:
       tags: [workflows]
@@ -254,7 +308,10 @@ paths:
       summary: Generate partner onboarding ZIP package
       description: >
         Executes internal onboarding automation for a partner app and returns a ZIP package
-        with operator/partner artifacts (`README.md`, `.env.partner`) including generated credentials.
+        with canonical operator/partner artifacts:
+        `README.md`, `.env.partner`, `integration_manifest.json`,
+        and `curl_examples/check_auth.sh`, `curl_examples/check_project_scope.sh`,
+        `curl_examples/check_chat.sh` including generated credentials.
         For partner identities containing `epam`, generated onboarding artifacts are pinned to
         `https://api.runwcr.com` and `allowed_domains=["api.runwcr.com"]`.
       security:
@@ -3257,8 +3314,12 @@ components:
             handoff_create: { type: string, format: uri }
             handoff_replay_template: { type: string }
             run_ledger_template: { type: string }
+            partner_access_portal: { type: string, format: uri }
+            partner_onboard_package: { type: string, format: uri }
         integration_test:
           $ref: '#/components/schemas/AgentIntegrationCheckReport'
+        integration_manifest:
+          $ref: '#/components/schemas/IntegrationManifest'
         docs:
           type: object
           properties:
@@ -3270,16 +3331,177 @@ components:
             workflow_draft: { type: object }
             workflow_export_v1: { type: object }
             routing_decision: { type: object }
-      required: [title, updated_at, urls, integration_test, docs, schemas]
+      required: [title, updated_at, urls, integration_test, integration_manifest, docs, schemas]
+
+    IntegrationAuthProfile:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [oauth_client_credentials]
+        token_url:
+          type: string
+        scope:
+          type: string
+        audience:
+          type: string
+          nullable: true
+        notes:
+          type: array
+          items: { type: string }
+      required: [type, token_url, scope]
+
+    IntegrationProjectScope:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+          nullable: true
+        project_id:
+          type: string
+          nullable: true
+        default_chat_workflow_id:
+          type: string
+          nullable: true
+        default_chat_workflow_readiness:
+          type: string
+          enum: [known_ready, missing, unknown]
+      required: [default_chat_workflow_readiness]
+
+    IntegrationDeprecation:
+      type: object
+      properties:
+        endpoint: { type: string }
+        status: { type: string, enum: [deprecated] }
+        sunset_at: { type: string, format: date-time }
+        remediation: { type: string }
+      required: [endpoint, status, sunset_at, remediation]
+
+    IntegrationSecretExpiry:
+      type: object
+      properties:
+        validity_policy:
+          type: string
+        issued_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        rotation_due_at:
+          type: string
+          format: date-time
+          nullable: true
+        warning_level:
+          type: string
+          enum: [info, warn, critical, unknown]
+        warning_message:
+          type: string
+      required: [validity_policy, warning_level]
+
+    IntegrationManifest:
+      type: object
+      properties:
+        api_base_url:
+          type: string
+          format: uri
+        chat_api_url:
+          type: string
+          format: uri
+        deprecated_chat_alias_url:
+          type: string
+          format: uri
+          nullable: true
+        auth_profile:
+          $ref: '#/components/schemas/IntegrationAuthProfile'
+        required_headers:
+          type: array
+          items: { type: string }
+        optional_headers:
+          type: array
+          items: { type: string }
+        project_scope:
+          $ref: '#/components/schemas/IntegrationProjectScope'
+        deprecations:
+          type: array
+          items:
+            $ref: '#/components/schemas/IntegrationDeprecation'
+        operator_notes:
+          type: array
+          items: { type: string }
+        allowed_domains:
+          type: array
+          items: { type: string }
+        rate_limit_profile:
+          type: string
+          nullable: true
+        secret_expiry:
+          $ref: '#/components/schemas/IntegrationSecretExpiry'
+      required:
+        - api_base_url
+        - chat_api_url
+        - auth_profile
+        - required_headers
+        - optional_headers
+        - project_scope
+        - deprecations
+        - operator_notes
+        - secret_expiry
 
     AgentIntegrationCheckItem:
       type: object
       properties:
         id: { type: string }
-        description: { type: string }
-        ok: { type: boolean }
-        detail: { type: string }
-      required: [id, description, ok, detail]
+        status:
+          type: string
+          enum: [PASS, WARN, FAIL]
+        severity:
+          type: string
+          enum: [critical, high, medium, low, info]
+        code: { type: string }
+        title: { type: string }
+        message: { type: string }
+        observed:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: { type: string }
+        expected:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: { type: string }
+        remediation: { type: string }
+        docs_ref: { type: string }
+        description:
+          type: string
+          deprecated: true
+        ok:
+          type: boolean
+          deprecated: true
+        detail:
+          type: string
+          deprecated: true
+      required:
+        - id
+        - status
+        - severity
+        - code
+        - title
+        - message
+        - observed
+        - expected
+        - remediation
+        - docs_ref
+        - description
+        - ok
+        - detail
 
     AgentIntegrationCheckReport:
       type: object
@@ -3287,6 +3509,8 @@ components:
         title: { type: string }
         generated_at: { type: string, format: date-time }
         correlation_id: { type: string }
+        integration_manifest:
+          $ref: '#/components/schemas/IntegrationManifest'
         urls:
           type: object
           properties:
@@ -3316,19 +3540,22 @@ components:
             handoff_create: { type: string, format: uri }
             handoff_replay_template: { type: string }
             run_ledger_template: { type: string }
+            partner_access_portal: { type: string, format: uri }
+            partner_onboard_package: { type: string, format: uri }
         summary:
           type: object
           properties:
-            status: { type: string, enum: [PASS, FAIL] }
+            status: { type: string, enum: [PASS, WARN, FAIL] }
             passed: { type: integer }
+            warned: { type: integer }
             failed: { type: integer }
             total: { type: integer }
-          required: [status, passed, failed, total]
+          required: [status, passed, warned, failed, total]
         checks:
           type: array
           items:
             $ref: '#/components/schemas/AgentIntegrationCheckItem'
-      required: [title, generated_at, urls, summary, checks]
+      required: [title, generated_at, integration_manifest, urls, summary, checks]
 
     AgentDraftValidationResult:
       type: object

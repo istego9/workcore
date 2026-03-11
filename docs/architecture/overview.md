@@ -20,6 +20,7 @@ Status: Draft (Phase 0)
 - Webhooks Service: inbound triggers and outbound callbacks.
 - ChatKit Server: advanced integration, sessions/threads, widgets/actions.
 - Chat Frontend Shell: legacy ChatKit embed + optional forked chat UI (feature-flagged).
+- Partner Onboarding Bundle/Doctor: canonical integration manifest (`/agent-integration-kit.json`), doctor report (`/agent-integration-test.json`), and internal onboarding ZIP generation (`/internal/partner-access/onboard-package`).
 - MCP Bridge Service: internal authenticated HTTP bridge for MCP node execution.
 - Integrations Layer: Agents SDK executor, MCP client, object storage.
 
@@ -66,6 +67,10 @@ Ordering guarantees:
 - Webhooks Service: /webhooks/inbound/*, /webhooks/outbound/*
 - ChatKit Server: chat sessions/threads, widget/actions endpoints
 - Chat Frontend Shell: render chat timeline/composer/widgets over canonical `/chat` contract (`/chatkit` is a deprecated compatibility alias during transition window)
+- Partner Onboarding surfaces:
+  - `/agent-integration-kit` + `/agent-integration-kit.json`
+  - `/agent-integration-test` + `/agent-integration-test.json`
+  - `/internal/partner-access` + `/internal/partner-access/onboard-package`
 - MCP Bridge Service: internal `/internal/mcp/call` + `/health`
 
 ## Persistence and storage
@@ -118,3 +123,5 @@ Ordering guarantees:
 - ADR-0009: Artifact-reference defaults and run projection rollout.
 - ADR-0010: Frontend ChatKit fork boundary and compatibility strategy.
 - ADR-0011: Internal MCP HTTP bridge for runtime MCP execution.
+- ADR-0012: Project-centric chat thread resolution (`/chat` canonical, `/chatkit` deprecated alias).
+- ADR-0013: Unified partner onboarding manifest + integration doctor.

@@ -1,7 +1,7 @@
 # WorkCore API Integration Guide
 
-Version: 1.4  
-Date: March 9, 2026  
+Version: 1.5  
+Date: March 11, 2026  
 Primary API URL: `https://api.hq21.tech`  
 Gateway alias (same backend path): `https://api.runwcr.com`
 
@@ -12,6 +12,15 @@ Source-of-truth contract:
 - OpenAPI: `https://api.hq21.tech/openapi.yaml`
 - API reference: `https://api.hq21.tech/api-reference`
 - Agent integration entrypoint: `https://api.hq21.tech/agent-integration-kit`
+
+Canonical onboarding surfaces:
+- `GET /agent-integration-kit` (human-readable guide)
+- `GET /agent-integration-kit.json` (machine-readable bundle with canonical `integration_manifest`)
+- `GET /agent-integration-test` (doctor UI)
+- `GET /agent-integration-test.json` (doctor JSON report)
+- `POST /agent-integration-test/validate-draft` (draft lint/validation)
+- `GET /internal/partner-access` (internal operator onboarding portal)
+- `POST /internal/partner-access/onboard-package` (download canonical onboarding ZIP bundle)
 
 Gateway host policy:
 - `api.hq21.tech` is the primary host.
@@ -79,6 +88,16 @@ TOKEN="$(curl -sS -X POST "https://login.microsoftonline.com/${ENTRA_TENANT_ID}/
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=${SCOPE}" \
   | jq -r '.access_token')"
+```
+
+Fetch canonical integration manifest:
+```bash
+curl -sS "$BASE_URL/agent-integration-kit.json" | jq '.integration_manifest'
+```
+
+Run integration doctor:
+```bash
+curl -sS "$BASE_URL/agent-integration-test.json" | jq '.summary, .checks[] | {id, status, code}'
 ```
 
 Health check:
@@ -309,6 +328,13 @@ For `threads.create`, resolution order is:
 - else `metadata.project_id` -> resolve `projects.settings.default_chat_workflow_id`
 - else `X-Project-Id` -> resolve `projects.settings.default_chat_workflow_id`
 - else `CHAT_PROJECT_SCOPE_REQUIRED`
+
+Canonical onboarding manifest expectations:
+- `integration_manifest.chat_api_url` must always point to `/chat`
+- `integration_manifest.deprecated_chat_alias_url` may include `/chatkit` only as deprecated compatibility alias
+- if `/chatkit` appears in partner config/docs:
+  - before `2026-04-04T00:00:00Z` => doctor emits `WARN`
+  - on/after `2026-04-04T00:00:00Z` => doctor emits `FAIL`
 
 Project-scoped chat defaults require a configured published workflow:
 - missing project setting -> `CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED`

@@ -7,6 +7,45 @@ The format follows a simple date-based log.
 ## 2026-03-11
 
 ### API diff vs previous version
+- Previous API version: `0.24.4`
+- Current API version: `0.24.5`
+- Compatibility: additive (existing onboarding endpoints preserved; machine-readable manifest + doctor checks extended)
+
+### Added
+- Canonical integration manifest fields for partner onboarding surfaces:
+  - `api_base_url`
+  - `chat_api_url`
+  - `deprecated_chat_alias_url` + deprecation metadata
+  - `auth_profile` (`oauth_client_credentials`)
+  - required/optional headers
+  - `project_scope`
+  - `secret_expiry` warning metadata
+- Doctor-style integration checks for `/agent-integration-test.json`:
+  - `status` (`PASS|WARN|FAIL`)
+  - `severity`, `code`, `title`, `message`
+  - `observed`, `expected`, `remediation`, `docs_ref`
+- Internal onboarding ZIP artifacts:
+  - `integration_manifest.json`
+  - `curl_examples/check_auth.sh`
+  - `curl_examples/check_project_scope.sh`
+  - `curl_examples/check_chat.sh`
+
+### Changed
+- `/agent-integration-kit.json` now includes a normalized `integration_manifest` reused by onboarding package generation.
+- `/agent-integration-test.json` now acts as an integration doctor and validates canonical `/chat` usage and `/chatkit` deprecation posture.
+- `/internal/partner-access` now surfaces canonical host/auth/chat summary and secret rotation warnings before bundle download.
+- Public contract drift sentinel now verifies onboarding/doctor surfaces stay aligned with canonical chat contract and deprecation lifecycle.
+- Full-stack acceptance env handling now uses canonical `E2E_CHAT_API_URL` only.
+
+### Deprecated
+- None.
+
+### Removed
+- Deprecated fallback env alias `E2E_CHATKIT_API_URL` from full-stack acceptance/e2e environment resolution.
+
+## 2026-03-11
+
+### API diff vs previous version
 - Previous API version: `0.24.3`
 - Current API version: `0.24.4`
 - Compatibility: additive (public chat thread creation is now project-centric by default while explicit workflow clients remain supported)

@@ -63,8 +63,13 @@ APIM validates OAuth token, pins tenant scope by partner mapping, and forwards i
   - generated onboarding artifacts are pinned to `BASE_URL=https://api.runwcr.com`
   - `allowed_domains` are normalized to `api.runwcr.com` only
 - ZIP package includes:
-  - `README.md` with partner-specific token exchange and call instructions
+  - `README.md` with partner-specific token exchange and integration doctor guidance
   - `.env.partner` with partner-specific environment values (`client_id`, `client_secret`, `scope`, `token_endpoint`, `base_url`)
+  - `integration_manifest.json` (canonical machine-readable manifest reused by `/agent-integration-kit.json`)
+  - `curl_examples/check_auth.sh`
+  - `curl_examples/check_project_scope.sh`
+  - `curl_examples/check_chat.sh`
+  - `metadata.json` (backward-compatible package metadata)
 
 ## Required integration headers
 - `X-Tenant-Id`: tenant scope for all workflow/run operations.
@@ -303,6 +308,14 @@ Offline routing replay/eval:
 ## Agent integration kit URL
 - Markdown entrypoint: `/agent-integration-kit`
 - Machine-readable bundle: `/agent-integration-kit.json`
+- Canonical manifest is exposed as `integration_manifest` in the JSON bundle:
+  - `api_base_url`
+  - `chat_api_url` (canonical `POST /chat`)
+  - `deprecated_chat_alias_url` + deprecation metadata for `POST /chatkit`
+  - canonical OAuth `auth_profile` (`oauth_client_credentials`)
+  - required/optional headers
+  - project scope + default chat readiness (when inferable)
+  - secret expiry/rotation warning metadata
 - Generated URLs inside the kit should stay on the current public API host (`api.hq21.tech` or `api.runwcr.com`), not on internal backend origins.
 - Workflow authoring guide: `/workflow-authoring-guide`
 - Project list endpoint: `GET /projects`
@@ -313,9 +326,28 @@ Offline routing replay/eval:
 - Orchestrator replay/eval endpoint: `POST /orchestrator/eval/replay`
 - Orchestrator stack diagnostics: `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
 - Integration test UI: `/agent-integration-test`
-- Integration test JSON report: `/agent-integration-test.json`
+- Integration test JSON report (doctor-style): `/agent-integration-test.json`
 - Detailed integration logs: `/agent-integration-logs`
 - Draft validator: `POST /agent-integration-test/validate-draft`
+
+Integration doctor check contract (`/agent-integration-test.json`):
+- Each check includes:
+  - `id`
+  - `status` (`PASS` | `WARN` | `FAIL`)
+  - `severity`
+  - `code`
+  - `title`
+  - `message`
+  - `observed`
+  - `expected`
+  - `remediation`
+  - `docs_ref`
+- Backward-compatible legacy fields are still present:
+  - `description`
+  - `ok`
+  - `detail`
+- Optional query:
+  - `project_id=<project_id>` to run project-scoped readiness checks against a specific project.
 
 ## Detailed integration logging for agent onboarding
 Use `GET /agent-integration-logs` to quickly diagnose integration issues when an external agent calls integration-kit/test endpoints.
