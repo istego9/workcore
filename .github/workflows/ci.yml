@@ -94,6 +94,9 @@ jobs:
       - name: Run spec validation gate
         run: ./scripts/archctl_validate.sh
 
+      - name: Run public chat contract drift sentinel
+        run: python scripts/check_public_contract_drift.py
+
   orchestrator-tests:
     needs: changes
     if: needs.changes.outputs.orchestrator == 'true' || needs.changes.outputs.ci == 'true'

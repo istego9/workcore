@@ -104,20 +104,22 @@ const inferRootHost = (hostname: string) => {
   return hostname;
 };
 
-const inferChatkitApiUrl = () => {
+const inferChatApiUrl = () => {
   if (typeof window === 'undefined') {
-    return 'http://chatkit.localhost/chatkit';
+    return 'http://api.localhost/chat';
   }
   const { protocol, hostname, port } = window.location;
   const rootHost = inferRootHost(hostname);
-  const chatkitHost = rootHost === 'localhost' ? 'chatkit.localhost' : `chatkit.${rootHost}`;
-  return `${protocol}//${chatkitHost}${port ? `:${port}` : ''}/chatkit`;
+  const apiHost = rootHost === 'localhost' ? 'api.localhost' : `api.${rootHost}`;
+  return `${protocol}//${apiHost}${port ? `:${port}` : ''}/chat`;
 };
 
 const appOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
 const CHATKIT_PAGE = import.meta.env.VITE_CHATKIT_PAGE || `${appOrigin}/chatkit.html`;
 const CHAT_FORK_PAGE = import.meta.env.VITE_CHAT_FORK_PAGE || `${appOrigin}/chat-fork.html`;
-const CHATKIT_API_URL = import.meta.env.VITE_CHATKIT_API_URL || inferChatkitApiUrl();
+// `VITE_CHATKIT_API_URL` remains as a deprecated alias for compatibility during migration.
+const CHAT_API_URL =
+  import.meta.env.VITE_CHAT_API_URL || import.meta.env.VITE_CHATKIT_API_URL || inferChatApiUrl();
 const CHATKIT_DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY || '';
 const CHATKIT_AUTH_TOKEN = import.meta.env.VITE_CHATKIT_AUTH_TOKEN || '';
 const CHAT_FRONTEND_MODE = (import.meta.env.VITE_CHAT_FRONTEND_MODE || 'chatkit').toLowerCase();
@@ -2002,7 +2004,7 @@ export default function App() {
   const chatkitUrl = useMemo(() => {
     if (!workflowId) return '';
     const url = new URL(resolveChatPage(), window.location.origin);
-    url.searchParams.set('api_url', CHATKIT_API_URL);
+    url.searchParams.set('api_url', CHAT_API_URL);
     if (CHATKIT_DOMAIN_KEY) {
       url.searchParams.set('domain_key', CHATKIT_DOMAIN_KEY);
     }

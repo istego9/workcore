@@ -2,12 +2,13 @@ import { expect, test } from '@playwright/test';
 import {
   apiAuthHeaders,
   apiBaseUrl,
-  chatkitApiUrl,
+  chatApiUrl,
   e2eApiAuthToken,
   e2eTenantId,
   installApiAuthRoute,
   resolveUrl
 } from './env';
+import { deleteProjectIfExists, deleteWorkflowIfExists } from './cleanup';
 
 test('open chat button builds chatkit url', async ({ page, request }) => {
   let workflowId: string | null = null;
@@ -72,16 +73,12 @@ test('open chat button builds chatkit url', async ({ page, request }) => {
     expect(url.searchParams.get('project_id')).toBe(projectId);
     const apiUrlParam = url.searchParams.get('api_url');
     expect(apiUrlParam).toBeTruthy();
-    const expectedChatkitApi = resolveUrl(chatkitApiUrl);
-    const actualChatkitApi = new URL(apiUrlParam!, url.origin);
-    expect(actualChatkitApi.host).toBe(expectedChatkitApi.host);
-    expect(actualChatkitApi.pathname).toBe(expectedChatkitApi.pathname);
+    const expectedChatApi = resolveUrl(chatApiUrl);
+    const actualChatApi = new URL(apiUrlParam!, url.origin);
+    expect(actualChatApi.host).toBe(expectedChatApi.host);
+    expect(actualChatApi.pathname).toBe(expectedChatApi.pathname);
   } finally {
-    if (workflowId) {
-      const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${workflowId}`, {
-        headers: apiAuthHeaders(projectId)
-      });
-      expect(deleteResponse.ok()).toBeTruthy();
-    }
+    await deleteWorkflowIfExists(request, projectId, workflowId);
+    await deleteProjectIfExists(request, projectId);
   }
 });
