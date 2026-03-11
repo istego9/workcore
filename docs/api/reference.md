@@ -58,8 +58,9 @@ APIM validates OAuth token, pins tenant scope by partner mapping, and forwards i
 - Auto-generated defaults (can be overridden in advanced fields):
   - `partner_id` generated from `display_name`
   - `tenant_id_pinned` defaults to generated `partner_id`
-- EPAM onboarding host policy:
-  - if `display_name`, `partner_id`, `tenant_id_pinned`, or `entra_app_display_name` contains `epam`
+- Partner-specific onboarding host policy:
+  - host behavior is explicit via `host_policy` (first-class contract), not name markers
+  - for `partner_id=epam_future-insurance`, policy `pinned_runwcr` is enforced
   - generated onboarding artifacts are pinned to `BASE_URL=https://api.runwcr.com`
   - `allowed_domains` are normalized to `api.runwcr.com` only
 - ZIP package includes:
@@ -311,12 +312,14 @@ Offline routing replay/eval:
 - Canonical manifest is exposed as `integration_manifest` in the JSON bundle:
   - `api_base_url`
   - `chat_api_url` (canonical `POST /chat`)
+  - `host_policy` (partner-specific canonical host policy)
   - `deprecated_chat_alias_url` + deprecation metadata for `POST /chatkit`
   - canonical OAuth `auth_profile` (`oauth_client_credentials`)
   - required/optional headers
   - project scope + default chat readiness (when inferable)
   - secret expiry/rotation warning metadata
-- Generated URLs inside the kit should stay on the current public API host (`api.hq21.tech` or `api.runwcr.com`), not on internal backend origins.
+- Generated URLs inside the kit should stay on the current public API host and obey `integration_manifest.host_policy`.
+- For pinned policy, clients must use `host_policy.canonical_base_url` only.
 - Workflow authoring guide: `/workflow-authoring-guide`
 - Project list endpoint: `GET /projects`
 - Project bootstrap endpoint: `POST /projects`
@@ -348,6 +351,7 @@ Integration doctor check contract (`/agent-integration-test.json`):
   - `detail`
 - Optional query:
   - `project_id=<project_id>` to run project-scoped readiness checks against a specific project.
+  - `partner_id=<partner_id>` to evaluate partner-specific host policy compliance.
 
 ## Detailed integration logging for agent onboarding
 Use `GET /agent-integration-logs` to quickly diagnose integration issues when an external agent calls integration-kit/test endpoints.

@@ -20,7 +20,7 @@ Status: Draft (Phase 0)
 - Webhooks Service: inbound triggers and outbound callbacks.
 - ChatKit Server: advanced integration, sessions/threads, widgets/actions.
 - Chat Frontend Shell: legacy ChatKit embed + optional forked chat UI (feature-flagged).
-- Partner Onboarding Bundle/Doctor: canonical integration manifest (`/agent-integration-kit.json`), doctor report (`/agent-integration-test.json`), and internal onboarding ZIP generation (`/internal/partner-access/onboard-package`).
+- Partner Onboarding Bundle/Doctor: canonical integration manifest (`/agent-integration-kit.json`) with first-class `host_policy`, doctor report (`/agent-integration-test.json`), and internal onboarding ZIP generation (`/internal/partner-access/onboard-package`).
 - MCP Bridge Service: internal authenticated HTTP bridge for MCP node execution.
 - Integrations Layer: Agents SDK executor, MCP client, object storage.
 

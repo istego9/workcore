@@ -23,6 +23,7 @@ Adopt one canonical integration manifest shape and one canonical doctor check mo
 - Reuse it in:
   - `GET /agent-integration-kit.json`
   - onboarding ZIP as `integration_manifest.json`
+- Add first-class `host_policy` in manifest so canonical API host can be partner-specific (`request_host` vs `pinned`).
 
 2. Doctor unification
 - Upgrade `GET /agent-integration-test.json` to doctor-style checks with:
@@ -36,7 +37,12 @@ Adopt one canonical integration manifest shape and one canonical doctor check mo
 - `/chatkit` can appear only as deprecated alias metadata with fixed sunset/remediation.
 - Drift sentinel validates this policy across OpenAPI/docs/runtime integration surfaces.
 
-4. Secret lifecycle surfacing
+4. Partner host policy enforcement
+- Replace brittle partner-name marker heuristics with explicit partner host policy mapping.
+- For `partner_id=epam_future-insurance`, enforce pinned canonical host `https://api.runwcr.com`.
+- Doctor checks fail when partner-facing host policy is violated.
+
+5. Secret lifecycle surfacing
 - Manifest includes secret expiry/rotation metadata and warning level so operators and partners can act before expiry windows.
 
 ## Compatibility strategy

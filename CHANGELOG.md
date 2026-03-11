@@ -7,6 +7,30 @@ The format follows a simple date-based log.
 ## 2026-03-11
 
 ### API diff vs previous version
+- Previous API version: `0.24.5`
+- Current API version: `0.24.6`
+- Compatibility: additive (existing onboarding endpoints preserved; host policy is now explicit in manifest/doctor contracts)
+
+### Added
+- `integration_manifest.host_policy` in onboarding bundle surfaces (`/agent-integration-kit.json` and onboarding ZIP `integration_manifest.json`).
+- Partner-aware doctor evaluation (`/agent-integration-test.json`) supports explicit host policy validation via optional `partner_id` query.
+
+### Changed
+- Replaced brittle partner marker host normalization with explicit partner host policy mapping.
+- Enforced pinned host policy for `partner_id=epam_future-insurance`:
+  - canonical base URL: `https://api.runwcr.com`
+  - allowed domains: `["api.runwcr.com"]`
+- Integration guide wording updated: removed primary/alias host framing and switched to policy-driven host canon.
+
+### Deprecated
+- None.
+
+### Removed
+- Implicit host normalization based on `epam` substring markers.
+
+## 2026-03-11
+
+### API diff vs previous version
 - Previous API version: `0.24.4`
 - Current API version: `0.24.5`
 - Compatibility: additive (existing onboarding endpoints preserved; machine-readable manifest + doctor checks extended)

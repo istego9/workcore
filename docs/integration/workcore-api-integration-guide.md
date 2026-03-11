@@ -1,9 +1,9 @@
 # WorkCore API Integration Guide
 
-Version: 1.5  
+Version: 1.6  
 Date: March 11, 2026  
-Primary API URL: `https://api.hq21.tech`  
-Gateway alias (same backend path): `https://api.runwcr.com`
+Default public API URL: `https://api.hq21.tech`  
+Partner-specific host policy may pin canonical host (for `partner_id=epam_future-insurance`: `https://api.runwcr.com`).
 
 ## 1. Purpose
 This document is a practical integration guide for backend and platform teams that need to integrate with the WorkCore runtime API.
@@ -23,9 +23,10 @@ Canonical onboarding surfaces:
 - `POST /internal/partner-access/onboard-package` (download canonical onboarding ZIP bundle)
 
 Gateway host policy:
-- `api.hq21.tech` is the primary host.
-- `api.runwcr.com` is an alias host to the same gateway/backend.
-- Hostname does not change contract, auth, headers, or payloads.
+- Canonical host is declared by `integration_manifest.host_policy`.
+- `host_policy.mode=request_host` means use the public host returned by onboarding/doctor surfaces.
+- `host_policy.mode=pinned` means integrations must use `host_policy.canonical_base_url` and `host_policy.allowed_domains`.
+- For `partner_id=epam_future-insurance`, policy is pinned to `https://api.runwcr.com`.
 
 ## 2. Authentication model
 WorkCore API is protected with OAuth2 access tokens issued by Microsoft Entra ID (`client_credentials` flow).
@@ -75,8 +76,8 @@ Bearer auth is required for:
 ## 4. Quick start
 ```bash
 export BASE_URL="https://api.hq21.tech"
-# optional alias with identical behavior:
-# export BASE_URL="https://api.runwcr.com"
+# partner-specific pinned policy example:
+# export BASE_URL="https://api.runwcr.com"  # required for partner_id=epam_future-insurance
 export ENTRA_TENANT_ID="<entra_tenant_id>"
 export CLIENT_ID="<partner_client_id>"
 export CLIENT_SECRET="<partner_client_secret>"
@@ -332,6 +333,9 @@ For `threads.create`, resolution order is:
 Canonical onboarding manifest expectations:
 - `integration_manifest.chat_api_url` must always point to `/chat`
 - `integration_manifest.deprecated_chat_alias_url` may include `/chatkit` only as deprecated compatibility alias
+- `integration_manifest.host_policy` is first-class and defines canonical host behavior per partner:
+  - `mode=request_host` -> use `api_base_url` from onboarding surfaces
+  - `mode=pinned` -> use only `canonical_base_url` and `allowed_domains` from policy
 - if `/chatkit` appears in partner config/docs:
   - before `2026-04-04T00:00:00Z` => doctor emits `WARN`
   - on/after `2026-04-04T00:00:00Z` => doctor emits `FAIL`

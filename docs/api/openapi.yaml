@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.5
+  version: 0.24.6
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -158,6 +158,13 @@ paths:
                 integration_manifest:
                   api_base_url: https://api.hq21.tech
                   chat_api_url: https://api.hq21.tech/chat
+                  host_policy:
+                    policy_id: public_request_host
+                    mode: request_host
+                    enforcement: advisory
+                    canonical_base_url: https://api.hq21.tech
+                    allowed_domains:
+                      - api.hq21.tech
                   auth_profile:
                     type: oauth_client_credentials
                     scope: api://workcore-partner-api/.default
@@ -199,6 +206,12 @@ paths:
           schema:
             type: string
           description: Optional project scope override for project readiness checks.
+        - in: query
+          name: partner_id
+          required: false
+          schema:
+            type: string
+          description: Optional partner identifier used to evaluate partner-specific host policy checks.
       responses:
         '200':
           description: Doctor-style machine-readable readiness report with PASS/WARN/FAIL checks
@@ -312,8 +325,9 @@ paths:
         `README.md`, `.env.partner`, `integration_manifest.json`,
         and `curl_examples/check_auth.sh`, `curl_examples/check_project_scope.sh`,
         `curl_examples/check_chat.sh` including generated credentials.
-        For partner identities containing `epam`, generated onboarding artifacts are pinned to
-        `https://api.runwcr.com` and `allowed_domains=["api.runwcr.com"]`.
+        Host targeting is controlled by explicit host policy.
+        For `partner_id=epam_future-insurance`, policy `pinned_runwcr` is enforced:
+        `base_url=https://api.runwcr.com` and `allowed_domains=["api.runwcr.com"]`.
       security:
         - entraEasyAuthPrincipal: []
       requestBody:
@@ -1809,7 +1823,13 @@ components:
             type: string
           description: >
             Optional allowed API hostnames for partner metadata.
-            For partner identities containing `epam`, this value is normalized to `["api.runwcr.com"]`.
+            If selected host policy has pinned domains, this value is normalized by policy.
+        host_policy:
+          type: string
+          enum: [public_request_host, pinned_runwcr]
+          description: >
+            Optional host policy override for generated onboarding artifacts.
+            For `partner_id=epam_future-insurance`, `pinned_runwcr` is enforced even when omitted.
         rate_limit_profile:
           type: string
           default: default
@@ -1823,9 +1843,9 @@ components:
         base_url:
           type: string
           description: >
-            Primary API base URL written into generated onboarding artifacts.
+            Canonical API base URL written into generated onboarding artifacts.
             If omitted, the default comes from the operator portal/runtime configuration.
-            For partner identities containing `epam`, this value is normalized to `https://api.runwcr.com`.
+            If selected host policy is pinned, this value is normalized by policy.
 
     ChatKitJsonResponse:
       type: object
@@ -3351,6 +3371,37 @@ components:
           items: { type: string }
       required: [type, token_url, scope]
 
+    IntegrationHostPolicy:
+      type: object
+      properties:
+        policy_id:
+          type: string
+          enum: [public_request_host, pinned_runwcr]
+        mode:
+          type: string
+          enum: [request_host, pinned]
+        enforcement:
+          type: string
+          enum: [advisory, required]
+        canonical_base_url:
+          type: string
+          format: uri
+        allowed_domains:
+          type: array
+          items: { type: string }
+        partner_id:
+          type: string
+          nullable: true
+        notes:
+          type: array
+          items: { type: string }
+      required:
+        - policy_id
+        - mode
+        - enforcement
+        - canonical_base_url
+        - allowed_domains
+
     IntegrationProjectScope:
       type: object
       properties:
@@ -3410,6 +3461,8 @@ components:
         chat_api_url:
           type: string
           format: uri
+        host_policy:
+          $ref: '#/components/schemas/IntegrationHostPolicy'
         deprecated_chat_alias_url:
           type: string
           format: uri
@@ -3442,6 +3495,7 @@ components:
       required:
         - api_base_url
         - chat_api_url
+        - host_policy
         - auth_profile
         - required_headers
         - optional_headers
