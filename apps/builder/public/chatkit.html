@@ -45,7 +45,7 @@
       }
       .bar {
         display: grid;
-        grid-template-columns: repeat(8, minmax(120px, 1fr)) auto;
+        grid-template-columns: repeat(9, minmax(120px, 1fr)) auto;
         gap: 10px;
         align-items: end;
       }
@@ -117,6 +117,10 @@
           <input id="projectId" placeholder="optional" />
         </div>
         <div>
+          <label for="tenantId">Tenant ID</label>
+          <input id="tenantId" placeholder="local" />
+        </div>
+        <div>
           <label for="authToken">Auth token</label>
           <input id="authToken" type="password" placeholder="optional" />
         </div>
@@ -152,6 +156,7 @@
       const workflowIdInput = document.getElementById('workflowId');
       const workflowVersionIdInput = document.getElementById('workflowVersionId');
       const projectIdInput = document.getElementById('projectId');
+      const tenantIdInput = document.getElementById('tenantId');
       const authTokenInput = document.getElementById('authToken');
       const themeSelect = document.getElementById('theme');
       const autoConnectSelect = document.getElementById('autoConnect');
@@ -174,9 +179,9 @@
 
       function inferDefaultApiUrl() {
         const rootHost = inferRootHost(window.location.hostname);
-        const chatkitHost = rootHost === 'localhost' ? 'chatkit.localhost' : `chatkit.${rootHost}`;
+        const apiHost = rootHost === 'localhost' ? 'api.localhost' : `api.${rootHost}`;
         const port = window.location.port ? `:${window.location.port}` : '';
-        return `${window.location.protocol}//${chatkitHost}${port}/chatkit`;
+        return `${window.location.protocol}//${apiHost}${port}/chat`;
       }
 
       const defaultApiUrl = inferDefaultApiUrl();
@@ -189,6 +194,7 @@
       workflowIdInput.value = params.get('workflow_id') || '';
       workflowVersionIdInput.value = params.get('workflow_version_id') || '';
       projectIdInput.value = params.get('project_id') || '';
+      tenantIdInput.value = params.get('tenant_id') || 'local';
       authTokenInput.value = params.get('auth_token') || '';
       themeSelect.value = params.get('theme') || 'light';
       autoConnectSelect.value = params.get('auto') || '0';
@@ -201,11 +207,144 @@
         statusEl.style.color = tone === 'error' ? '#dc2626' : '#64748b';
       }
 
-      function buildFetch(apiURL, authToken, workflowId, workflowVersionId, projectId) {
+      function createRequestId(prefix) {
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+          return `${prefix}_${globalThis.crypto.randomUUID()}`;
+        }
+        return `${prefix}_${Math.random().toString(36).slice(2, 12)}`;
+      }
+
+      function normalizeChatApiUrl(rawUrl) {
+        try {
+          const parsed = new URL(rawUrl);
+          const aliasPattern = /\/chatkit\/?$/i;
+          if (!aliasPattern.test(parsed.pathname)) {
+            return { url: parsed.toString(), rewritten: false };
+          }
+          parsed.pathname = parsed.pathname.replace(aliasPattern, '/chat');
+          return { url: parsed.toString(), rewritten: true };
+        } catch (err) {
+          const normalized = String(rawUrl || '').replace(/\/chatkit\/?$/i, '/chat');
+          return { url: normalized, rewritten: normalized !== rawUrl };
+        }
+      }
+
+      function fetchJson(url) {
+        return fetch(url, { headers: { Accept: 'application/json' } })
+          .then((response) => {
+            if (!response.ok) return null;
+            return response.json();
+          })
+          .catch(() => null);
+      }
+
+      async function bootstrapIntegration(apiURL, projectId) {
+        let resolvedApiUrl = apiURL;
+        let doctorStatus = 'UNKNOWN';
+        let doctorFailChecks = [];
+        let warnings = [];
+        let capabilities = null;
+
+        let parsed = null;
+        try {
+          parsed = new URL(apiURL);
+        } catch (err) {
+          warnings.push('invalid_api_url');
+          return { resolvedApiUrl, doctorStatus, doctorFailChecks, warnings, capabilities };
+        }
+
+        const apiBase = new URL(parsed.toString());
+        apiBase.search = '';
+        apiBase.hash = '';
+        if (/\/chatkit\/?$/i.test(apiBase.pathname) || /\/chat\/?$/i.test(apiBase.pathname)) {
+          apiBase.pathname = apiBase.pathname.replace(/\/(chatkit|chat)\/?$/i, '/');
+        }
+        if (!apiBase.pathname.endsWith('/')) {
+          apiBase.pathname = `${apiBase.pathname}/`;
+        }
+
+        const kit = await fetchJson(new URL('agent-integration-kit.json', apiBase).toString());
+        const manifest = kit?.integration_manifest || null;
+        const capabilitiesUrl =
+          manifest?.integration_capabilities_url ||
+          kit?.urls?.integration_capabilities ||
+          new URL('integration-capabilities', apiBase).toString();
+        capabilities = await fetchJson(capabilitiesUrl);
+        if (!capabilities) {
+          warnings.push('integration_capabilities_unavailable');
+        }
+        const doctorBaseUrl = kit?.urls?.integration_test_json || new URL('agent-integration-test.json', apiBase).toString();
+        const doctorUrl = new URL(doctorBaseUrl);
+        if (projectId) {
+          doctorUrl.searchParams.set('project_id', projectId);
+        }
+        const doctor = await fetchJson(doctorUrl.toString());
+
+        const canonicalPath =
+          capabilities?.chat?.canonical_endpoint ||
+          (() => {
+            try {
+              return new URL(manifest?.chat_api_url || '').pathname;
+            } catch (err) {
+              return '/chat';
+            }
+          })();
+        const hostPolicy = manifest?.host_policy || null;
+        const enforcePinned = hostPolicy?.mode === 'pinned' && hostPolicy?.enforcement === 'required';
+        if (enforcePinned) {
+          try {
+            const canonicalBase = new URL(hostPolicy.canonical_base_url || manifest?.api_base_url || '');
+            parsed.protocol = canonicalBase.protocol;
+            parsed.hostname = canonicalBase.hostname;
+            parsed.port = canonicalBase.port;
+            warnings.push(`host_policy_enforced:${hostPolicy.policy_id || 'pinned'}`);
+          } catch (err) {
+            warnings.push('host_policy_enforcement_failed');
+          }
+        }
+        parsed.pathname = canonicalPath.startsWith('/') ? canonicalPath : `/${canonicalPath || 'chat'}`;
+        resolvedApiUrl = parsed.toString();
+
+        const summaryStatus = doctor?.summary?.status;
+        const checks = Array.isArray(doctor?.checks) ? doctor.checks : [];
+        doctorFailChecks = checks.filter((item) => item?.status === 'FAIL').map((item) => item?.id || item?.code || 'doctor_fail');
+        if (summaryStatus === 'PASS' || summaryStatus === 'WARN' || summaryStatus === 'FAIL') {
+          doctorStatus = summaryStatus;
+        } else if (doctorFailChecks.length) {
+          doctorStatus = 'FAIL';
+        }
+
+        return { resolvedApiUrl, doctorStatus, doctorFailChecks, warnings, capabilities };
+      }
+
+      function buildFetch(apiURL, authToken, workflowId, workflowVersionId, projectId, tenantId) {
         return async (input, init = {}) => {
+          const normalized = normalizeChatApiUrl(apiURL);
+          if (normalized.rewritten) {
+            window.dispatchEvent(
+              new CustomEvent('workcore.integration.legacy_chat_alias_used', {
+                detail: {
+                  original_url: apiURL,
+                  resolved_url: normalized.url,
+                  observed_at: new Date().toISOString(),
+                },
+              }),
+            );
+            console.warn('[chatkit.html] legacy /chatkit alias rewritten', {
+              original_url: apiURL,
+              resolved_url: normalized.url,
+            });
+          }
+
           const headers = new Headers(init.headers || {});
           if (!headers.has('Content-Type')) {
             headers.set('Content-Type', 'application/json');
+          }
+          headers.set('X-Tenant-Id', tenantId || 'local');
+          headers.set('X-Correlation-Id', createRequestId('corr'));
+          headers.set('X-Trace-Id', createRequestId('trace'));
+          if (projectId) {
+            headers.set('X-Project-Id', projectId);
           }
           if (authToken) {
             headers.set('Authorization', `Bearer ${authToken}`);
@@ -228,16 +367,17 @@
           }
 
           const nextInit = Object.assign({}, init, { headers, body });
-          return fetch(input, nextInit);
+          return fetch(normalized.url, nextInit);
         };
       }
 
-      function connect() {
+      async function connect() {
         const apiURL = apiUrlInput.value.trim();
         const domainKey = domainKeyInput.value.trim();
         const workflowId = workflowIdInput.value.trim();
         const workflowVersionId = workflowVersionIdInput.value.trim();
         const projectId = projectIdInput.value.trim();
+        const tenantId = tenantIdInput.value.trim() || 'local';
         const authToken = authTokenInput.value.trim();
         const theme = themeSelect.value;
 
@@ -249,21 +389,43 @@
           setStatus('Domain key is required', 'error');
           return;
         }
-        if (!workflowId) {
-          setStatus('Workflow ID is required', 'error');
+        if (!workflowId && !projectId) {
+          setStatus('Workflow ID or Project ID is required', 'error');
+          return;
+        }
+
+        const bootstrap = await bootstrapIntegration(apiURL, projectId);
+        if (bootstrap.resolvedApiUrl && bootstrap.resolvedApiUrl !== apiURL) {
+          apiUrlInput.value = bootstrap.resolvedApiUrl;
+        }
+        if (bootstrap.doctorFailChecks.length || bootstrap.doctorStatus === 'FAIL') {
+          setStatus(`Integration doctor FAIL: ${bootstrap.doctorFailChecks.join(', ') || 'check report'}`, 'error');
           return;
         }
 
         try {
           chatkitEl.setOptions({
             api: {
-              url: apiURL,
+              url: bootstrap.resolvedApiUrl || apiURL,
               domainKey,
-              fetch: buildFetch(apiURL, authToken, workflowId, workflowVersionId, projectId)
+              fetch: buildFetch(
+                bootstrap.resolvedApiUrl || apiURL,
+                authToken,
+                workflowId,
+                workflowVersionId,
+                projectId,
+                tenantId,
+              ),
             },
             theme,
           });
-          setStatus('Connected. Start chatting.', 'ok');
+          if (bootstrap.doctorStatus === 'WARN') {
+            setStatus('Connected (integration doctor WARN). Start chatting.', 'ok');
+          } else if (bootstrap.warnings.length) {
+            setStatus(`Connected (${bootstrap.warnings.join(', ')}). Start chatting.`, 'ok');
+          } else {
+            setStatus('Connected. Start chatting.', 'ok');
+          }
         } catch (err) {
           setStatus(`Failed to connect: ${err.message || err}`, 'error');
         }
@@ -299,7 +461,9 @@
         }
       }
 
-      applyBtn.addEventListener('click', connect);
+      applyBtn.addEventListener('click', () => {
+        void connect();
+      });
 
       chatkitEl.addEventListener('chatkit.error', (event) => {
         const message = event?.detail?.error?.message || 'ChatKit error';
@@ -314,8 +478,8 @@
         }
       });
 
-      if (autoConnectSelect.value === '1' && workflowIdInput.value.trim()) {
-        connect();
+      if (autoConnectSelect.value === '1' && (workflowIdInput.value.trim() || projectIdInput.value.trim())) {
+        void connect();
       }
     </script>
   </body>

@@ -2075,7 +2075,7 @@ export default function App() {
   };
 
   const chatPageUrl = useMemo(() => {
-    if (!workflowId) return '';
+    if (!workflowId && !projectId.trim()) return '';
     const url = new URL(resolveChatPage(), window.location.origin);
     url.searchParams.set('api_url', CHAT_API_URL);
     if (CHATKIT_DOMAIN_KEY) {
@@ -2084,7 +2084,9 @@ export default function App() {
     if (CHATKIT_AUTH_TOKEN) {
       url.searchParams.set('auth_token', CHATKIT_AUTH_TOKEN);
     }
-    url.searchParams.set('workflow_id', workflowId);
+    if (workflowId) {
+      url.searchParams.set('workflow_id', workflowId);
+    }
     if (activeVersionId) {
       url.searchParams.set('workflow_version_id', activeVersionId);
     }
@@ -2107,12 +2109,12 @@ export default function App() {
   }, [chatPageUrl]);
 
   const handleOpenChat = async () => {
-    if (!workflowId) {
-      setStatus({ tone: 'warn', label: 'Select a workflow first' });
+    if (!workflowId && !projectId.trim()) {
+      setStatus({ tone: 'warn', label: 'Select workflow or project first' });
       return;
     }
     let versionId = activeVersionId;
-    if (!versionId) {
+    if (workflowId && !versionId) {
       versionId = await publishNow();
       if (!versionId) {
         return;

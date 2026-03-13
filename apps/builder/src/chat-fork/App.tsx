@@ -13,7 +13,8 @@ import {
   Title
 } from '@mantine/core';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { streamRequest, transcribeInput, type ChatKitClientOptions } from './api/chatkit-client';
+import { ChatKitHttpError, streamRequest, transcribeInput, type ChatKitClientOptions } from './api/chatkit-client';
+import { bootstrapIntegration, type IntegrationBootstrapResult } from './api/integration-bootstrap';
 import type { ChatKitRequest, ThreadItem, WidgetActionPayload } from './protocol/types';
 import { applyStreamEvent, createEmptyThreadState, type ThreadState } from './state/thread-store';
 import { useSttRecorder } from './stt/useSttRecorder';
@@ -65,15 +66,21 @@ export default function App() {
   const [status, setStatus] = useState('Idle');
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [bootstrap, setBootstrap] = useState<IntegrationBootstrapResult | null>(null);
   const autoStartTriggeredRef = useRef(false);
 
   const clientOptions = useMemo<ChatKitClientOptions>(
     () => ({
       apiUrl: apiUrl.trim(),
       authToken: authToken.trim() || undefined,
-      tenantId: tenantId.trim() || 'local'
+      tenantId: tenantId.trim() || 'local',
+      projectId: projectId.trim() || undefined,
+      onLegacyAliasUsed: ({ originalUrl, resolvedUrl }) => {
+        setStatus(`Legacy /chatkit alias detected. Rewritten to ${resolvedUrl}`);
+        console.warn('[chat-fork] legacy alias rewritten', { original_url: originalUrl, resolved_url: resolvedUrl });
+      }
     }),
-    [apiUrl, authToken, tenantId]
+    [apiUrl, authToken, tenantId, projectId]
   );
 
   const requestMetadata = useMemo(() => {
@@ -96,14 +103,22 @@ export default function App() {
       await streamRequest(request, clientOptions, applyEvent);
       setStatus('Connected');
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : 'Request failed');
+      if (err instanceof ChatKitHttpError) {
+        const badFields = err.typedError.bad_fields?.length ? ` (${err.typedError.bad_fields.join(', ')})` : '';
+        const unsupportedFeature = err.typedError.unsupported_feature
+          ? ` unsupported feature: ${err.typedError.unsupported_feature}`
+          : '';
+        setStatus(`[${err.typedError.code}] ${err.message}${badFields}${unsupportedFeature}`);
+      } else {
+        setStatus(err instanceof Error ? err.message : 'Request failed');
+      }
       throw err;
     } finally {
       setBusy(false);
     }
   };
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (!clientOptions.apiUrl) {
       setStatus('API URL is required');
       return;
@@ -112,7 +127,30 @@ export default function App() {
       setStatus('Workflow ID or Project ID is required');
       return;
     }
+
+    const bootstrapResult = await bootstrapIntegration({
+      apiUrl: clientOptions.apiUrl,
+      projectId: projectId.trim() || undefined
+    });
+    setBootstrap(bootstrapResult);
+    if (bootstrapResult.resolvedApiUrl && bootstrapResult.resolvedApiUrl !== clientOptions.apiUrl) {
+      setApiUrl(bootstrapResult.resolvedApiUrl);
+    }
+    if (!bootstrapResult.integrationReady) {
+      setConnected(false);
+      setStatus(`Integration doctor FAIL (${bootstrapResult.doctorFailChecks.join(', ')})`);
+      return;
+    }
+
     setConnected(true);
+    if (bootstrapResult.doctorStatus === 'WARN') {
+      setStatus('Connected (integration doctor WARN)');
+      return;
+    }
+    if (bootstrapResult.warnings.length) {
+      setStatus(`Connected (${bootstrapResult.warnings.join(', ')})`);
+      return;
+    }
     setStatus('Connected');
   };
 
@@ -227,7 +265,7 @@ export default function App() {
 
   useEffect(() => {
     if (autoConnect && hasChatScope) {
-      handleConnect();
+      void handleConnect();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -243,6 +281,8 @@ export default function App() {
   const orderedItems = threadState.items;
   const latestProgress = threadState.progress[threadState.progress.length - 1];
   const latestError = threadState.errors[threadState.errors.length - 1] || stt.error;
+  const doctorStatus = bootstrap?.doctorStatus || 'UNKNOWN';
+  const doctorBadgeColor = doctorStatus === 'FAIL' ? 'red' : doctorStatus === 'WARN' ? 'yellow' : 'gray';
 
   return (
     <Stack gap="sm" p={embed ? 0 : 'md'} h="100vh">
@@ -279,7 +319,7 @@ export default function App() {
                 value={authToken}
                 onChange={(e) => setAuthToken(e.currentTarget.value)}
               />
-              <Button onClick={handleConnect}>Connect</Button>
+              <Button onClick={() => void handleConnect()}>Connect</Button>
             </Group>
           </Stack>
         </Card>
@@ -293,6 +333,9 @@ export default function App() {
             </Badge>
             <Badge color="gray" variant="outline">
               {threadState.threadId || 'No thread'}
+            </Badge>
+            <Badge color={doctorBadgeColor} variant="outline">
+              Doctor {doctorStatus}
             </Badge>
           </Group>
           <Text size="sm" c="dimmed">
