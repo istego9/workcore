@@ -120,6 +120,50 @@ export type RunLedgerRecord = {
   timestamp: string;
 };
 
+export type OrchestratorEvalReplayCase = {
+  case_id?: string | null;
+  message_text: string;
+  metadata?: Record<string, any>;
+  active_workflow_id?: string | null;
+  expected_action?: string | null;
+  expected_workflow_id?: string | null;
+};
+
+export type OrchestratorEvalReplayResponse = {
+  mode: string;
+  project_id: string;
+  orchestrator_id?: string | null;
+  session_id: string;
+  user_id: string;
+  total_cases: number;
+  metrics: {
+    cases_with_expected_action: number;
+    cases_with_expected_workflow: number;
+    cases_with_exact_expectations: number;
+    matched_action: number;
+    matched_workflow_id: number;
+    matched_exact: number;
+    action_accuracy: number;
+    workflow_accuracy: number;
+    exact_match_rate: number;
+    average_confidence: number;
+  };
+  items: Array<{
+    case_id?: string | null;
+    message_text: string;
+    expected_action?: string | null;
+    expected_workflow_id?: string | null;
+    chosen_action?: string | null;
+    chosen_workflow_id?: string | null;
+    confidence?: number;
+    action_error?: string | null;
+    matched_action?: boolean | null;
+    matched_workflow_id?: boolean | null;
+    matched_exact?: boolean | null;
+    latency_ms?: number;
+  }>;
+};
+
 const request = async <T>(path: string, options?: RequestInit): Promise<ApiResult<T>> => {
   const authToken = resolveAuthToken();
   const tenantId = resolveTenantId();
@@ -229,6 +273,21 @@ export const publishWorkflow = async (
   });
 };
 
+export const listWorkflowVersions = async (
+  workflowId: string,
+  params?: { limit?: number },
+  projectId?: string
+): Promise<ApiResult<{ items: WorkflowVersion[]; next_cursor?: string | null }>> => {
+  const query = new URLSearchParams();
+  if (typeof params?.limit === 'number') {
+    query.set('limit', String(params.limit));
+  }
+  const suffix = query.toString();
+  return request(`/workflows/${workflowId}/versions${suffix ? `?${suffix}` : ''}`, {
+    headers: projectHeaders(projectId)
+  });
+};
+
 export const rollbackWorkflow = async (
   workflowId: string,
   projectId?: string
@@ -246,6 +305,19 @@ export const deleteWorkflow = async (
   return request(`/workflows/${workflowId}`, {
     method: 'DELETE',
     headers: projectHeaders(projectId)
+  });
+};
+
+export const orchestratorEvalReplay = async (payload: {
+  project_id: string;
+  orchestrator_id?: string;
+  session_id?: string;
+  user_id?: string;
+  cases: OrchestratorEvalReplayCase[];
+}): Promise<ApiResult<OrchestratorEvalReplayResponse>> => {
+  return request('/orchestrator/eval/replay', {
+    method: 'POST',
+    body: JSON.stringify(payload)
   });
 };
 
@@ -344,5 +416,34 @@ export const updateProject = async (
 export const deleteProject = async (projectId: string): Promise<ApiResult<null>> => {
   return request(`/projects/${projectId}`, {
     method: 'DELETE'
+  });
+};
+
+export const upsertProjectWorkflowDefinition = async (
+  projectId: string,
+  payload: {
+    workflow_id: string;
+    name: string;
+    description: string;
+    tags?: string[];
+    examples?: string[];
+    active?: boolean;
+    is_fallback?: boolean;
+  }
+): Promise<ApiResult<{
+  project_id: string;
+  workflow_id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  examples: string[];
+  active: boolean;
+  is_fallback: boolean;
+  created_at: string;
+  updated_at: string;
+}>> => {
+  return request(`/projects/${projectId}/workflow-definitions`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
   });
 };

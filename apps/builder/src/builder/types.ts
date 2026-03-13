@@ -72,6 +72,9 @@ export type WorkflowVersion = {
   version_id: string;
   workflow_id: string;
   version_number: number;
+  hash?: string;
+  content?: WorkflowDraft;
+  created_at?: string;
 };
 
 export type ValidationIssue = {

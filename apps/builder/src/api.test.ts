@@ -7,8 +7,11 @@ import {
   getRunLedger,
   listProjects,
   listRuns,
+  listWorkflowVersions,
   listWorkflows,
+  orchestratorEvalReplay,
   rerunNode,
+  upsertProjectWorkflowDefinition,
   updateProject
 } from './api';
 
@@ -256,6 +259,84 @@ describe('api listRuns', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ node_id: 'agent_1', scope: 'downstream' })
+      })
+    );
+  });
+
+  it('calls GET /workflows/{workflow_id}/versions for release pipeline diff baseline', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: null })
+    } as Response);
+
+    await listWorkflowVersions('wf_release_1', { limit: 10 }, 'proj_release_1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/workflows/wf_release_1/versions?limit=10`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          'X-Project-Id': 'proj_release_1'
+        })
+      })
+    );
+  });
+
+  it('calls POST /orchestrator/eval/replay for release simulation', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ total_cases: 1, items: [] })
+    } as Response);
+
+    await orchestratorEvalReplay({
+      project_id: 'proj_release_1',
+      cases: [{ message_text: 'start', expected_workflow_id: 'wf_release_1' }]
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/orchestrator/eval/replay`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          project_id: 'proj_release_1',
+          cases: [{ message_text: 'start', expected_workflow_id: 'wf_release_1' }]
+        })
+      })
+    );
+  });
+
+  it('calls POST /projects/{project_id}/workflow-definitions for routing bind update', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ workflow_id: 'wf_release_1' })
+    } as Response);
+
+    await upsertProjectWorkflowDefinition('proj_release_1', {
+      workflow_id: 'wf_release_1',
+      name: 'Release workflow',
+      description: 'Release definition',
+      tags: ['release'],
+      examples: ['start'],
+      active: true,
+      is_fallback: false
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects/proj_release_1/workflow-definitions`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          workflow_id: 'wf_release_1',
+          name: 'Release workflow',
+          description: 'Release definition',
+          tags: ['release'],
+          examples: ['start'],
+          active: true,
+          is_fallback: false
+        })
       })
     );
   });

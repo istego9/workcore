@@ -83,6 +83,7 @@ import {
 import { normalizeSchemaTypeLabel } from './template-variable-types';
 import { shouldAutoCreateWorkflow } from './workflow-auto-create';
 import { RunDebugPanel } from './run-debug/RunDebugPanel';
+import { WorkflowReleasePipeline } from './release-pipeline';
 import './styles.css';
 
 const statusTone = {
@@ -832,6 +833,8 @@ export default function App() {
   const [integrationOpen, { open: openIntegration, close: closeIntegration }] = useDisclosure(false);
   const [runHistoryOpen, { open: openRunHistory, close: closeRunHistory }] = useDisclosure(false);
   const [runDebugOpen, { open: openRunDebug, close: closeRunDebug }] = useDisclosure(false);
+  const [releasePipelineOpen, { open: openReleasePipeline, close: closeReleasePipeline }] =
+    useDisclosure(false);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     if (typeof window === 'undefined') return 'builder';
     const params = new URLSearchParams(window.location.search);
@@ -932,6 +935,7 @@ export default function App() {
   const [variablesSchema, setVariablesSchema] = useState<Record<string, any>>(
     initialDraft.variablesSchema
   );
+  const currentDraft = useMemo(() => buildDraft(nodes, edges, variablesSchema), [nodes, edges, variablesSchema]);
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) || null,
@@ -2046,6 +2050,13 @@ export default function App() {
     openRunDebug();
   };
 
+  const handleOpenRunDebugById = (runId: string) => {
+    const matched = runHistoryRaw.find((run) => run.run_id === runId) || null;
+    setRunDebugRunId(runId);
+    setRunDebugSeedRun(matched);
+    openRunDebug();
+  };
+
   const handleCloseRunDebug = () => {
     closeRunDebug();
   };
@@ -3011,6 +3022,14 @@ export default function App() {
                 </Button>
                 <Button variant="filled" size="sm" onClick={handlePublish}>
                   Publish
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={openReleasePipeline}
+                  data-testid="open-release-pipeline"
+                >
+                  Release
                 </Button>
                 <Select
                   className="header-runmode-select"
@@ -4194,6 +4213,28 @@ export default function App() {
         onClose={handleCloseRunDebug}
         onStatus={setStatus}
         onRunUpdated={handleRunDebugUpdated}
+      />
+
+      <WorkflowReleasePipeline
+        opened={releasePipelineOpen}
+        onClose={closeReleasePipeline}
+        tenantId={tenantId}
+        projectId={activeProjectId || ''}
+        workflowId={workflowId}
+        workflowName={workflowName}
+        workflowDescription={workflowDescription}
+        activeVersionId={activeVersionId}
+        draft={currentDraft}
+        validationIssues={issues}
+        activeProject={activeProjectRecord}
+        onFocusNode={(nodeId) => {
+          setSelectedNodeId(nodeId);
+        }}
+        onPublish={publishNow}
+        onProjectsRefreshed={fetchProjects}
+        onWorkflowsRefreshed={fetchWorkflows}
+        onStatus={setStatus}
+        onOpenRunDebug={handleOpenRunDebugById}
       />
 
       <Modal opened={integrationOpen} onClose={closeIntegration} title="Agent integration kit" centered size="lg">
