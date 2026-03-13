@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Group,
+  ScrollArea,
   Select,
   SimpleGrid,
   Stack,
@@ -28,6 +29,12 @@ type WorkflowSimulationPanelProps = {
 };
 
 const toPercent = (value: number) => `${Math.round(value * 100)}%`;
+
+const matchTone = (value: boolean | null) => {
+  if (value === true) return { color: 'teal', label: 'match' };
+  if (value === false) return { color: 'red', label: 'mismatch' };
+  return { color: 'gray', label: 'n/a' };
+};
 
 export function WorkflowSimulationPanel({
   source,
@@ -138,6 +145,57 @@ export function WorkflowSimulationPanel({
                     {failure}
                   </Text>
                 ))}
+              </Stack>
+            )}
+            {result.outcomes.length > 0 && (
+              <Stack gap={6}>
+                <Text size="sm" fw={600}>
+                  Route/action outcomes
+                </Text>
+                <ScrollArea.Autosize mah={220} type="scroll">
+                  <Stack gap={6}>
+                    {result.outcomes.slice(0, 12).map((outcome) => {
+                      const actionMatch = matchTone(outcome.matched_action);
+                      const workflowMatch = matchTone(outcome.matched_workflow_id);
+                      return (
+                        <Card
+                          key={outcome.case_id}
+                          withBorder
+                          radius="sm"
+                          padding="xs"
+                          data-testid="release-simulation-outcome"
+                        >
+                          <Stack gap={4}>
+                            <Group justify="space-between" align="center">
+                              <Text size="xs" fw={600}>
+                                {outcome.case_id}
+                              </Text>
+                              {typeof outcome.latency_ms === 'number' && (
+                                <Badge variant="outline" color="gray" size="xs">
+                                  {outcome.latency_ms} ms
+                                </Badge>
+                              )}
+                            </Group>
+                            <Group gap={6} wrap="wrap">
+                              <Badge variant="light" color="gray" size="sm">
+                                Action {outcome.chosen_action || 'none'}
+                              </Badge>
+                              <Badge variant="light" color="gray" size="sm">
+                                Workflow {outcome.chosen_workflow_id || 'none'}
+                              </Badge>
+                              <Badge variant="outline" color={actionMatch.color} size="sm">
+                                Action {actionMatch.label}
+                              </Badge>
+                              <Badge variant="outline" color={workflowMatch.color} size="sm">
+                                Route {workflowMatch.label}
+                              </Badge>
+                            </Group>
+                          </Stack>
+                        </Card>
+                      );
+                    })}
+                  </Stack>
+                </ScrollArea.Autosize>
               </Stack>
             )}
           </Stack>

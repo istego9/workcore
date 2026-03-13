@@ -5,6 +5,7 @@ type WorkflowSmokeRunnerProps = {
   smoke: SmokeResultSummary | null;
   loading: boolean;
   runDetailsUrl: string | null;
+  integrationLogsUrl: string | null;
   onRunSmoke: () => void;
   onOpenRunDebug: () => void;
 };
@@ -20,6 +21,7 @@ export function WorkflowSmokeRunner({
   smoke,
   loading,
   runDetailsUrl,
+  integrationLogsUrl,
   onRunSmoke,
   onOpenRunDebug,
 }: WorkflowSmokeRunnerProps) {
@@ -61,6 +63,17 @@ export function WorkflowSmokeRunner({
           {runDetailsUrl && (
             <Anchor href={runDetailsUrl} target="_blank" rel="noopener noreferrer" size="xs">
               Open run details
+            </Anchor>
+          )}
+          {integrationLogsUrl && (
+            <Anchor
+              href={integrationLogsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              size="xs"
+              data-testid="release-open-integration-logs"
+            >
+              Open integration logs
             </Anchor>
           )}
         </Group>

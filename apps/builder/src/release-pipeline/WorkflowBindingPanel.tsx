@@ -6,6 +6,8 @@ type WorkflowBindingPanelProps = {
   chatBound: boolean;
   routingBound: boolean;
   observedDirectRuns: number;
+  projectsUsingWorkflow: Array<{ project_id: string; project_name: string }>;
+  projectsUsageLoading: boolean;
   loadingChatBind: boolean;
   loadingRoutingBind: boolean;
   onBindChat: () => void;
@@ -18,6 +20,8 @@ export function WorkflowBindingPanel({
   chatBound,
   routingBound,
   observedDirectRuns,
+  projectsUsingWorkflow,
+  projectsUsageLoading,
   loadingChatBind,
   loadingRoutingBind,
   onBindChat,
@@ -45,7 +49,34 @@ export function WorkflowBindingPanel({
           <Badge variant="outline" color="gray">
             Observed direct runs {observedDirectRuns}
           </Badge>
+          <Badge variant="outline" color="gray" data-testid="release-bind-project-usage-count">
+            Projects using workflow {projectsUsingWorkflow.length}
+          </Badge>
+          {projectsUsageLoading && (
+            <Badge variant="outline" color="blue">
+              Refreshing usage
+            </Badge>
+          )}
         </Group>
+        {projectsUsingWorkflow.length > 0 && (
+          <Group gap="xs" wrap="wrap">
+            {projectsUsingWorkflow.slice(0, 8).map((project) => (
+              <Badge key={project.project_id} variant="light" color="teal">
+                {project.project_name} ({project.project_id})
+              </Badge>
+            ))}
+            {projectsUsingWorkflow.length > 8 && (
+              <Badge variant="outline" color="gray">
+                +{projectsUsingWorkflow.length - 8} more
+              </Badge>
+            )}
+          </Group>
+        )}
+        {projectsUsingWorkflow.length === 0 && !projectsUsageLoading && (
+          <Text size="xs" c="dimmed">
+            No projects currently use this workflow as default chat workflow.
+          </Text>
+        )}
         <Group gap="xs" wrap="wrap">
           <Button
             size="xs"

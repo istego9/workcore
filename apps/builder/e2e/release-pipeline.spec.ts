@@ -301,7 +301,7 @@ test('operator release pipeline validates, simulates, publishes, binds, smokes, 
   await page.goto('/?view=builder&e2e=1&project_id=proj_release');
 
   await page.getByRole('button', { name: 'New' }).click();
-  await expect(page.getByText('Workflow wf_release_1').first()).toBeVisible();
+  await expect(page.getByTestId('open-release-pipeline')).toBeVisible();
 
   await page.getByTestId('open-release-pipeline').click();
   const releaseDrawer = page.getByRole('dialog', { name: 'Release Pipeline' });
@@ -310,6 +310,8 @@ test('operator release pipeline validates, simulates, publishes, binds, smokes, 
   await releaseDrawer.getByTestId('release-validate-rerun').click();
   await releaseDrawer.getByTestId('release-simulation-run').click();
   await expect.poll(() => simulationCalls).toBe(1);
+  await expect(releaseDrawer.getByText('Route/action outcomes')).toBeVisible();
+  await expect(releaseDrawer.getByText('sample_start')).toBeVisible();
 
   const publishButton = releaseDrawer.getByTestId('release-publish');
   await expect(publishButton).toBeEnabled();
@@ -317,12 +319,16 @@ test('operator release pipeline validates, simulates, publishes, binds, smokes, 
   await expect(releaseDrawer.getByText('Active version: wfv_2')).toBeVisible();
 
   await releaseDrawer.getByTestId('release-bind-chat').click();
+  await expect(releaseDrawer.getByTestId('release-bind-project-usage-count')).toContainText(
+    'Projects using workflow 1'
+  );
   await releaseDrawer.getByTestId('release-bind-routing').click();
   await expect.poll(() => routingBindCalls).toBeGreaterThan(0);
 
   await releaseDrawer.getByTestId('release-smoke-run').click();
   await expect.poll(() => smokeStartCalls).toBe(1);
   await expect(releaseDrawer.getByText('Run run_smoke_1')).toBeVisible();
+  await expect(releaseDrawer.getByTestId('release-open-integration-logs')).toBeVisible();
 
   await releaseDrawer.getByTestId('release-open-run-debug').click();
   await expect(page.getByText('Run summary', { exact: true })).toBeVisible();

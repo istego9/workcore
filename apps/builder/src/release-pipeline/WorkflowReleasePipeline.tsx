@@ -1,4 +1,5 @@
 import {
+  Anchor,
   Badge,
   Button,
   Card,
@@ -14,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   API_BASE,
   getRun,
+  listProjects,
   listRuns,
   listWorkflowVersions,
   orchestratorEvalReplay,
@@ -84,6 +86,11 @@ type LastSuccessfulReleasePath = {
   candidate_version_id: string;
   published_version_id: string | null;
   smoke_run_id: string | null;
+};
+
+type BoundProjectUsage = {
+  project_id: string;
+  project_name: string;
 };
 
 const FINAL_RUN_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
@@ -264,6 +271,8 @@ export function WorkflowReleasePipeline({
   const [openedAt, setOpenedAt] = useState<string | null>(null);
   const [stageTimestamps, setStageTimestamps] = useState<Record<string, string>>({});
   const [lastSuccessPath, setLastSuccessPath] = useState<LastSuccessfulReleasePath | null>(null);
+  const [projectsUsageLoading, setProjectsUsageLoading] = useState(false);
+  const [projectsUsingWorkflow, setProjectsUsingWorkflow] = useState<BoundProjectUsage[]>([]);
 
   const validation = useMemo(() => summarizeValidation(validationIssues), [validationIssues]);
   const cannedCases = useMemo(() => buildCannedCases(workflowId), [workflowId]);
@@ -338,6 +347,9 @@ export function WorkflowReleasePipeline({
   const failureTrend = useMemo(() => summarizeFailureTrend(releaseVersionRuns), [releaseVersionRuns]);
   const runDetailsUrl = smokeResult?.run_id
     ? `${API_BASE}/runs/${encodeURIComponent(smokeResult.run_id)}`
+    : null;
+  const integrationLogsUrl = smokeResult?.run_id
+    ? `${API_BASE}/runs/${encodeURIComponent(smokeResult.run_id)}/ledger`
     : null;
 
   const reportBase = useMemo<ReleaseReport>(
@@ -453,6 +465,45 @@ export function WorkflowReleasePipeline({
     setRunsLoading(false);
   };
 
+  const fetchBoundProjects = async () => {
+    if (!workflowId) {
+      setProjectsUsageLoading(false);
+      setProjectsUsingWorkflow([]);
+      return;
+    }
+    setProjectsUsageLoading(true);
+    const matched: BoundProjectUsage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const result = await listProjects({ limit: 200, cursor });
+      if (result.error) {
+        onStatus({
+          tone: 'warn',
+          label: 'Project binding visibility unavailable',
+          detail: result.error.message,
+        });
+        setProjectsUsageLoading(false);
+        return;
+      }
+      const items = result.data?.items || [];
+      items.forEach((project) => {
+        if (getProjectDefaultChatWorkflowId(project) !== workflowId) return;
+        matched.push({
+          project_id: project.project_id,
+          project_name: project.project_name || project.project_id,
+        });
+      });
+      const nextCursor = result.data?.next_cursor || undefined;
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+    const deduped = Array.from(
+      new Map(matched.map((item) => [item.project_id, item])).values()
+    ).sort((left, right) => left.project_id.localeCompare(right.project_id));
+    setProjectsUsingWorkflow(deduped);
+    setProjectsUsageLoading(false);
+  };
+
   useEffect(() => {
     if (!opened) return;
     setOpenedAt(new Date().toISOString());
@@ -464,10 +515,12 @@ export function WorkflowReleasePipeline({
     setStageTimestamps({});
     setPublishedInCycleVersionId(null);
     setRoutingDefinitionRegistered(false);
+    setProjectsUsingWorkflow([]);
     setManualCasesJson(JSON.stringify(buildCannedCases(workflowId), null, 2));
     setSimulationSource('canned');
     void fetchVersions();
     void fetchRuns();
+    void fetchBoundProjects();
     const key = localStorageKey(tenantId, projectId, workflowId);
     try {
       const raw = window.localStorage.getItem(key);
@@ -592,6 +645,7 @@ export function WorkflowReleasePipeline({
       project_default_chat_workflow_id: workflowId,
     });
     await onProjectsRefreshed();
+    await fetchBoundProjects();
     onStatus({ tone: 'ok', label: 'Project chat binding updated', detail: workflowId });
     setChatBindLoading(false);
   };
@@ -867,6 +921,8 @@ export function WorkflowReleasePipeline({
               chatBound={chatBound}
               routingBound={routingBound}
               observedDirectRuns={observedDirectRuns}
+              projectsUsingWorkflow={projectsUsingWorkflow}
+              projectsUsageLoading={projectsUsageLoading}
               loadingChatBind={chatBindLoading}
               loadingRoutingBind={routingBindLoading}
               onBindChat={handleBindChat}
@@ -877,6 +933,7 @@ export function WorkflowReleasePipeline({
               smoke={smokeResult}
               loading={smokeRunning}
               runDetailsUrl={runDetailsUrl}
+              integrationLogsUrl={integrationLogsUrl}
               onRunSmoke={handleRunSmoke}
               onOpenRunDebug={() => {
                 if (smokeResult?.run_id) {
@@ -912,6 +969,29 @@ export function WorkflowReleasePipeline({
                     Refresh observe data
                   </Button>
                 </Group>
+                {(runDetailsUrl || integrationLogsUrl || smokeResult?.run_id) && (
+                  <Group gap="xs" wrap="wrap">
+                    {smokeResult?.run_id && (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        onClick={() => onOpenRunDebug(smokeResult.run_id)}
+                      >
+                        Open smoke run debug
+                      </Button>
+                    )}
+                    {runDetailsUrl && (
+                      <Anchor href={runDetailsUrl} target="_blank" rel="noopener noreferrer" size="xs">
+                        Open run details
+                      </Anchor>
+                    )}
+                    {integrationLogsUrl && (
+                      <Anchor href={integrationLogsUrl} target="_blank" rel="noopener noreferrer" size="xs">
+                        Open integration logs
+                      </Anchor>
+                    )}
+                  </Group>
+                )}
                 {releaseVersionRuns.length === 0 ? (
                   <Text size="sm" c="dimmed">
                     No runs for the selected published version yet.
