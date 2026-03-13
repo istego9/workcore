@@ -11,7 +11,7 @@ Status: Draft (Phase 0)
 - Integrate via webhooks and MCP.
 
 ## System boundaries (logical)
-- Builder UI: graph editor, validation, draft/publish UI, execution history, run debug inspector.
+- Builder UI: graph editor, validation, draft/publish UI, execution history, run debug inspector, and operator release pipeline flow (Validate → Simulate → Diff → Publish → Bind → Smoke → Observe).
 - Workflow Service: workflows, drafts, publish/rollback, versions.
 - Capability Registry Service: versioned capability contracts and step-level capability pin validation.
 - Orchestrator Service: project routing, intent orchestration, runs, node_runs, interrupts, execution semantics.
@@ -82,6 +82,7 @@ Ordering guarantees:
 ## Correlation and tracing
 - correlation_id propagates from inbound requests to runs, node_runs, tool calls, and outbound webhooks.
 - trace_id is linked to run_id and node_id for Agents SDK calls.
+- Builder operator release pipeline emits structured lifecycle logs (`release_pipeline_opened`, `validation_rerun`, `simulation_started/completed`, `publish_initiated/completed`, `bind_updated`, `smoke_started/completed`, `release_report_exported`) with tenant/project/workflow scope and correlation identifiers when available.
 
 ## Testing policy (headless)
 - All automated browser/UI/E2E tests run headless in CI by default.
@@ -125,3 +126,5 @@ Ordering guarantees:
 - ADR-0011: Internal MCP HTTP bridge for runtime MCP execution.
 - ADR-0012: Project-centric chat thread resolution (`/chat` canonical, `/chatkit` deprecated alias).
 - ADR-0013: Unified partner onboarding manifest + integration doctor.
+- ADR-0014: Typed error contract and capability negotiation surface.
+- ADR-0015: Builder release pipeline as composed workflow lifecycle.
