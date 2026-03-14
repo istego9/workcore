@@ -43,16 +43,15 @@ Optional Azure override variables used by onboarding automation:
    - `metadata.json` (non-secret package metadata)
 6. Deliver package to partner over approved secure channel.
 
-## 4.1 EPAM host policy
-- If partner identity contains `epam` in any of:
-  - `display_name`
-  - `partner_id`
-  - `tenant_id_pinned`
-  - `entra_app_display_name`
-- The onboarding output is forced to:
+## 4.1 Explicit partner host policy
+- Host targeting is controlled by first-class `host_policy`, not by name markers or substring detection.
+- For `partner_id=epam_future-insurance`, policy `pinned_runwcr` is enforced server-side.
+- The generated onboarding package is normalized to:
   - `BASE_URL=https://api.runwcr.com`
+  - `chat_api_url=https://api.runwcr.com/chat`
   - `allowed_domains=["api.runwcr.com"]`
-- Any manually entered `base_url` or `allowed_domains` values are overridden server-side for these requests.
+- Any manually entered `base_url`, `allowed_domains`, or conflicting `host_policy` values are overridden server-side for this partner.
+- Confirm the generated `integration_manifest.json` contains `host_policy.policy_id=pinned_runwcr` before delivering the package.
 
 ## 5) Error handling
 - `401 UNAUTHORIZED`: no/invalid Entra principal header.

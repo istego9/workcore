@@ -9,10 +9,10 @@ Operational integration guidance for HQ21 backend/client teams using WorkCore wo
 - Conventions: `docs/api/conventions.md`
 
 ## Gateway endpoints
-- Primary API host: `https://api.hq21.tech`
-- Optional alias host: `https://api.runwcr.com`
-- Both hosts route to the same backend gateway path (Cloudflare/Front Door). Treat alias as hostname-level routing option, not a separate runtime mode.
-- Contract, headers, auth, and payload semantics are identical across both hosts.
+- Default public API host: `https://api.hq21.tech`
+- Some onboarding bundles may pin `integration_manifest.host_policy.canonical_base_url` to `https://api.runwcr.com`.
+- Treat host selection as policy-driven contract from onboarding/doctor surfaces, not as primary/alias runtime modes.
+- Contract, headers, auth, and payload semantics stay identical for any host explicitly allowed by `integration_manifest.host_policy`.
 
 ## Required headers and identity propagation
 For all workflow/run operations send:

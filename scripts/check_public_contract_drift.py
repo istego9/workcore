@@ -21,6 +21,18 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency gate
 ROOT = Path(__file__).resolve().parent.parent
 SUNSET_HTTP_DATE = "Sat, 04 Apr 2026 00:00:00 GMT"
 SUNSET_ISO_TIMESTAMP = "2026-04-04T00:00:00Z"
+BANNED_HOST_FRAMING = (
+    "primary host",
+    "primary api host",
+    "secondary host",
+    "alias host",
+)
+BANNED_MARKER_HEURISTICS = (
+    "partner identity contains `epam`",
+    "partner identity contains epam",
+    "contains `epam`",
+    "substring-based",
+)
 
 
 def _read_text(path: Path, errors: list[str]) -> str:
@@ -35,6 +47,20 @@ def _has_headers(response: dict[str, Any], required: tuple[str, ...]) -> bool:
     if not isinstance(headers, dict):
         return False
     return all(name in headers for name in required)
+
+
+def _ensure_no_host_framing(label: str, text: str, errors: list[str]) -> None:
+    lowered = text.lower()
+    for phrase in BANNED_HOST_FRAMING:
+        if phrase in lowered:
+            errors.append(f"{label} must not describe onboarding host model via `{phrase}` language")
+
+
+def _ensure_no_marker_heuristics(label: str, text: str, errors: list[str]) -> None:
+    lowered = text.lower()
+    for phrase in BANNED_MARKER_HEURISTICS:
+        if phrase in lowered:
+            errors.append(f"{label} must not describe host policy via marker heuristic `{phrase}`")
 
 
 def main() -> int:
@@ -368,9 +394,14 @@ def main() -> int:
         errors.append("Integration guide must document canonical onboarding manifest expectations")
     if "/capabilities*" not in guide_text:
         errors.append("Integration guide must keep capability registry/negotiation separation guidance")
-    guide_lower = guide_text.lower()
-    if "primary host" in guide_lower or "alias host" in guide_lower:
-        errors.append("Integration guide must not describe onboarding host model via primary/alias language")
+    _ensure_no_host_framing("docs/integration/workcore-api-integration-guide.md", guide_text, errors)
+
+    operator_guide_text = _read_text(ROOT / "docs" / "integration" / "partner-self-service-operator-guide.md", errors)
+    _ensure_no_marker_heuristics("docs/integration/partner-self-service-operator-guide.md", operator_guide_text, errors)
+    _ensure_no_host_framing("docs/integration/partner-self-service-operator-guide.md", operator_guide_text, errors)
+
+    hq21_playbook_text = _read_text(ROOT / "docs" / "integration" / "hq21_integration_playbook.md", errors)
+    _ensure_no_host_framing("docs/integration/hq21_integration_playbook.md", hq21_playbook_text, errors)
 
     runtime_arch_text = _read_text(ROOT / "docs" / "architecture" / "runtime.md", errors)
     for required_snippet in (
