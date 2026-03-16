@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SUNSET_HTTP_DATE = "Sat, 04 Apr 2026 00:00:00 GMT"
 SUNSET_ISO_TIMESTAMP = "2026-04-04T00:00:00Z"
 BANNED_HOST_FRAMING = (
+    "primary/alias",
+    "primary / alias",
     "primary host",
     "primary api host",
     "secondary host",

@@ -11,7 +11,7 @@ Operational integration guidance for HQ21 backend/client teams using WorkCore wo
 ## Gateway endpoints
 - Default public API host: `https://api.hq21.tech`
 - Some onboarding bundles may pin `integration_manifest.host_policy.canonical_base_url` to `https://api.runwcr.com`.
-- Treat host selection as policy-driven contract from onboarding/doctor surfaces, not as primary/alias runtime modes.
+- Treat host selection as policy-driven contract from onboarding/doctor surfaces, not as a host-role taxonomy.
 - Contract, headers, auth, and payload semantics stay identical for any host explicitly allowed by `integration_manifest.host_policy`.
 
 ## Required headers and identity propagation
