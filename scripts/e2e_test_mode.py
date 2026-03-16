@@ -23,7 +23,9 @@ def _request(
         for key, value in headers.items():
             if value:
                 req.add_header(key, value)
-    token = os.getenv("ORCH_AUTH_TOKEN") or os.getenv("WORKCORE_API_AUTH_TOKEN") or os.getenv("E2E_API_AUTH_TOKEN")
+    # Prefer the dedicated E2E token over ambient dev API credentials so smoke checks
+    # can run against shared environments without picking up unrelated local defaults.
+    token = os.getenv("ORCH_AUTH_TOKEN") or os.getenv("E2E_API_AUTH_TOKEN") or os.getenv("WORKCORE_API_AUTH_TOKEN")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
