@@ -120,6 +120,16 @@ export type RunLedgerRecord = {
   timestamp: string;
 };
 
+export type CollectedRunLedger = {
+  items: RunLedgerRecord[];
+  ledger_entries_available: number;
+  ledger_entries_available_exact: boolean;
+  ledger_truncated: boolean;
+  ledger_source_truncated: boolean;
+  pages_fetched: number;
+  page_limit: number;
+};
+
 export type OrchestratorEvalReplayCase = {
   case_id?: string | null;
   message_text: string;
@@ -370,6 +380,42 @@ export const getRunLedger = async (
   }
   const suffix = query.toString();
   return request(`/runs/${encodeURIComponent(runId)}/ledger${suffix ? `?${suffix}` : ''}`);
+};
+
+export const collectRunLedger = async (
+  runId: string,
+  params?: { pageLimit?: number; maxPages?: number }
+): Promise<ApiResult<CollectedRunLedger>> => {
+  const safePageLimit =
+    typeof params?.pageLimit === 'number' && Number.isFinite(params.pageLimit)
+      ? Math.min(1000, Math.max(1, Math.floor(params.pageLimit)))
+      : 200;
+  const safeMaxPages =
+    typeof params?.maxPages === 'number' && Number.isFinite(params.maxPages)
+      ? Math.max(1, Math.floor(params.maxPages))
+      : 1;
+
+  // The current run-ledger contract exposes only `limit`, so a full page is treated
+  // as a conservative truncation signal for support/export completeness metadata.
+  const result = await getRunLedger(runId, { limit: safePageLimit });
+  if (result.error) {
+    return { error: result.error };
+  }
+
+  const items = result.data?.items || [];
+  const sourceMayBeTruncated = items.length >= safePageLimit;
+
+  return {
+    data: {
+      items,
+      ledger_entries_available: items.length,
+      ledger_entries_available_exact: !sourceMayBeTruncated,
+      ledger_truncated: sourceMayBeTruncated,
+      ledger_source_truncated: sourceMayBeTruncated,
+      pages_fetched: Math.min(1, safeMaxPages),
+      page_limit: safePageLimit
+    }
+  };
 };
 
 export const rerunNode = async (

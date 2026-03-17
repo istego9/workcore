@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   API_BASE,
   cancelRun,
+  collectRunLedger,
   deleteProject,
   getRun,
   getRunLedger,
@@ -243,6 +244,47 @@ describe('api listRuns', () => {
         })
       })
     );
+  });
+
+  it('collects bounded ledger metadata for run inspector support exports', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: Array.from({ length: 3 }, (_, index) => ({
+          ledger_id: `led_${index + 1}`,
+          run_id: 'run_1',
+          workflow_id: 'wf_1',
+          version_id: 'ver_1',
+          status: 'RUNNING',
+          event_type: 'node_started',
+          payload: {},
+          artifacts: [],
+          timestamp: '2026-03-01T10:00:00Z'
+        })),
+        next_cursor: null
+      })
+    } as Response);
+
+    const result = await collectRunLedger('run_1', { pageLimit: 3, maxPages: 20 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/runs/run_1/ledger?limit=3`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json'
+        })
+      })
+    );
+    expect(result.data).toEqual({
+      items: expect.any(Array),
+      ledger_entries_available: 3,
+      ledger_entries_available_exact: false,
+      ledger_truncated: true,
+      ledger_source_truncated: true,
+      pages_fetched: 1,
+      page_limit: 3
+    });
   });
 
   it('calls POST /runs/{run_id}/rerun-node from run inspector actions', async () => {
