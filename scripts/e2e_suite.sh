@@ -98,7 +98,7 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" exec -T \
   -e CHATKIT_WORKFLOW_VERSION_ID="${workflow_version_id}" \
   orchestrator python scripts/chatkit_e2e.py
 
-echo "[e2e] builder playwright"
+echo "[e2e] builder playwright ui-contract suite"
 (
   cd "${ROOT}/apps/builder"
   E2E_BASE_URL="${E2E_BASE_URL}" \

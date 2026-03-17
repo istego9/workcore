@@ -8,10 +8,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:unit": "vitest --run",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --grep-invert @operator-live",
     "test:e2e:acceptance": "playwright test e2e/acceptance-screens.spec.ts --workers=1",
+    "test:e2e:operator-live": "playwright test --grep @operator-live --workers=1",
     "test:e2e:smoke": "playwright test e2e/chatkit-ui.spec.ts",
-    "test:e2e:workcore": "E2E_BASE_URL=http://workcore.build E2E_API_BASE_URL=http://api.workcore.build E2E_CHAT_API_URL=http://api.workcore.build/chat playwright test"
+    "test:e2e:workcore": "E2E_BASE_URL=http://workcore.build E2E_API_BASE_URL=http://api.workcore.build E2E_CHAT_API_URL=http://api.workcore.build/chat npm run test:e2e"
   },
   "dependencies": {
     "@mantine/core": "^7.12.0",

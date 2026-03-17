@@ -70,14 +70,26 @@ export const apiAuthHeaders = (projectId?: string): Record<string, string> => {
 
 export const installApiAuthRoute = async (page: Page, projectId?: string): Promise<void> => {
   const base = apiBaseUrl.replace(/\/+$/, '');
-  await page.route(`${base}/**`, async (route) => {
-    const request = route.request();
-    const headers = {
-      ...request.headers(),
-      ...apiAuthHeaders(projectId)
-    };
-    await route.continue({ headers });
-  });
+  const parsedBase = new URL(base);
+  const candidates = new Map<string, string>();
+  candidates.set(base, base);
+  if (parsedBase.port) {
+    candidates.set(`${parsedBase.protocol}//${parsedBase.hostname}`, base);
+  }
+
+  for (const [candidateBase, targetBase] of candidates.entries()) {
+    await page.route(`${candidateBase}/**`, async (route) => {
+      const request = route.request();
+      const headers = {
+        ...request.headers(),
+        ...apiAuthHeaders(projectId)
+      };
+      const nextUrl = request.url().startsWith(candidateBase)
+        ? request.url().replace(candidateBase, targetBase)
+        : request.url();
+      await route.continue({ headers, url: nextUrl });
+    });
+  }
 };
 
 export const resolveUrl = (value: string): URL => {
