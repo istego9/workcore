@@ -63,6 +63,45 @@ WorkCore touchpoints found in this repository (consumer-side):
 ## Outstanding TODOs/questions
 - None blocking for consumer-side conformance implementation in this repository.
 
+## Follow-up audit (2026-03-17)
+
+### Goal and scope
+- Close the remaining Builder consumer gap on the default `chatkit.html` surface so it matches the typed error / retry behavior already implemented in the `chat-fork` client.
+
+### Exact spec files to change
+- No public API / JSON schema / DB / ADR changes are required.
+- Task note updated in-place: `docs/integration/service_integration_adoption_conformance_2026-03-13.md`
+
+### Compatibility strategy
+- Additive and backward-compatible:
+  - keep canonical `POST /chat` enforcement and legacy alias rewrite behavior
+  - keep the existing `openai-chatkit` UI surface and connection flow
+  - harden only the transport wrapper used by `chatkit.html`
+
+### Implementation files
+- `apps/builder/public/chatkit.html`
+- `apps/builder/public/chatkit-client.js`
+- `apps/builder/src/chatkit-page-client.test.ts`
+
+### Tests
+- Unit:
+  - typed error parsing and formatting for the default `chatkit.html` transport
+  - retry only when `retryable=true`
+  - legacy `/chatkit` rewrite + correlation headers
+- E2E smoke:
+  - `cd apps/builder && npm run test:e2e -- e2e/chatkit-ui.spec.ts`
+
+### Observability / security impacts
+- Safe console logging for endpoint, correlation ID, trace ID, error code/category, retry policy.
+- No tokens or raw sensitive payloads logged.
+
+### Rollout / rollback notes
+- Rollout: deploy Builder static assets and verify chat page status messages on typed failures.
+- Rollback: revert the `chatkit.html` transport wrapper changes only; no WorkCore API rollback required.
+
+### Open questions / TODOs
+- None blocking.
+
 ## Implementation summary (after)
 Implemented in this repository:
 1. Chat bootstrap from WorkCore onboarding surfaces:
