@@ -9,6 +9,7 @@ import {
   e2eTenantId,
   installApiAuthRoute
 } from './env';
+import { deleteProjectIfExists, deleteWorkflowIfExists } from './cleanup';
 
 test('workflow export and import create a new workflow', async ({ page, request }) => {
   let workflowId: string | null = null;
@@ -84,18 +85,9 @@ test('workflow export and import create a new workflow', async ({ page, request 
     expect(importedWorkflowId).toBeTruthy();
     expect(importedWorkflowId).not.toBe(workflowId);
   } finally {
-    if (workflowId) {
-      const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${workflowId}`, {
-        headers: apiAuthHeaders(projectId)
-      });
-      expect(deleteResponse.ok()).toBeTruthy();
-    }
-    if (importedWorkflowId) {
-      const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${importedWorkflowId}`, {
-        headers: apiAuthHeaders(projectId)
-      });
-      expect(deleteResponse.ok()).toBeTruthy();
-    }
+    await deleteWorkflowIfExists(request, projectId, workflowId);
+    await deleteWorkflowIfExists(request, projectId, importedWorkflowId);
+    await deleteProjectIfExists(request, projectId);
     if (exportPath) {
       await fs.unlink(exportPath).catch(() => undefined);
     }

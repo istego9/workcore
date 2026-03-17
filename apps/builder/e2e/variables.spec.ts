@@ -6,6 +6,7 @@ import {
   e2eTenantId,
   installApiAuthRoute
 } from './env';
+import { deleteProjectIfExists, deleteWorkflowIfExists } from './cleanup';
 
 test('variable picker supports nested schema and node outputs', async ({ page, request }) => {
   let workflowId: string | null = null;
@@ -110,11 +111,7 @@ test('variable picker supports nested schema and node outputs', async ({ page, r
     const value2 = await page.getByTestId('agent-instructions-input').inputValue();
     expect(value2).toContain("{{node_outputs['agent']['summary']}}");
   } finally {
-    if (workflowId) {
-      const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${workflowId}`, {
-        headers: apiAuthHeaders(projectId)
-      });
-      expect(deleteResponse.ok()).toBeTruthy();
-    }
+    await deleteWorkflowIfExists(request, projectId, workflowId);
+    await deleteProjectIfExists(request, projectId);
   }
 });

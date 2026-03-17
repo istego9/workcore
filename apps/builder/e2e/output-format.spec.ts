@@ -6,6 +6,7 @@ import {
   e2eTenantId,
   installApiAuthRoute
 } from './env';
+import { deleteProjectIfExists, deleteWorkflowIfExists } from './cleanup';
 
 test('agent output format shows json and widget controls', async ({ page, request }) => {
   let workflowId: string | null = null;
@@ -99,11 +100,7 @@ test('agent output format shows json and widget controls', async ({ page, reques
     await expect(page.locator('text=Output schema')).toHaveCount(0);
     await expect(page.getByTestId('agent-widget-template')).toHaveCount(0);
   } finally {
-    if (workflowId) {
-      const deleteResponse = await request.delete(`${apiBaseUrl}/workflows/${workflowId}`, {
-        headers: apiAuthHeaders(projectId)
-      });
-      expect(deleteResponse.ok()).toBeTruthy();
-    }
+    await deleteWorkflowIfExists(request, projectId, workflowId);
+    await deleteProjectIfExists(request, projectId);
   }
 });
