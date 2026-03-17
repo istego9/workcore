@@ -162,7 +162,7 @@ services:
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-//api.workcore.build}
       VITE_CHATKIT_PAGE: ${VITE_CHATKIT_PAGE:-//workcore.build/chatkit.html}
-      VITE_CHATKIT_API_URL: ${VITE_CHATKIT_API_URL:-//chatkit.workcore.build/chatkit}
+      VITE_CHATKIT_API_URL: ${VITE_CHATKIT_API_URL:-//api.workcore.build/chat}
       VITE_API_AUTH_TOKEN: ${VITE_API_AUTH_TOKEN:-}
       VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-workcore.build,builder.localhost,localhost,127.0.0.1}
       VITE_CHATKIT_DOMAIN_KEY: ${VITE_CHATKIT_DOMAIN_KEY:-}
@@ -205,7 +205,6 @@ services:
       PUBLIC_BUILDER_HOST: ${PUBLIC_BUILDER_HOST:-workcore.build}
       PUBLIC_API_HOST: ${PUBLIC_API_HOST:-api.workcore.build}
       PUBLIC_API_HOST_ALT: ${PUBLIC_API_HOST_ALT:-api.workcore.build}
-      PUBLIC_CHATKIT_HOST: ${PUBLIC_CHATKIT_HOST:-chatkit.workcore.build}
       BUILDER_UPSTREAM_HOST: ${BUILDER_UPSTREAM_HOST:-builder}
       BUILDER_UPSTREAM_PORT: ${BUILDER_UPSTREAM_PORT:-5173}
       API_UPSTREAM_HOST: ${API_UPSTREAM_HOST:-orchestrator}

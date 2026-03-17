@@ -80,9 +80,10 @@ def _completed(events: List[Dict[str, Any]]) -> bool:
 def main() -> int:
     base_url = os.getenv("CHATKIT_BASE_URL", "http://localhost:8001")
     token = os.getenv("CHATKIT_AUTH_TOKEN", "")
+    tenant_id = (os.getenv("CHATKIT_TENANT_ID", "local") or "local").strip()
     workflow_id = os.getenv("CHATKIT_WORKFLOW_ID")
     workflow_version_id = os.getenv("CHATKIT_WORKFLOW_VERSION_ID")
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "X-Tenant-Id": tenant_id}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -106,7 +107,7 @@ def main() -> int:
     )
 
     with httpx.Client(timeout=30) as client:
-        with client.stream("POST", f"{base_url}/chatkit", content=req.model_dump_json(), headers=headers) as resp:
+        with client.stream("POST", f"{base_url}/chat", content=req.model_dump_json(), headers=headers) as resp:
             resp.raise_for_status()
             events = _stream_events(resp)
 
@@ -134,7 +135,7 @@ def main() -> int:
 
         with client.stream(
             "POST",
-            f"{base_url}/chatkit",
+            f"{base_url}/chat",
             content=action_req.model_dump_json(),
             headers=headers,
         ) as resp:
