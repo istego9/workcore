@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.7
+  version: 0.24.8
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -1029,6 +1029,17 @@ paths:
       - $ref: '#/components/parameters/TenantId'
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [projects]
+      summary: List project workflow definitions for routing
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDefinitionList'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
     post:
       tags: [projects]
       summary: Upsert project workflow definition for routing
@@ -1056,6 +1067,27 @@ paths:
         '400': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }
         '409': { $ref: '#/components/responses/ErrorResponse' }
+  /projects/{project_id}/workflow-definitions/{workflow_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectIdPath'
+      - in: path
+        name: workflow_id
+        required: true
+        schema: { type: string }
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/TraceId'
+    get:
+      tags: [projects]
+      summary: Read a project workflow definition for routing
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDefinition'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
   /capabilities:
     parameters:
       - $ref: '#/components/parameters/TenantId'
@@ -2911,6 +2943,17 @@ components:
         - is_fallback
         - created_at
         - updated_at
+
+    WorkflowDefinitionList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WorkflowDefinition' }
+        next_cursor:
+          type: string
+          nullable: true
+      required: [items]
 
     WorkflowCreateRequest:
       type: object

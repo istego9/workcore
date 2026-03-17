@@ -4,6 +4,31 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-03-17
+
+### API diff vs previous version
+- Previous API version: `0.24.7`
+- Current API version: `0.24.8`
+- Compatibility: additive (project routing bind state now has public readback endpoints; existing upsert contract is preserved)
+
+### Added
+- New project workflow-definition read endpoints:
+  - `GET /projects/{project_id}/workflow-definitions`
+  - `GET /projects/{project_id}/workflow-definitions/{workflow_id}`
+- New operator runbook:
+  - `docs/runbooks/workflow-release-pipeline.md`
+
+### Changed
+- Builder/operator release flow can now confirm routing bind completion through authoritative server readback instead of observational heuristics.
+- Public API reference now documents project workflow-definition list/read endpoints as part of project routing bootstrap and release verification.
+- Architecture overview status refreshed to match the current product surface.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
 ## 2026-03-11
 
 ### API diff vs previous version

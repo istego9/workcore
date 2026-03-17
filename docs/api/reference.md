@@ -295,9 +295,18 @@ Public project-registry bootstrap no longer requires DB-side seeding.
     - `is_fallback` (optional bool, default `false`)
   - Response: `201` with persisted workflow definition.
 
+- List workflow definitions in project routing index:
+  - `GET /projects/{project_id}/workflow-definitions`
+  - Response: `200` with `items[]` (`WorkflowDefinition`) and `next_cursor` (`null` for current implementation).
+
+- Read one workflow definition from project routing index:
+  - `GET /projects/{project_id}/workflow-definitions/{workflow_id}`
+  - Response: `200` with persisted workflow definition.
+
 Common validation/error behavior:
 - `ERR_PROJECT_NOT_FOUND` when project is not registered in orchestrator project registry.
 - `ERR_WORKFLOW_NOT_IN_PROJECT` when referenced workflow is missing in workflow store for that project scope.
+- `ERR_WORKFLOW_DEFINITION_NOT_FOUND` when requested project workflow definition does not exist.
 
 ## Project orchestrator entrypoint (MVP)
 - Unified chat entrypoint: `POST /orchestrator/messages`
@@ -369,7 +378,10 @@ Offline routing replay/eval:
 - Project list endpoint: `GET /projects`
 - Project bootstrap endpoint: `POST /projects`
 - Project orchestrator config endpoint: `POST /projects/{project_id}/orchestrators`
-- Project workflow definition endpoint: `POST /projects/{project_id}/workflow-definitions`
+- Project workflow definition endpoints:
+  - `GET /projects/{project_id}/workflow-definitions`
+  - `GET /projects/{project_id}/workflow-definitions/{workflow_id}`
+  - `POST /projects/{project_id}/workflow-definitions`
 - Orchestrator message endpoint: `POST /orchestrator/messages`
 - Orchestrator replay/eval endpoint: `POST /orchestrator/eval/replay`
 - Orchestrator stack diagnostics: `GET /orchestrator/sessions/{session_id}/stack?project_id=...`
@@ -428,16 +440,17 @@ curl -sS "https://api.hq21.tech/agent-integration-logs?correlation_id=corr_123&l
 4. `PUT /workflows/{workflow_id}/draft` update draft
 5. `POST /workflows/{workflow_id}/publish` publish immutable version
 6. `POST /projects/{project_id}/workflow-definitions` register workflow in project routing index
-7. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
-8. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
-9. `POST /orchestrator/eval/replay` run offline routing replay/eval over labeled cases
-10. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
-11. `GET /runs/{run_id}` read state
-12. `GET /runs/{run_id}/stream` consume SSE events
-13. `GET /runs/{run_id}/ledger` read immutable execution ledger
-14. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
-15. `POST /runs/{run_id}/cancel` cancel run
-16. `POST /runs/{run_id}/rerun-node` rerun node
+7. `GET /projects/{project_id}/workflow-definitions/{workflow_id}` read back routing registration before smoke/cutover
+8. `POST /projects/{project_id}/orchestrators` bind/set default orchestrator for project
+9. `POST /orchestrator/messages` route project message (direct mode with `workflow_id` or orchestrated mode)
+10. `POST /orchestrator/eval/replay` run offline routing replay/eval over labeled cases
+11. `POST /workflows/{workflow_id}/runs` start run directly (non-chat/direct lifecycle)
+12. `GET /runs/{run_id}` read state
+13. `GET /runs/{run_id}/stream` consume SSE events
+14. `GET /runs/{run_id}/ledger` read immutable execution ledger
+15. `POST /runs/{run_id}/interrupts/{interrupt_id}/resume` continue after human input
+16. `POST /runs/{run_id}/cancel` cancel run
+17. `POST /runs/{run_id}/rerun-node` rerun node
 
 ## Atomic handoff API
 - Create handoff package and start run atomically:

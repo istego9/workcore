@@ -1,7 +1,7 @@
 # Architecture Overview
 
-Date: 2026-01-29
-Status: Draft (Phase 0)
+Date: 2026-03-17
+Status: Active
 
 ## Goals (MVP)
 - Create workflows via a visual builder.
