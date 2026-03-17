@@ -1,5 +1,14 @@
 # Chat Cutover Rollout Checklist (2026-03-04)
 
+Historical note:
+- This is a point-in-time rollout checklist from March 4, 2026.
+- Runtime observations in this document are not the current contract baseline.
+- For the current public contract and integration guidance, use:
+  - `docs/api/openapi.yaml`
+  - `docs/api/reference.md`
+  - `docs/integration/workcore-api-integration-guide.md`
+  - `docs/integration/chat-cutover-notice-2026-03-04.md`
+
 Scope:
 - Canonical chat path is `POST /chat`.
 - Deprecated path is `POST /chatkit`.

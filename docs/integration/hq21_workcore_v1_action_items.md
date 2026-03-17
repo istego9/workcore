@@ -1,5 +1,14 @@
 # HQ21 <-> WorkCore v1 Action Items
 
+Historical note:
+- This is an early rollout tracker and is retained for traceability only.
+- Do not use it as the current integration contract or auth guide.
+- Current source of truth:
+  - `docs/api/openapi.yaml`
+  - `docs/api/reference.md`
+  - `docs/integration/hq21_integration_playbook.md`
+  - `docs/integration/workcore-api-integration-guide.md`
+
 Status legend:
 - `DONE`: implemented and validated
 - `IN_PROGRESS`: partially implemented
@@ -27,7 +36,7 @@ Status legend:
 - Tenant-scoped idempotency for mutating APIs.
 - Correlation/trace propagation through run metadata and events.
 - SSE sequence and reconnect support (`Last-Event-ID`).
-- Optional bearer auth gate (`WORKCORE_API_AUTH_TOKEN`).
+- Historical local runtime note: optional bearer auth gate (`WORKCORE_API_AUTH_TOKEN`) existed for internal/local profiles; external integrations now use OAuth2 client_credentials.
 - OpenAPI and API conventions updated.
 - Orchestrator + ChatKit E2E smoke scenarios passing.
 - HQ21 integration playbook added: `docs/integration/hq21_integration_playbook.md`.

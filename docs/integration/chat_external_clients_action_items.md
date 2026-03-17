@@ -1,12 +1,20 @@
 # External Client Chat Integration - Spec-First Action Items
 
+Historical note:
+- This planning artifact predates the public `/chat` cutover and is retained for traceability only.
+- Do not use it as the current integration contract.
+- Current source of truth:
+  - `docs/api/openapi.yaml`
+  - `docs/api/reference.md`
+  - `docs/integration/workcore-api-integration-guide.md`
+
 Date: 2026-02-07
-Status: IN_PROGRESS
+Status: SUPERSEDED
 Task classification: B (API contract change), C (event/stream semantics change), E (external integration behavior change)
 
 ## 1) Goal and scope
 - Ensure third-party client integrations include chat as a first-class contract surface, not a side channel.
-- Define the supported `/chatkit` request/response contract for thread start, user message continuation, and interrupt actions.
+- Historical planning note: this document was opened before the canonical `POST /chat` contract replaced the earlier `/chatkit`-centric framing.
 - Define how chat interactions map to run/interrupt lifecycle and delivery fallbacks.
 
 Out of scope:
@@ -53,7 +61,7 @@ No changes planned in this step:
 ## 7) Rollout/rollback notes
 - Rollout:
   - Ship docs/spec updates first.
-  - Update external client adapters to follow explicit `/chatkit` contract.
+  - Update external client adapters to follow canonical `POST /chat` and treat `/chatkit` only as deprecated compatibility alias during the transition window.
   - Validate against staging with chat + interrupt flow smoke checks.
 - Rollback:
   - Revert documentation version if integration guidance causes ambiguity.

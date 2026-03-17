@@ -1,7 +1,7 @@
 # WorkCore API Integration Guide
 
-Version: 1.6  
-Date: March 11, 2026  
+Version: 1.7  
+Date: March 17, 2026  
 Default public API URL: `https://api.hq21.tech`  
 Partner-specific host policy may pin canonical host (for `partner_id=epam_future-insurance`: `https://api.runwcr.com`).
 
@@ -28,6 +28,14 @@ Gateway host policy:
 - `host_policy.mode=request_host` means use the public host returned by onboarding/doctor surfaces.
 - `host_policy.mode=pinned` means integrations must use `host_policy.canonical_base_url` and `host_policy.allowed_domains`.
 - For `partner_id=epam_future-insurance`, policy is pinned to `https://api.runwcr.com`.
+
+Current conformance baseline for consuming services:
+- canonical chat path is `POST /chat`
+- typed platform errors are parsed and respected
+- capabilities are negotiated via `GET /integration-capabilities`
+- integration readiness is gated by `GET /agent-integration-test.json`
+- canonical host selection is taken from `integration_manifest.host_policy`
+- direct orchestrator routing is verified through `POST/GET /projects/{project_id}/workflow-definitions*`
 
 ## 2. Authentication model
 WorkCore API is protected with OAuth2 access tokens issued by Microsoft Entra ID (`client_credentials` flow).
@@ -175,7 +183,45 @@ curl -sS -X POST "$BASE_URL/workflows/<workflow_id>/publish" \
   -H "X-Project-Id: $PROJECT_ID"
 ```
 
-### 5.4 Start run
+### 5.4 Register workflow in project routing index (required for direct orchestrator mode)
+```bash
+curl -sS -X POST "$BASE_URL/projects/$PROJECT_ID/workflow-definitions" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "<workflow_id>",
+    "name": "Order triage",
+    "description": "Classify customer intent and route",
+    "tags": ["customer-support", "triage"]
+  }'
+```
+
+### 5.5 Read back routing registration (required before direct-routing smoke/cutover)
+```bash
+curl -sS "$BASE_URL/projects/$PROJECT_ID/workflow-definitions/<workflow_id>" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID"
+```
+
+Routing note:
+- If your service uses project-scoped chat only (`POST /chat`) and does not rely on direct orchestrator routing, treat sections 5.4 and 5.5 as not applicable.
+- If your service calls `POST /orchestrator/messages` in direct-routing mode, the readback step is mandatory before smoke/cutover.
+
+### 5.6 Configure project default chat workflow
+```bash
+curl -sS -X PATCH "$BASE_URL/projects/$PROJECT_ID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "settings": {
+      "default_chat_workflow_id": "<workflow_id>"
+    }
+  }'
+```
+
+### 5.7 Start run directly (non-chat path)
 ```bash
 curl -sS -X POST "$BASE_URL/workflows/<workflow_id>/runs" \
   -H "Authorization: Bearer $TOKEN" \
@@ -190,20 +236,7 @@ curl -sS -X POST "$BASE_URL/workflows/<workflow_id>/runs" \
   }'
 ```
 
-### 5.5 Configure project default chat workflow
-```bash
-curl -sS -X PATCH "$BASE_URL/projects/$PROJECT_ID" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "settings": {
-      "default_chat_workflow_id": "<workflow_id>"
-    }
-  }'
-```
-
-### 5.6 Poll run state
+### 5.8 Poll run state
 ```bash
 curl -sS "$BASE_URL/runs/<run_id>" \
   -H "Authorization: Bearer $TOKEN" \
@@ -217,7 +250,7 @@ Diagnostic fields in failed runs:
 - `node_runs[]` (canonical node details)
 - `node_states[]` (backward-compatible alias of `node_runs[]`)
 
-### 5.6 Diagnose failed runs (mandatory for incidents)
+### 5.9 Diagnose failed runs (mandatory for incidents)
 1. Inspect run node diagnostics:
 ```bash
 curl -sS "$BASE_URL/runs/<run_id>" \
@@ -432,12 +465,17 @@ Common integration errors:
 
 ## 10. Production checklist for external teams
 1. OAuth client secret rotation process is defined and tested (12-month lifetime + overlap window).
-2. `X-Tenant-Id`, `X-Correlation-Id`, `X-Trace-Id` are generated and propagated end-to-end.
-3. `X-Project-Id` is always set for `/workflows*` APIs.
-4. All mutating calls send stable `Idempotency-Key`.
-5. SSE consumers support reconnect with `Last-Event-ID`.
-6. Webhook consumers verify signatures and handle retries idempotently.
-7. Monitoring dashboards alert on 401/429/5xx spikes.
+2. Client reads `GET /integration-capabilities` and does not hardcode capability assumptions from prose docs only.
+3. Latest `GET /agent-integration-test.json` verdict is `PASS` or an explicitly accepted `WARN` with owner/remediation.
+4. `integration_manifest.host_policy` is enforced for canonical base URL and allowed domains.
+5. `X-Tenant-Id`, `X-Correlation-Id`, `X-Trace-Id` are generated and propagated end-to-end.
+6. `X-Project-Id` is always set for `/workflows*` APIs.
+7. Typed platform errors are parsed; retries happen only when `error.retryable=true` and respect `error.retry_after_s` / `Retry-After`.
+8. All mutating calls send stable `Idempotency-Key`.
+9. SSE consumers support reconnect with `Last-Event-ID`.
+10. Webhook consumers verify signatures and handle retries idempotently.
+11. Direct orchestrator routing integrations confirm `GET /projects/{project_id}/workflow-definitions/{workflow_id}` after bind and before smoke/cutover.
+12. Monitoring dashboards alert on 401/429/5xx spikes and unexpected `/chatkit` traffic.
 
 ## 11. Operational contacts
 - API contract and behavior changes must be validated against `openapi.yaml`.

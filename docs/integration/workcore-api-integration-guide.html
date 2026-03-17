@@ -18,12 +18,13 @@
       color: var(--text);
       line-height: 1.45;
       font-size: 11pt;
-      padding: 32px 36px;
+      padding: 28px 34px;
     }
-    h1, h2, h3 { color: var(--accent); margin: 16px 0 8px; }
+    h1, h2, h3, h4 { color: var(--accent); margin: 16px 0 8px; }
     h1 { font-size: 20pt; border-bottom: 2px solid var(--line); padding-bottom: 8px; }
     h2 { font-size: 15pt; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
     h3 { font-size: 12.5pt; }
+    h4 { font-size: 11.5pt; }
     p { margin: 7px 0; }
     ul, ol { margin: 7px 0 7px 20px; padding: 0; }
     li { margin: 3px 0; }
@@ -51,11 +52,37 @@
       background: transparent;
       font-size: 9pt;
     }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 10px 0;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eff6ff;
+    }
+    blockquote {
+      margin: 10px 0;
+      padding: 4px 12px;
+      border-left: 4px solid #93c5fd;
+      color: var(--muted);
+      background: #f8fbff;
+    }
+    hr {
+      border: 0;
+      border-top: 1px solid var(--line);
+      margin: 14px 0;
+    }
   </style>
 </head>
 <body>
 <h1>WorkCore API Integration Guide</h1>
-<p>Version: 1.4 Date: March 9, 2026 Primary API URL: <code>https://api.hq21.tech</code> Secondary API URL: <code>https://api.runwcr.com</code></p>
+<p>Version: 1.7<br>Date: March 17, 2026<br>Default public API URL: <code>https://api.hq21.tech</code><br>Partner-specific host policy may pin canonical host (for <code>partner_id=epam_future-insurance</code>: <code>https://api.runwcr.com</code>).</p>
 <h2>1. Purpose</h2>
 <p>This document is a practical integration guide for backend and platform teams that need to integrate with the WorkCore runtime API.</p>
 <p>Source-of-truth contract:</p>
@@ -64,13 +91,58 @@
 <li>API reference: <code>https://api.hq21.tech/api-reference</code></li>
 <li>Agent integration entrypoint: <code>https://api.hq21.tech/agent-integration-kit</code></li>
 </ul>
-<h2>2. Authentication model</h2>
-<p>WorkCore API is protected with bearer token authentication.</p>
-<p>Send on protected endpoints:</p>
+<p>Canonical onboarding surfaces:</p>
 <ul>
-<li><code>Authorization: Bearer &lt;WORKCORE_API_AUTH_TOKEN&gt;</code></li>
+<li><code>GET /integration-capabilities</code> (public machine-readable capability negotiation contract)</li>
+<li><code>GET /agent-integration-kit</code> (human-readable guide)</li>
+<li><code>GET /agent-integration-kit.json</code> (machine-readable bundle with canonical <code>integration_manifest</code>)</li>
+<li><code>GET /agent-integration-test</code> (doctor UI)</li>
+<li><code>GET /agent-integration-test.json</code> (doctor JSON report)</li>
+<li><code>POST /agent-integration-test/validate-draft</code> (draft lint/validation)</li>
+<li><code>GET /internal/partner-access</code> (internal operator onboarding portal)</li>
+<li><code>POST /internal/partner-access/onboard-package</code> (download canonical onboarding ZIP bundle)</li>
 </ul>
-<p>No bearer token is required for:</p>
+<p>Gateway host policy:</p>
+<ul>
+<li>Canonical host is declared by <code>integration_manifest.host_policy</code>.</li>
+<li><code>host_policy.mode=request_host</code> means use the public host returned by onboarding/doctor surfaces.</li>
+<li><code>host_policy.mode=pinned</code> means integrations must use <code>host_policy.canonical_base_url</code> and <code>host_policy.allowed_domains</code>.</li>
+<li>For <code>partner_id=epam_future-insurance</code>, policy is pinned to <code>https://api.runwcr.com</code>.</li>
+</ul>
+<p>Current conformance baseline for consuming services:</p>
+<ul>
+<li>canonical chat path is <code>POST /chat</code></li>
+<li>typed platform errors are parsed and respected</li>
+<li>capabilities are negotiated via <code>GET /integration-capabilities</code></li>
+<li>integration readiness is gated by <code>GET /agent-integration-test.json</code></li>
+<li>canonical host selection is taken from <code>integration_manifest.host_policy</code></li>
+<li>direct orchestrator routing is verified through <code>POST/GET /projects/{project_id}/workflow-definitions*</code></li>
+</ul>
+<h2>2. Authentication model</h2>
+<p>WorkCore API is protected with OAuth2 access tokens issued by Microsoft Entra ID (<code>client_credentials</code> flow).</p>
+<p>Token exchange:</p>
+<ul>
+<li>Token endpoint:<ul>
+<li><code>https://login.microsoftonline.com/&lt;tenant_id&gt;/oauth2/v2.0/token</code></li>
+</ul>
+</li>
+<li>Form fields:<ul>
+<li><code>grant_type=client_credentials</code></li>
+<li><code>client_id=&lt;partner_client_id&gt;</code></li>
+<li><code>client_secret=&lt;partner_client_secret&gt;</code></li>
+<li><code>scope=api://workcore-partner-api/.default</code></li>
+</ul>
+</li>
+<li>Use returned token as:<ul>
+<li><code>Authorization: Bearer &lt;access_token&gt;</code></li>
+</ul>
+</li>
+<li>JWT note:<ul>
+<li>when decoding the token, <code>aud</code> may appear as the WorkCore resource app ID instead of the scope alias; this is expected if the token was issued for the scope above</li>
+</ul>
+</li>
+</ul>
+<p>No OAuth token is required for:</p>
 <ul>
 <li><code>GET /health</code></li>
 <li><code>GET /openapi.yaml</code></li>
@@ -88,12 +160,6 @@
 <ul>
 <li><code>GET /agent-integration-logs</code></li>
 </ul>
-<p>If you are an internal platform operator and have Azure access, you can read the current API token from Key Vault:</p>
-<pre><code class="language-bash">az keyvault secret show \
-  --vault-name kv-workcore-prod-uaen \
-  --name workcore-api-auth-token \
-  --query value -o tsv
-</code></pre>
 <h2>3. Required headers</h2>
 <h3>Common headers</h3>
 <ul>
@@ -111,96 +177,183 @@
 <li><code>Idempotency-Key: &lt;key&gt;</code> is strongly recommended for mutating requests (<code>POST/PATCH/DELETE</code>).</li>
 </ul>
 <h2>4. Quick start</h2>
-<pre><code class="language-bash">export BASE_URL="https://api.hq21.tech"
-export TOKEN="&lt;WORKCORE_API_AUTH_TOKEN&gt;"
-export TENANT_ID="local"
-export PROJECT_ID="proj_hq21"
+<pre><code class="language-bash">export BASE_URL=&quot;https://api.hq21.tech&quot;
+# partner-specific pinned policy example:
+# export BASE_URL=&quot;https://api.runwcr.com&quot;  # required for partner_id=epam_future-insurance
+export ENTRA_TENANT_ID=&quot;&lt;entra_tenant_id&gt;&quot;
+export CLIENT_ID=&quot;&lt;partner_client_id&gt;&quot;
+export CLIENT_SECRET=&quot;&lt;partner_client_secret&gt;&quot;
+export SCOPE=&quot;api://workcore-partner-api/.default&quot;
+export TENANT_ID=&quot;local&quot;
+export PROJECT_ID=&quot;proj_hq21&quot;
+
+TOKEN=&quot;$(curl -sS -X POST &quot;https://login.microsoftonline.com/${ENTRA_TENANT_ID}/oauth2/v2.0/token&quot; \
+  -H &quot;Content-Type: application/x-www-form-urlencoded&quot; \
+  -d &quot;grant_type=client_credentials&amp;client_id=${CLIENT_ID}&amp;client_secret=${CLIENT_SECRET}&amp;scope=${SCOPE}&quot; \
+  | jq -r &#39;.access_token&#39;)&quot;
+</code></pre>
+<p>Fetch canonical integration manifest:</p>
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/agent-integration-kit.json&quot; | jq &#39;.integration_manifest&#39;
+</code></pre>
+<p>Fetch platform negotiation contract:</p>
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/integration-capabilities&quot; | jq
+</code></pre>
+<p>Run integration doctor:</p>
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/agent-integration-test.json&quot; | jq &#39;.summary, .checks[] | {id, status, code}&#39;
 </code></pre>
 <p>Health check:</p>
-<pre><code class="language-bash">curl -sS "$BASE_URL/health"
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/health&quot;
 # expected: ok
 </code></pre>
 <p>List projects (protected endpoint):</p>
-<pre><code class="language-bash">curl -sS "$BASE_URL/projects" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID"
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/projects&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot;
 </code></pre>
 <p>List workflows (requires project scope):</p>
-<pre><code class="language-bash">curl -sS "$BASE_URL/workflows" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "X-Project-Id: $PROJECT_ID"
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/workflows&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot;
 </code></pre>
 <h2>5. Minimal integration flow</h2>
+<p>Contract separation:</p>
+<ul>
+<li><code>/capabilities*</code> is the versioned capability contract registry.</li>
+<li><code>GET /integration-capabilities</code> is the external-client negotiation surface.</li>
+</ul>
 <h3>5.1 Create project</h3>
-<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/projects" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "project_id": "proj_hq21",
-    "project_name": "HQ21 Production"
-  }'
+<pre><code class="language-bash">curl -sS -X POST &quot;$BASE_URL/projects&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{
+    &quot;project_id&quot;: &quot;proj_hq21&quot;,
+    &quot;project_name&quot;: &quot;HQ21 Production&quot;
+  }&#39;
 </code></pre>
 <h3>5.2 Create workflow draft</h3>
-<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/workflows" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "X-Project-Id: $PROJECT_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Order triage",
-    "description": "Classify customer intent and route",
-    "draft": {
-      "nodes": [
-        {"id": "start", "type": "start"},
-        {"id": "end", "type": "end"}
+<pre><code class="language-bash">curl -sS -X POST &quot;$BASE_URL/workflows&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{
+    &quot;name&quot;: &quot;Order triage&quot;,
+    &quot;description&quot;: &quot;Classify customer intent and route&quot;,
+    &quot;draft&quot;: {
+      &quot;nodes&quot;: [
+        {&quot;id&quot;: &quot;start&quot;, &quot;type&quot;: &quot;start&quot;},
+        {&quot;id&quot;: &quot;end&quot;, &quot;type&quot;: &quot;end&quot;}
       ],
-      "edges": [
-        {"source": "start", "target": "end"}
+      &quot;edges&quot;: [
+        {&quot;source&quot;: &quot;start&quot;, &quot;target&quot;: &quot;end&quot;}
       ]
     }
-  }'
+  }&#39;
 </code></pre>
 <h3>5.3 Publish workflow</h3>
-<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/workflows/&lt;workflow_id&gt;/publish" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "X-Project-Id: $PROJECT_ID"
+<pre><code class="language-bash">curl -sS -X POST &quot;$BASE_URL/workflows/&lt;workflow_id&gt;/publish&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot;
 </code></pre>
-<h3>5.4 Start run</h3>
-<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/workflows/&lt;workflow_id&gt;/runs" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "X-Project-Id: $PROJECT_ID" \
-  -H "Idempotency-Key: run-$(date +%s)" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "inputs": {
-      "customer_text": "I need help with my order"
+<h3>5.4 Register workflow in project routing index (required for direct orchestrator mode)</h3>
+<pre><code class="language-bash">curl -sS -X POST &quot;$BASE_URL/projects/$PROJECT_ID/workflow-definitions&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{
+    &quot;workflow_id&quot;: &quot;&lt;workflow_id&gt;&quot;,
+    &quot;name&quot;: &quot;Order triage&quot;,
+    &quot;description&quot;: &quot;Classify customer intent and route&quot;,
+    &quot;tags&quot;: [&quot;customer-support&quot;, &quot;triage&quot;]
+  }&#39;
+</code></pre>
+<h3>5.5 Read back routing registration (required before direct-routing smoke/cutover)</h3>
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/projects/$PROJECT_ID/workflow-definitions/&lt;workflow_id&gt;&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot;
+</code></pre>
+<p>Routing note:</p>
+<ul>
+<li>If your service uses project-scoped chat only (<code>POST /chat</code>) and does not rely on direct orchestrator routing, treat sections 5.4 and 5.5 as not applicable.</li>
+<li>If your service calls <code>POST /orchestrator/messages</code> in direct-routing mode, the readback step is mandatory before smoke/cutover.</li>
+</ul>
+<h3>5.6 Configure project default chat workflow</h3>
+<pre><code class="language-bash">curl -sS -X PATCH &quot;$BASE_URL/projects/$PROJECT_ID&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{
+    &quot;settings&quot;: {
+      &quot;default_chat_workflow_id&quot;: &quot;&lt;workflow_id&gt;&quot;
     }
-  }'
+  }&#39;
 </code></pre>
-<h3>5.5 Poll run state</h3>
-<pre><code class="language-bash">curl -sS "$BASE_URL/runs/&lt;run_id&gt;" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "X-Project-Id: $PROJECT_ID"
+<h3>5.7 Start run directly (non-chat path)</h3>
+<pre><code class="language-bash">curl -sS -X POST &quot;$BASE_URL/workflows/&lt;workflow_id&gt;/runs&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+  -H &quot;Idempotency-Key: run-$(date +%s)&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{
+    &quot;inputs&quot;: {
+      &quot;customer_text&quot;: &quot;I need help with my order&quot;
+    }
+  }&#39;
 </code></pre>
+<h3>5.8 Poll run state</h3>
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/runs/&lt;run_id&gt;&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot;
+</code></pre>
+<p>Diagnostic fields in failed runs:</p>
+<ul>
+<li><code>error</code> / <code>last_error</code> (top-level message)</li>
+<li><code>failed_node_id</code> (top-level node source)</li>
+<li><code>node_runs[]</code> (canonical node details)</li>
+<li><code>node_states[]</code> (backward-compatible alias of <code>node_runs[]</code>)</li>
+</ul>
+<h3>5.9 Diagnose failed runs (mandatory for incidents)</h3>
+<ol>
+<li>Inspect run node diagnostics:</li>
+</ol>
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/runs/&lt;run_id&gt;&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+| jq &#39;.node_runs[] | {node_id, status, last_error}&#39;
+</code></pre>
+<ol start="2">
+<li>Inspect immutable ledger trail:</li>
+</ol>
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/runs/&lt;run_id&gt;/ledger?limit=200&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+| jq &#39;.items[] | {timestamp, event_type, status, step_id, error: .payload.error}&#39;
+</code></pre>
+<p>Ledger compatibility note:</p>
+<ul>
+<li>each entry includes both <code>step_id</code> and <code>node_id</code> (same value for node-scoped events).</li>
+</ul>
 <h2>6. SSE streaming and reconnect</h2>
 <p>Run progress stream:</p>
-<pre><code class="language-bash">curl -N "$BASE_URL/runs/&lt;run_id&gt;/stream" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "X-Project-Id: $PROJECT_ID" \
-  -H "Accept: text/event-stream"
+<pre><code class="language-bash">curl -N &quot;$BASE_URL/runs/&lt;run_id&gt;/stream&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+  -H &quot;Accept: text/event-stream&quot;
 </code></pre>
 <p>Reconnect from last event:</p>
-<pre><code class="language-bash">curl -N "$BASE_URL/runs/&lt;run_id&gt;/stream" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "X-Project-Id: $PROJECT_ID" \
-  -H "Last-Event-ID: evt_abc123"
+<pre><code class="language-bash">curl -N &quot;$BASE_URL/runs/&lt;run_id&gt;/stream&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+  -H &quot;Last-Event-ID: evt_abc123&quot;
 </code></pre>
 <p>SSE events include <code>id</code>, <code>event</code>, and JSON <code>data</code> with:</p>
 <ul>
@@ -223,20 +376,20 @@ export PROJECT_ID="proj_hq21"
 </ul>
 <p>Signature payload:</p>
 <ul>
-<li><code>"&lt;timestamp&gt;.&lt;raw_request_body&gt;"</code></li>
+<li><code>&quot;&lt;timestamp&gt;.&lt;raw_request_body&gt;&quot;</code></li>
 </ul>
 <p>Signature example:</p>
-<pre><code class="language-bash">SECRET="&lt;inbound_secret&gt;"
-TS="$(date +%s)"
-BODY='{"action":"start_run","workflow_id":"wf_123","inputs":{"customer_text":"Hello"}}'
-SIG="$(printf "%s.%s" "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.* //')"
+<pre><code class="language-bash">SECRET=&quot;&lt;inbound_secret&gt;&quot;
+TS=&quot;$(date +%s)&quot;
+BODY=&#39;{&quot;action&quot;:&quot;start_run&quot;,&quot;workflow_id&quot;:&quot;wf_123&quot;,&quot;inputs&quot;:{&quot;customer_text&quot;:&quot;Hello&quot;}}&#39;
+SIG=&quot;$(printf &quot;%s.%s&quot; &quot;$TS&quot; &quot;$BODY&quot; | openssl dgst -sha256 -hmac &quot;$SECRET&quot; -hex | sed &#39;s/^.* //&#39;)&quot;
 
-curl -sS -X POST "$BASE_URL/webhooks/inbound/default" \
-  -H "Content-Type: application/json" \
-  -H "X-Webhook-Timestamp: $TS" \
-  -H "X-Webhook-Signature: t=$TS,v1=$SIG" \
-  -H "Idempotency-Key: wh-$(date +%s)" \
-  -d "$BODY"
+curl -sS -X POST &quot;$BASE_URL/webhooks/inbound/default&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -H &quot;X-Webhook-Timestamp: $TS&quot; \
+  -H &quot;X-Webhook-Signature: t=$TS,v1=$SIG&quot; \
+  -H &quot;Idempotency-Key: wh-$(date +%s)&quot; \
+  -d &quot;$BODY&quot;
 </code></pre>
 <p>Supported actions:</p>
 <ul>
@@ -245,71 +398,170 @@ curl -sS -X POST "$BASE_URL/webhooks/inbound/default" \
 </ul>
 <h3>7.2 Outbound webhooks (from WorkCore)</h3>
 <p>Register subscription:</p>
-<pre><code class="language-bash">curl -sS -X POST "$BASE_URL/webhooks/outbound" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://your-service.example.com/workcore/events",
-    "event_types": ["run_completed", "run_failed", "interrupt_created", "node_failed"]
-  }'
+<pre><code class="language-bash">curl -sS -X POST &quot;$BASE_URL/webhooks/outbound&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{
+    &quot;url&quot;: &quot;https://your-service.example.com/workcore/events&quot;,
+    &quot;event_types&quot;: [&quot;run_completed&quot;, &quot;run_failed&quot;, &quot;interrupt_created&quot;, &quot;node_failed&quot;]
+  }&#39;
 </code></pre>
 <p>List subscriptions:</p>
-<pre><code class="language-bash">curl -sS "$BASE_URL/webhooks/outbound" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID"
+<pre><code class="language-bash">curl -sS &quot;$BASE_URL/webhooks/outbound&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot;
 </code></pre>
 <p>Delete subscription:</p>
-<pre><code class="language-bash">curl -sS -X DELETE "$BASE_URL/webhooks/outbound/&lt;subscription_id&gt;" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-Id: $TENANT_ID"
+<pre><code class="language-bash">curl -sS -X DELETE &quot;$BASE_URL/webhooks/outbound/&lt;subscription_id&gt;&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot;
 </code></pre>
 <h2>8. Chat endpoint</h2>
-<p>Public chat endpoint:</p>
+<p>Chat endpoint is on the same API host:</p>
 <ul>
 <li><code>POST /chat</code></li>
+<li><code>POST /chatkit</code> (deprecated compatibility alias during transition window)</li>
 </ul>
 <p>Requirements:</p>
 <ul>
 <li><code>X-Tenant-Id</code> is required</li>
-<li>send <code>Authorization: Bearer &lt;WORKCORE_API_AUTH_TOKEN&gt;</code> on protected public API calls</li>
+<li>send <code>Authorization: Bearer &lt;access_token&gt;</code> obtained from Entra OAuth token endpoint</li>
+<li>when using deprecated alias <code>POST /chatkit</code> before sunset, expect headers:<ul>
+<li><code>Deprecation: true</code></li>
+<li><code>Sunset: Sat, 04 Apr 2026 00:00:00 GMT</code></li>
 </ul>
-<p>For <code>threads.create</code>, resolution order is <code>metadata.workflow_id</code> -&gt; <code>metadata.project_id</code> -&gt; <code>X-Project-Id</code>.</p>
+</li>
+</ul>
+<p>For <code>threads.create</code>, resolution order is:</p>
+<ul>
+<li><code>metadata.workflow_id</code> -&gt; explicit workflow mode (backward-compatible)</li>
+<li>else <code>metadata.project_id</code> -&gt; resolve <code>projects.settings.default_chat_workflow_id</code></li>
+<li>else <code>X-Project-Id</code> -&gt; resolve <code>projects.settings.default_chat_workflow_id</code></li>
+<li>else <code>CHAT_PROJECT_SCOPE_REQUIRED</code></li>
+</ul>
+<p>Canonical onboarding manifest expectations:</p>
+<ul>
+<li><code>integration_manifest.chat_api_url</code> must always point to <code>/chat</code></li>
+<li><code>integration_manifest.integration_capabilities_url</code> must point to <code>GET /integration-capabilities</code></li>
+<li><code>integration_manifest.deprecated_chat_alias_url</code> may include <code>/chatkit</code> only as deprecated compatibility alias</li>
+<li><code>integration_manifest.host_policy</code> is first-class and defines canonical host behavior per partner:<ul>
+<li><code>mode=request_host</code> -&gt; use <code>api_base_url</code> from onboarding surfaces</li>
+<li><code>mode=pinned</code> -&gt; use only <code>canonical_base_url</code> and <code>allowed_domains</code> from policy</li>
+</ul>
+</li>
+<li>if <code>/chatkit</code> appears in partner config/docs:<ul>
+<li>before <code>2026-04-04T00:00:00Z</code> =&gt; doctor emits <code>WARN</code></li>
+<li>on/after <code>2026-04-04T00:00:00Z</code> =&gt; doctor emits <code>FAIL</code></li>
+</ul>
+</li>
+</ul>
+<p>Project-scoped chat defaults require a configured published workflow:</p>
+<ul>
+<li>missing project setting -&gt; <code>CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED</code></li>
+<li>configured workflow missing/inactive/unpublished -&gt; <code>CHAT_DEFAULT_WORKFLOW_NOT_FOUND</code></li>
+</ul>
+<p>Diagnostic checks:</p>
+<pre><code class="language-bash"># expected: 200 + SSE events
+curl -N -X POST &quot;$BASE_URL/chat&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{
+    &quot;type&quot;:&quot;threads.create&quot;,
+    &quot;metadata&quot;:{&quot;project_id&quot;:&quot;&#39;&quot;$PROJECT_ID&quot;&#39;&quot;},
+    &quot;params&quot;:{&quot;input&quot;:{&quot;content&quot;:[{&quot;type&quot;:&quot;input_text&quot;,&quot;text&quot;:&quot;start&quot;}],&quot;attachments&quot;:[],&quot;inference_options&quot;:{}}}
+  }&#39;
+
+# compatibility alias (before 2026-04-04T00:00:00Z): same behavior as /chat + deprecation headers
+curl -i -X POST &quot;$BASE_URL/chatkit&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{&quot;type&quot;:&quot;threads.create&quot;,&quot;metadata&quot;:{&quot;project_id&quot;:&quot;&#39;&quot;$PROJECT_ID&quot;&#39;&quot;},&quot;params&quot;:{&quot;input&quot;:{&quot;content&quot;:[{&quot;type&quot;:&quot;input_text&quot;,&quot;text&quot;:&quot;start&quot;}],&quot;attachments&quot;:[],&quot;inference_options&quot;:{}}}}&#39;
+
+# starting 2026-04-04T00:00:00Z: expected 410 Gone
+curl -i -X POST &quot;$BASE_URL/chatkit&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -H &quot;X-Tenant-Id: $TENANT_ID&quot; \
+  -H &quot;X-Project-Id: $PROJECT_ID&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{&quot;type&quot;:&quot;threads.create&quot;,&quot;metadata&quot;:{&quot;project_id&quot;:&quot;&#39;&quot;$PROJECT_ID&quot;&#39;&quot;},&quot;params&quot;:{&quot;input&quot;:{&quot;content&quot;:[{&quot;type&quot;:&quot;input_text&quot;,&quot;text&quot;:&quot;start&quot;}],&quot;attachments&quot;:[],&quot;inference_options&quot;:{}}}}&#39;
+</code></pre>
 <h2>9. Error model</h2>
-<p>All API errors are returned in a standard envelope:</p>
+<p>All integration HTTP failures use additive typed <code>PlatformErrorEnvelope</code>:</p>
 <pre><code class="language-json">{
-  "error": {
-    "code": "INVALID_ARGUMENT",
-    "message": "..."
+  &quot;error&quot;: {
+    &quot;code&quot;: &quot;INVALID_ARGUMENT&quot;,
+    &quot;message&quot;: &quot;...&quot;,
+    &quot;category&quot;: &quot;validation&quot;,
+    &quot;retryable&quot;: false,
+    &quot;retry_after_s&quot;: null,
+    &quot;bad_fields&quot;: null,
+    &quot;unsupported_feature&quot;: null,
+    &quot;docs_ref&quot;: null,
+    &quot;details&quot;: null,
+    &quot;correlation_id&quot;: &quot;corr_123&quot;
   },
-  "correlation_id": "corr_123"
+  &quot;correlation_id&quot;: &quot;corr_123&quot;
 }
 </code></pre>
+<p>Backward compatibility:</p>
+<ul>
+<li>existing parsers of <code>error.code</code>, <code>error.message</code>, and top-level <code>correlation_id</code> are unchanged.</li>
+<li>additional typed fields are additive and may be <code>null</code>.</li>
+</ul>
+<p>Retry behavior:</p>
+<ul>
+<li>when <code>error.retryable=true</code>, client can safely retry.</li>
+<li>when backoff is known, API sets <code>error.retry_after_s</code> and may emit HTTP <code>Retry-After</code> (notably on <code>429</code>/<code>503</code>).</li>
+</ul>
+<p>Category values:</p>
+<ul>
+<li><code>auth</code>, <code>validation</code>, <code>configuration</code>, <code>not_found</code>, <code>conflict</code>, <code>unsupported_feature</code>, <code>transient</code>, <code>internal</code>, <code>route</code>, <code>action</code>.</li>
+</ul>
 <p>Common integration errors:</p>
 <ul>
-<li><code>401 UNAUTHORIZED</code>: missing or invalid bearer token</li>
+<li><code>401 UNAUTHORIZED</code>: missing, expired, or invalid OAuth access token</li>
 <li><code>404 ERR_PROJECT_NOT_FOUND</code>: project scope does not exist in the tenant</li>
 <li><code>422 ERR_PROJECT_ID_REQUIRED</code>: missing <code>X-Project-Id</code> on workflow endpoints</li>
 <li><code>422 CHAT_PROJECT_SCOPE_REQUIRED</code>: <code>threads.create</code> omitted both <code>metadata.workflow_id</code> and project scope</li>
 <li><code>409 CHAT_DEFAULT_WORKFLOW_NOT_CONFIGURED</code>: project exists but has no <code>settings.default_chat_workflow_id</code></li>
 <li><code>404 CHAT_DEFAULT_WORKFLOW_NOT_FOUND</code>: configured default chat workflow is missing, inactive, or unpublished</li>
+<li><code>400 BadRequest</code> with Azure OpenAI text:<ul>
+<li><code>&quot;Responses API is enabled only for api-version 2025-03-01-preview and later&quot;</code></li>
+<li>Fix: set <code>AZURE_OPENAI_API_VERSION=2025-03-01-preview</code> (or newer) consistently in Key Vault and runtime environment.</li>
+</ul>
+</li>
 <li><code>400 INVALID_ARGUMENT</code>: invalid request body/parameters</li>
 </ul>
 <h2>10. Production checklist for external teams</h2>
 <ol>
-<li>Token rotation process is defined and tested.</li>
+<li>OAuth client secret rotation process is defined and tested (12-month lifetime + overlap window).</li>
+<li>Client reads <code>GET /integration-capabilities</code> and does not hardcode capability assumptions from prose docs only.</li>
+<li>Latest <code>GET /agent-integration-test.json</code> verdict is <code>PASS</code> or an explicitly accepted <code>WARN</code> with owner/remediation.</li>
+<li><code>integration_manifest.host_policy</code> is enforced for canonical base URL and allowed domains.</li>
 <li><code>X-Tenant-Id</code>, <code>X-Correlation-Id</code>, <code>X-Trace-Id</code> are generated and propagated end-to-end.</li>
 <li><code>X-Project-Id</code> is always set for <code>/workflows*</code> APIs.</li>
+<li>Typed platform errors are parsed; retries happen only when <code>error.retryable=true</code> and respect <code>error.retry_after_s</code> / <code>Retry-After</code>.</li>
 <li>All mutating calls send stable <code>Idempotency-Key</code>.</li>
 <li>SSE consumers support reconnect with <code>Last-Event-ID</code>.</li>
 <li>Webhook consumers verify signatures and handle retries idempotently.</li>
-<li>Monitoring dashboards alert on 401/429/5xx spikes.</li>
+<li>Direct orchestrator routing integrations confirm <code>GET /projects/{project_id}/workflow-definitions/{workflow_id}</code> after bind and before smoke/cutover.</li>
+<li>Monitoring dashboards alert on 401/429/5xx spikes and unexpected <code>/chatkit</code> traffic.</li>
 </ol>
 <h2>11. Operational contacts</h2>
 <ul>
 <li>API contract and behavior changes must be validated against <code>openapi.yaml</code>.</li>
+<li>Invite-only onboarding package for partners:<ul>
+<li><code>docs/integration/apim-partner-onboarding-guide.md</code></li>
+</ul>
+</li>
 <li>For environment-specific token/domain issues, contact the WorkCore platform owner.</li>
 </ul>
+
 
 </body>
 </html>
