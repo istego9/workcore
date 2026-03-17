@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunLedgerRecord, RunRecord } from '../api';
+import { API_BASE, type RunLedgerRecord, type RunRecord } from '../api';
 import {
   buildAttemptDiff,
   buildRunSupportBundle,
@@ -383,5 +383,17 @@ describe('run-debug model normalization', () => {
         available_exact: false
       })
     );
+  });
+
+  it('uses canonical absolute docs links by default', () => {
+    const bundle = buildRunSupportBundle({
+      run: baseRun({ status: 'FAILED' }),
+      ledgerEntries: [entry('run_started', '2026-03-01T10:00:01Z')],
+    });
+
+    expect(bundle.docs_links).toEqual([
+      `${API_BASE}/openapi.yaml`,
+      `${API_BASE}/workflow-authoring-guide`,
+    ]);
   });
 });

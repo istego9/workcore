@@ -19,7 +19,16 @@ type RunSupportBundleExportProps = {
 
 const toAbsoluteDocLink = (path: string): string => {
   try {
-    return new URL(path, API_BASE).toString();
+    const raw = (API_BASE || '').trim();
+    if (typeof window !== 'undefined') {
+      const current = new URL(window.location.origin);
+      const resolved = raw.startsWith('//') ? new URL(`${current.protocol}${raw}`) : new URL(raw, current.origin);
+      if (current.port && !resolved.port) {
+        resolved.port = current.port;
+      }
+      return new URL(path, resolved.toString()).toString();
+    }
+    return new URL(path, raw.startsWith('//') ? `http:${raw}` : raw).toString();
   } catch {
     return path;
   }

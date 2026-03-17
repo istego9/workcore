@@ -208,6 +208,17 @@ describe('release pipeline model', () => {
     expect(report.correlation_ids).toEqual(['corr_smoke_1']);
     expect(report.simulation_result.total_cases).toBe(3);
     expect(report.diff_summary.baseline_version_id).toBe('wfv_1');
+    expect(report.bind_targets).toEqual({
+      project_default_chat_workflow_id: 'wf_release_1',
+      routing_definition_registered: true,
+      observed_direct_runs: 2,
+    });
+    expect(report.smoke_result).toEqual({
+      status: 'success',
+      run_id: 'run_smoke_1',
+      correlation_id: 'corr_smoke_1',
+      typed_errors: [],
+    });
 
     const filename = buildReleaseReportFilename('wf_release_1', '2026-03-10T10:03:00.000Z');
     expect(filename).toBe('wf_release_1-release-report-2026-03-10T10-03-00-000Z.json');

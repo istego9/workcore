@@ -1473,6 +1473,93 @@ def create_app(
         )
         return _json(request, orchestrator_config_to_dict(config), status_code=201)
 
+    async def list_project_workflow_definitions(request: Request) -> JSONResponse:
+        project_id = str(request.path_params.get("project_id") or "").strip()
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+
+        await ctx.ensure_orchestration()
+        if ctx.orchestration_store is None:
+            return _error(request, "INTERNAL", "orchestration store is unavailable", 500)
+
+        tenant = _tenant_id(request)
+        project = await ctx.orchestration_store.get_project(project_id, tenant_id=tenant)
+        if project is None:
+            _integration_log(
+                request,
+                "project.workflow_definition.list",
+                "Project workflow definition list failed: project not found",
+                level="WARNING",
+                status_code=404,
+                context={"project_id": project_id},
+            )
+            return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)
+
+        definitions = await ctx.orchestration_store.list_workflow_definitions(
+            project_id=project.project_id,
+            tenant_id=tenant,
+            active_only=False,
+        )
+        payload = {"items": [workflow_definition_to_dict(item) for item in definitions], "next_cursor": None}
+        _integration_log(
+            request,
+            "project.workflow_definition.list",
+            "Project workflow definitions returned",
+            status_code=200,
+            context={"project_id": project_id, "items": len(definitions)},
+        )
+        return _json(request, payload)
+
+    async def get_project_workflow_definition(request: Request) -> JSONResponse:
+        project_id = str(request.path_params.get("project_id") or "").strip()
+        if not project_id:
+            return _error(request, "ERR_PROJECT_ID_REQUIRED", "project_id is required", 422)
+        workflow_id = str(request.path_params.get("workflow_id") or "").strip()
+        if not workflow_id:
+            return _error(request, "INVALID_ARGUMENT", "workflow_id is required", 400)
+
+        await ctx.ensure_orchestration()
+        if ctx.orchestration_store is None:
+            return _error(request, "INTERNAL", "orchestration store is unavailable", 500)
+
+        tenant = _tenant_id(request)
+        project = await ctx.orchestration_store.get_project(project_id, tenant_id=tenant)
+        if project is None:
+            _integration_log(
+                request,
+                "project.workflow_definition.read",
+                "Project workflow definition read failed: project not found",
+                level="WARNING",
+                status_code=404,
+                context={"project_id": project_id, "workflow_id": workflow_id},
+            )
+            return _error(request, "ERR_PROJECT_NOT_FOUND", "project not found", 404)
+
+        definition = await ctx.orchestration_store.get_workflow_definition(
+            project_id=project.project_id,
+            workflow_id=workflow_id,
+            tenant_id=tenant,
+        )
+        if definition is None:
+            _integration_log(
+                request,
+                "project.workflow_definition.read",
+                "Project workflow definition read failed: definition not found",
+                level="WARNING",
+                status_code=404,
+                context={"project_id": project_id, "workflow_id": workflow_id},
+            )
+            return _error(request, "ERR_WORKFLOW_DEFINITION_NOT_FOUND", "workflow definition not found", 404)
+
+        _integration_log(
+            request,
+            "project.workflow_definition.read",
+            "Project workflow definition returned",
+            status_code=200,
+            context={"project_id": project_id, "workflow_id": workflow_id},
+        )
+        return _json(request, workflow_definition_to_dict(definition))
+
     async def upsert_project_workflow_definition(request: Request) -> JSONResponse:
         payload = await request.json()
         if not isinstance(payload, dict):
@@ -1533,6 +1620,13 @@ def create_app(
             examples=examples,
             active=active_raw,
             is_fallback=is_fallback_raw,
+        )
+        _integration_log(
+            request,
+            "project.workflow_definition.upsert",
+            "Project workflow definition stored",
+            status_code=201,
+            context={"project_id": project_id, "workflow_id": workflow_id},
         )
         return _json(request, workflow_definition_to_dict(definition), status_code=201)
 
@@ -4508,7 +4602,13 @@ def create_app(
         Route("/projects/{project_id}", update_project, methods=["PATCH"]),
         Route("/projects/{project_id}", delete_project, methods=["DELETE"]),
         Route("/projects/{project_id}/orchestrators", upsert_project_orchestrator, methods=["POST"]),
+        Route("/projects/{project_id}/workflow-definitions", list_project_workflow_definitions, methods=["GET"]),
         Route("/projects/{project_id}/workflow-definitions", upsert_project_workflow_definition, methods=["POST"]),
+        Route(
+            "/projects/{project_id}/workflow-definitions/{workflow_id}",
+            get_project_workflow_definition,
+            methods=["GET"],
+        ),
         Route("/capabilities", create_capability, methods=["POST"]),
         Route("/capabilities", list_capabilities, methods=["GET"]),
         Route("/capabilities/{capability_id}/versions", list_capability_versions, methods=["GET"]),

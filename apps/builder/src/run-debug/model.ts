@@ -1,4 +1,4 @@
-import type { RunLedgerRecord, RunRecord } from '../api';
+import { API_BASE, type RunLedgerRecord, type RunRecord } from '../api';
 
 type RunNodeRecord = NonNullable<RunRecord['node_runs']>[number];
 
@@ -109,6 +109,32 @@ const SECRET_KEY_PATTERN =
   /(authorization|auth_token|access_token|refresh_token|api[-_]?key|secret|password|credential|webhook[-_]?signature|connection[-_]?string|x-api-key)/i;
 const HEAVY_BINARY_KEY_PATTERN = /(image_base64|_base64$|binary_blob|raw_image)/i;
 const ARTIFACT_BODY_KEYS = new Set(['content', 'body', 'raw_body', 'blob', 'binary']);
+
+const resolveAbsoluteApiBase = (): string => {
+  const raw = (API_BASE || '').trim();
+  if (!raw) return raw;
+  if (typeof window !== 'undefined') {
+    try {
+      const current = new URL(window.location.origin);
+      const resolved = raw.startsWith('//') ? new URL(`${current.protocol}${raw}`) : new URL(raw, current.origin);
+      if (current.port && !resolved.port) {
+        resolved.port = current.port;
+      }
+      return resolved.toString().replace(/\/+$/, '');
+    } catch {
+      return raw;
+    }
+  }
+  return raw.startsWith('//') ? `http:${raw}` : raw;
+};
+
+const toAbsoluteDocLink = (path: string): string => {
+  try {
+    return new URL(path, resolveAbsoluteApiBase()).toString();
+  } catch {
+    return path;
+  }
+};
 
 const asUsageNumber = (value: unknown): number => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -650,7 +676,7 @@ export const buildRunSupportBundle = (params: {
   const ledgerTruncated = sourceTruncated || exportTruncated;
   const tokenSummary = summarizeRunTokens(params.run);
   const generatedAt = new Date().toISOString();
-  const docsLinks = params.docsLinks || ['/openapi.yaml', '/workflow-authoring-guide'];
+  const docsLinks = params.docsLinks || [toAbsoluteDocLink('/openapi.yaml'), toAbsoluteDocLink('/workflow-authoring-guide')];
 
   const bundle: RunSupportBundle = {
     bundle_type: 'run_support_bundle',

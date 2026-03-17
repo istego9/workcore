@@ -607,6 +607,65 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(foreign_workflow_response.status_code, 409)
         self.assertEqual(foreign_workflow_response.json()["error"]["code"], "ERR_WORKFLOW_NOT_IN_PROJECT")
 
+    def test_list_and_get_project_workflow_definitions_support_authoritative_readback(self):
+        project_id = "proj_registry_readback"
+        workflow_headers = self._with_project(project_id=project_id)
+        workflow_id, _ = self._create_workflow(headers=workflow_headers)
+
+        project_response = self.client.post(
+            "/projects",
+            json={
+                "project_id": project_id,
+                "project_name": "Registry Readback",
+                "settings": {"orchestrator_enabled": True},
+            },
+        )
+        self.assertEqual(project_response.status_code, 201)
+
+        definition_response = self.client.post(
+            f"/projects/{project_id}/workflow-definitions",
+            json={
+                "workflow_id": workflow_id,
+                "name": "Readback flow",
+                "description": "Readback project routing definition",
+                "tags": ["readback"],
+                "examples": ["start readback"],
+                "active": True,
+                "is_fallback": False,
+            },
+        )
+        self.assertEqual(definition_response.status_code, 201)
+
+        list_response = self.client.get(f"/projects/{project_id}/workflow-definitions")
+        self.assertEqual(list_response.status_code, 200)
+        list_payload = list_response.json()
+        self.assertIsNone(list_payload["next_cursor"])
+        self.assertEqual(len(list_payload["items"]), 1)
+        self.assertEqual(list_payload["items"][0]["workflow_id"], workflow_id)
+        self.assertEqual(list_payload["items"][0]["name"], "Readback flow")
+
+        get_response = self.client.get(f"/projects/{project_id}/workflow-definitions/{workflow_id}")
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.json()
+        self.assertEqual(get_payload["project_id"], project_id)
+        self.assertEqual(get_payload["workflow_id"], workflow_id)
+        self.assertEqual(get_payload["tags"], ["readback"])
+
+    def test_get_project_workflow_definition_returns_not_found_when_missing(self):
+        project_id = "proj_registry_missing_definition"
+        self.client.post(
+            "/projects",
+            json={
+                "project_id": project_id,
+                "project_name": "Registry Missing Definition",
+                "settings": {"orchestrator_enabled": True},
+            },
+        )
+
+        response = self.client.get(f"/projects/{project_id}/workflow-definitions/wf_missing")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "ERR_WORKFLOW_DEFINITION_NOT_FOUND")
+
     def test_upsert_project_orchestrator_sets_default(self):
         project_id = "proj_registry_orc"
         workflow_headers = self._with_project(project_id=project_id)

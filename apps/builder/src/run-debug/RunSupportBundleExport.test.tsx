@@ -142,8 +142,8 @@ describe('RunSupportBundleExport', () => {
     const json = JSON.stringify(bundle);
 
     expect(bundle.docs_links).toEqual([
-      'http://api.localhost/openapi.yaml',
-      'http://api.localhost/workflow-authoring-guide',
+      'http://api.localhost:3000/openapi.yaml',
+      'http://api.localhost:3000/workflow-authoring-guide',
     ]);
     expect(bundle.ledger_truncated).toBe(true);
     expect(bundle.ledger_entries_included).toBe(2);

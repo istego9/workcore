@@ -32,6 +32,19 @@ type ApiError = {
 
 type ApiResult<T> = { data?: T; error?: ApiError };
 
+export type ProjectWorkflowDefinitionRecord = {
+  project_id: string;
+  workflow_id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  examples: string[];
+  active: boolean;
+  is_fallback: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProjectRecord = {
   project_id: string;
   project_name: string;
@@ -476,20 +489,22 @@ export const upsertProjectWorkflowDefinition = async (
     active?: boolean;
     is_fallback?: boolean;
   }
-): Promise<ApiResult<{
-  project_id: string;
-  workflow_id: string;
-  name: string;
-  description: string;
-  tags: string[];
-  examples: string[];
-  active: boolean;
-  is_fallback: boolean;
-  created_at: string;
-  updated_at: string;
-}>> => {
+): Promise<ApiResult<ProjectWorkflowDefinitionRecord>> => {
   return request(`/projects/${projectId}/workflow-definitions`, {
     method: 'POST',
     body: JSON.stringify(payload)
   });
+};
+
+export const listProjectWorkflowDefinitions = async (
+  projectId: string
+): Promise<ApiResult<{ items: ProjectWorkflowDefinitionRecord[]; next_cursor?: string | null }>> => {
+  return request(`/projects/${projectId}/workflow-definitions`);
+};
+
+export const getProjectWorkflowDefinition = async (
+  projectId: string,
+  workflowId: string
+): Promise<ApiResult<ProjectWorkflowDefinitionRecord>> => {
+  return request(`/projects/${projectId}/workflow-definitions/${workflowId}`);
 };

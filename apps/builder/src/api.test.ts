@@ -5,7 +5,9 @@ import {
   collectRunLedger,
   deleteProject,
   getRun,
+  getProjectWorkflowDefinition,
   getRunLedger,
+  listProjectWorkflowDefinitions,
   listProjects,
   listRuns,
   listWorkflowVersions,
@@ -378,6 +380,44 @@ describe('api listRuns', () => {
           examples: ['start'],
           active: true,
           is_fallback: false
+        })
+      })
+    );
+  });
+
+  it('calls GET /projects/{project_id}/workflow-definitions for routing bind readback list', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: null })
+    } as Response);
+
+    await listProjectWorkflowDefinitions('proj_release_1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects/proj_release_1/workflow-definitions`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json'
+        })
+      })
+    );
+  });
+
+  it('calls GET /projects/{project_id}/workflow-definitions/{workflow_id} for routing bind readback', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ workflow_id: 'wf_release_1' })
+    } as Response);
+
+    await getProjectWorkflowDefinition('proj_release_1', 'wf_release_1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE}/projects/proj_release_1/workflow-definitions/wf_release_1`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json'
         })
       })
     );

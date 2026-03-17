@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import {
   API_BASE,
+  getProjectWorkflowDefinition,
   getRun,
   listProjects,
   listRuns,
@@ -24,6 +25,7 @@ import {
   upsertProjectWorkflowDefinition,
   type OrchestratorEvalReplayCase,
   type ProjectRecord,
+  type ProjectWorkflowDefinitionRecord,
   type RunRecord,
 } from '../api';
 import type { ValidationIssue, WorkflowDraft, WorkflowVersion } from '../builder/types';
@@ -87,6 +89,8 @@ type LastSuccessfulReleasePath = {
   published_version_id: string | null;
   smoke_run_id: string | null;
 };
+
+type RoutingReadbackStatus = 'checking' | 'bound' | 'not_bound' | 'readback_failed';
 
 type BoundProjectUsage = {
   project_id: string;
@@ -264,7 +268,8 @@ export function WorkflowReleasePipeline({
   const [publishedInCycleVersionId, setPublishedInCycleVersionId] = useState<string | null>(null);
   const [chatBindLoading, setChatBindLoading] = useState(false);
   const [routingBindLoading, setRoutingBindLoading] = useState(false);
-  const [routingDefinitionRegistered, setRoutingDefinitionRegistered] = useState(false);
+  const [routingReadbackStatus, setRoutingReadbackStatus] = useState<RoutingReadbackStatus>('checking');
+  const [routingDefinitionRecord, setRoutingDefinitionRecord] = useState<ProjectWorkflowDefinitionRecord | null>(null);
   const [smokeRunning, setSmokeRunning] = useState(false);
   const [smokeResult, setSmokeResult] = useState<SmokeResultSummary | null>(null);
   const [smokeRun, setSmokeRun] = useState<RunRecord | null>(null);
@@ -316,7 +321,7 @@ export function WorkflowReleasePipeline({
       ).length,
     [recentRuns, workflowId, projectId]
   );
-  const routingBound = routingDefinitionRegistered || observedDirectRuns > 0;
+  const routingBound = routingReadbackStatus === 'bound';
   const bindCompleted = chatBound || routingBound;
   const publishGates = useMemo(
     () => evaluatePublishGates({ validation, simulation: simulationResult, diff: diffSummary }),
@@ -442,6 +447,36 @@ export function WorkflowReleasePipeline({
     setVersionsLoading(false);
   };
 
+  const fetchRoutingReadback = async (options?: { silent?: boolean }): Promise<RoutingReadbackStatus> => {
+    if (!workflowId || !projectId) {
+      setRoutingDefinitionRecord(null);
+      setRoutingReadbackStatus('not_bound');
+      return 'not_bound';
+    }
+    setRoutingReadbackStatus('checking');
+    const result = await getProjectWorkflowDefinition(projectId, workflowId);
+    if (result.error) {
+      if (result.error.code === 'ERR_WORKFLOW_DEFINITION_NOT_FOUND') {
+        setRoutingDefinitionRecord(null);
+        setRoutingReadbackStatus('not_bound');
+        return 'not_bound';
+      }
+      setRoutingDefinitionRecord(null);
+      setRoutingReadbackStatus('readback_failed');
+      if (!options?.silent) {
+        onStatus({
+          tone: 'warn',
+          label: 'Routing readback unavailable',
+          detail: result.error.message,
+        });
+      }
+      return 'readback_failed';
+    }
+    setRoutingDefinitionRecord(result.data || null);
+    setRoutingReadbackStatus('bound');
+    return 'bound';
+  };
+
   const fetchRuns = async () => {
     if (!workflowId) {
       setRecentRuns([]);
@@ -514,12 +549,14 @@ export function WorkflowReleasePipeline({
     setSmokeRun(null);
     setStageTimestamps({});
     setPublishedInCycleVersionId(null);
-    setRoutingDefinitionRegistered(false);
+    setRoutingDefinitionRecord(null);
+    setRoutingReadbackStatus('checking');
     setProjectsUsingWorkflow([]);
     setManualCasesJson(JSON.stringify(buildCannedCases(workflowId), null, 2));
     setSimulationSource('canned');
     void fetchVersions();
     void fetchRuns();
+    void fetchRoutingReadback({ silent: true });
     void fetchBoundProjects();
     const key = localStorageKey(tenantId, projectId, workflowId);
     try {
@@ -668,13 +705,21 @@ export function WorkflowReleasePipeline({
       setRoutingBindLoading(false);
       return;
     }
-    setRoutingDefinitionRegistered(true);
+    const readbackStatus = await fetchRoutingReadback({ silent: true });
     updateStageTimestamp('bind_at');
     emitWithContext('bind_updated', {
       binding_scope: 'project_workflow_definition',
       workflow_id: workflowId,
     });
-    onStatus({ tone: 'ok', label: 'Routing definition updated', detail: workflowId });
+    if (readbackStatus === 'bound') {
+      onStatus({ tone: 'ok', label: 'Routing definition confirmed', detail: workflowId });
+    } else {
+      onStatus({
+        tone: 'warn',
+        label: 'Routing definition updated but not confirmed',
+        detail: workflowId,
+      });
+    }
     setRoutingBindLoading(false);
   };
 
@@ -920,6 +965,8 @@ export function WorkflowReleasePipeline({
               projectName={activeProject?.project_name || projectId || 'unknown'}
               chatBound={chatBound}
               routingBound={routingBound}
+              routingReadbackStatus={routingReadbackStatus}
+              routingDefinitionUpdatedAt={routingDefinitionRecord?.updated_at ? formatDate(routingDefinitionRecord.updated_at) : null}
               observedDirectRuns={observedDirectRuns}
               projectsUsingWorkflow={projectsUsingWorkflow}
               projectsUsageLoading={projectsUsageLoading}
