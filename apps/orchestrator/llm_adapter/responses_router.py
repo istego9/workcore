@@ -198,7 +198,6 @@ class ResponsesLLMRouter:
             tools=[tool],
             tool_choice={"type": "function", "name": "route_user_message"},
             parallel_tool_calls=False,
-            temperature=0,
             store=False,
         )
         payload = self._extract_tool_payload(response)

@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from openai import AzureOpenAI
 from apps.orchestrator.llm_adapter import LLMBadSchemaOutputError, ResponsesLLMRouter
@@ -80,6 +81,43 @@ class ResponsesLLMRouterTests(unittest.IsolatedAsyncioTestCase):
                     context_summary="",
                     locale="en-US",
                 )
+
+    async def test_router_does_not_send_temperature_to_responses_api(self):
+        captured_kwargs = {}
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                captured_kwargs.update(kwargs)
+                return SimpleNamespace(
+                    model="wf-router",
+                    output=[
+                        SimpleNamespace(
+                            type="function_call",
+                            name="route_user_message",
+                            arguments=(
+                                '{"route_type":"START_WORKFLOW","workflow_id":"wf_a","tags":[],"confidence":0.91,'
+                                '"switch_margin":0.5,"reason_codes":["HIGH_CONFIDENCE_MATCH"],'
+                                '"clarifying_question":null,"clarifying_options":[]}'
+                            ),
+                        )
+                    ],
+                )
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        router = ResponsesLLMRouter(client=fake_client, force_heuristic=False)
+        decision = await router.route(
+            message_text="start budget flow",
+            candidates=[{"workflow_id": "wf_a", "name": "Budget", "description": "", "tags": [], "examples": []}],
+            active_workflow_id=None,
+            confidence_threshold=0.6,
+            switch_margin_threshold=0.2,
+            context_summary="",
+            locale="en-US",
+        )
+
+        self.assertEqual(decision.route_type, "START_WORKFLOW")
+        self.assertEqual(decision.workflow_id, "wf_a")
+        self.assertNotIn("temperature", captured_kwargs)
 
 
 if __name__ == "__main__":
