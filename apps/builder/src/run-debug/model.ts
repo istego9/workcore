@@ -546,7 +546,6 @@ const redactValue = (value: unknown): unknown => {
     return value;
   }
 
-  const hasArtifactRef = typeof value.artifact_ref === 'string' && value.artifact_ref.trim().length > 0;
   const redacted: Record<string, unknown> = {};
 
   Object.keys(value)
@@ -564,7 +563,7 @@ const redactValue = (value: unknown): unknown => {
         redacted[key] = `[REDACTED_BINARY:${size}]`;
         return;
       }
-      if (hasArtifactRef && ARTIFACT_BODY_KEYS.has(keyLower)) {
+      if (ARTIFACT_BODY_KEYS.has(keyLower)) {
         redacted[key] = '[REDACTED_ARTIFACT_BODY]';
         return;
       }
@@ -579,11 +578,33 @@ export const redactSupportPayload = <T>(value: T): T => {
   return redactValue(value) as T;
 };
 
+export type RunSupportLedgerSummary = {
+  ledger_entries_available: number;
+  ledger_entries_available_exact: boolean;
+  ledger_truncated: boolean;
+  ledger_source_truncated?: boolean;
+};
+
 export type RunSupportBundle = {
   bundle_type: 'run_support_bundle';
   bundle_version: 'run_debug_bundle_v1';
   generated_at: string;
   docs_links: string[];
+  export_metadata: {
+    bundle_schema: 'run_support_bundle';
+    bundle_version: 'run_debug_bundle_v1';
+    generated_at: string;
+    ledger_truncated: boolean;
+    ledger_source_truncated: boolean;
+    ledger_export_truncated: boolean;
+    ledger_entries_included: number;
+    ledger_entries_available: number;
+    ledger_entries_available_exact: boolean;
+  };
+  ledger_truncated: boolean;
+  ledger_entries_included: number;
+  ledger_entries_available: number;
+  ledger_entries_available_exact: boolean;
   run_summary: Record<string, unknown>;
   typed_error_info: Record<string, unknown>;
   timeline: {
@@ -597,6 +618,12 @@ export type RunSupportBundle = {
     included_entries: number;
     total_available: number;
     truncated: boolean;
+    ledger_entries_included: number;
+    ledger_entries_available: number;
+    ledger_truncated: boolean;
+    source_truncated: boolean;
+    export_truncated: boolean;
+    available_exact: boolean;
     items: RunLedgerRecord[];
   };
 };
@@ -607,17 +634,44 @@ export const buildRunSupportBundle = (params: {
   model?: RunDebugModel;
   ledgerLimit?: number;
   docsLinks?: string[];
+  ledgerSummary?: RunSupportLedgerSummary;
 }): RunSupportBundle => {
   const model = params.model || normalizeRunDebugData(params.run, params.ledgerEntries);
-  const ledgerLimit = Math.max(1, Math.min(params.ledgerLimit || 500, 1000));
-  const boundedLedger = sortLedgerEntries(params.ledgerEntries).slice(0, ledgerLimit);
+  const sortedLedger = sortLedgerEntries(params.ledgerEntries);
+  const requestedLedgerLimit =
+    typeof params.ledgerLimit === 'number' && Number.isFinite(params.ledgerLimit)
+      ? Math.max(1, Math.floor(params.ledgerLimit))
+      : sortedLedger.length || 1;
+  const boundedLedger = sortedLedger.slice(0, requestedLedgerLimit);
+  const sourceAvailable = Math.max(params.ledgerSummary?.ledger_entries_available || sortedLedger.length, sortedLedger.length);
+  const sourceAvailableExact = params.ledgerSummary?.ledger_entries_available_exact ?? true;
+  const sourceTruncated = params.ledgerSummary?.ledger_source_truncated ?? params.ledgerSummary?.ledger_truncated ?? false;
+  const exportTruncated = boundedLedger.length < sourceAvailable;
+  const ledgerTruncated = sourceTruncated || exportTruncated;
   const tokenSummary = summarizeRunTokens(params.run);
+  const generatedAt = new Date().toISOString();
+  const docsLinks = params.docsLinks || ['/openapi.yaml', '/workflow-authoring-guide'];
 
   const bundle: RunSupportBundle = {
     bundle_type: 'run_support_bundle',
     bundle_version: 'run_debug_bundle_v1',
-    generated_at: new Date().toISOString(),
-    docs_links: params.docsLinks || ['/docs/api/reference.md', '/docs/architecture/runtime.md'],
+    generated_at: generatedAt,
+    docs_links: docsLinks,
+    export_metadata: {
+      bundle_schema: 'run_support_bundle',
+      bundle_version: 'run_debug_bundle_v1',
+      generated_at: generatedAt,
+      ledger_truncated: ledgerTruncated,
+      ledger_source_truncated: sourceTruncated,
+      ledger_export_truncated: exportTruncated,
+      ledger_entries_included: boundedLedger.length,
+      ledger_entries_available: sourceAvailable,
+      ledger_entries_available_exact: sourceAvailableExact
+    },
+    ledger_truncated: ledgerTruncated,
+    ledger_entries_included: boundedLedger.length,
+    ledger_entries_available: sourceAvailable,
+    ledger_entries_available_exact: sourceAvailableExact,
     run_summary: {
       run_id: params.run.run_id,
       workflow_id: params.run.workflow_id,
@@ -648,8 +702,14 @@ export const buildRunSupportBundle = (params: {
     last_good_output: model.lastGoodOutput,
     ledger: {
       included_entries: boundedLedger.length,
-      total_available: params.ledgerEntries.length,
-      truncated: boundedLedger.length < params.ledgerEntries.length,
+      total_available: sourceAvailable,
+      truncated: ledgerTruncated,
+      ledger_entries_included: boundedLedger.length,
+      ledger_entries_available: sourceAvailable,
+      ledger_truncated: ledgerTruncated,
+      source_truncated: sourceTruncated,
+      export_truncated: exportTruncated,
+      available_exact: sourceAvailableExact,
       items: boundedLedger
     }
   };

@@ -13,7 +13,7 @@ import {
   Text
 } from '@mantine/core';
 import { useEffect, useMemo, useState } from 'react';
-import { API_BASE, cancelRun, getRun, getRunLedger, rerunNode, type RunLedgerRecord, type RunRecord } from '../api';
+import { API_BASE, cancelRun, collectRunLedger, getRun, rerunNode, type RunLedgerRecord, type RunRecord } from '../api';
 import { JsonPreviewCard } from './JsonPreviewCard';
 import {
   estimateRunCostUsd,
@@ -22,7 +22,9 @@ import {
   nodeStatusBadgeColor,
   runStatusBadgeColor,
   summarizeRunTokens,
-  type RunDebugModel
+  type RunDebugModel,
+  type RunSupportBundle,
+  type RunSupportLedgerSummary
 } from './model';
 import { RunAttemptHistory } from './RunAttemptHistory';
 import { RunSupportBundleExport } from './RunSupportBundleExport';
@@ -99,6 +101,15 @@ const runIsCancellable = (run: RunRecord | null): boolean => {
 };
 
 const runActiveStatuses = new Set(['RUNNING', 'WAITING_FOR_INPUT']);
+const LEDGER_PAGE_LIMIT = 1000;
+const LEDGER_MAX_PAGES = 20;
+const SUPPORT_BUNDLE_LEDGER_LIMIT = 5000;
+const EMPTY_LEDGER_SUMMARY: RunSupportLedgerSummary = {
+  ledger_entries_available: 0,
+  ledger_entries_available_exact: true,
+  ledger_truncated: false,
+  ledger_source_truncated: false
+};
 
 export function RunDebugPanel({
   opened,
@@ -112,6 +123,7 @@ export function RunDebugPanel({
 }: RunDebugPanelProps) {
   const [run, setRun] = useState<RunRecord | null>(seedRun);
   const [ledgerEntries, setLedgerEntries] = useState<RunLedgerRecord[]>([]);
+  const [ledgerSummary, setLedgerSummary] = useState<RunSupportLedgerSummary>(EMPTY_LEDGER_SUMMARY);
   const [loading, setLoading] = useState(false);
   const [rerunScope, setRerunScope] = useState<'node_only' | 'downstream'>('downstream');
   const [selectedNodeForRerun, setSelectedNodeForRerun] = useState<string | null>(null);
@@ -123,13 +135,18 @@ export function RunDebugPanel({
     if (seedRun && seedRun.run_id === runId) {
       setRun(seedRun);
     }
+    setLedgerEntries([]);
+    setLedgerSummary(EMPTY_LEDGER_SUMMARY);
   }, [opened, runId, seedRun]);
 
   const refreshInspector = async (reason: 'open' | 'manual' | 'action' = 'manual') => {
     if (!runId) return;
 
     setLoading(true);
-    const [runResult, ledgerResult] = await Promise.all([getRun(runId), getRunLedger(runId, { limit: 500 })]);
+    const [runResult, ledgerResult] = await Promise.all([
+      getRun(runId),
+      collectRunLedger(runId, { pageLimit: LEDGER_PAGE_LIMIT, maxPages: LEDGER_MAX_PAGES })
+    ]);
 
     if (runResult.error && ledgerResult.error) {
       onStatus?.({
@@ -156,8 +173,14 @@ export function RunDebugPanel({
         active: runActiveStatuses.has(runResult.data.status)
       });
     }
-    if (ledgerResult.data?.items) {
+    if (ledgerResult.data) {
       setLedgerEntries(ledgerResult.data.items);
+      setLedgerSummary({
+        ledger_entries_available: ledgerResult.data.ledger_entries_available,
+        ledger_entries_available_exact: ledgerResult.data.ledger_entries_available_exact,
+        ledger_truncated: ledgerResult.data.ledger_truncated,
+        ledger_source_truncated: ledgerResult.data.ledger_source_truncated
+      });
     }
     if (reason === 'manual') {
       onStatus?.({ tone: 'ok', label: 'Run inspector refreshed' });
@@ -247,8 +270,16 @@ export function RunDebugPanel({
     await refreshInspector('action');
   };
 
-  const handleExported = () => {
-    emitRunInspectorLog('support_bundle_exported', run, runId, { ledger_entries: ledgerEntries.length });
+  const handleExported = (bundle: RunSupportBundle) => {
+    emitRunInspectorLog('support_bundle_exported', run, runId, {
+      bundle_version: bundle.bundle_version,
+      ledger_entries_included: bundle.ledger_entries_included,
+      ledger_entries_available: bundle.ledger_entries_available,
+      ledger_entries_available_exact: bundle.ledger_entries_available_exact,
+      ledger_truncated: bundle.ledger_truncated,
+      ledger_source_truncated: bundle.export_metadata.ledger_source_truncated,
+      ledger_export_truncated: bundle.export_metadata.ledger_export_truncated
+    });
     onStatus?.({ tone: 'ok', label: 'Support bundle exported', detail: run?.run_id });
   };
 
@@ -398,7 +429,7 @@ export function RunDebugPanel({
                     Run snapshot endpoint
                   </Anchor>
                   <Anchor
-                    href={`${API_BASE}/runs/${encodeURIComponent(run.run_id)}/ledger?limit=500`}
+                    href={`${API_BASE}/runs/${encodeURIComponent(run.run_id)}/ledger?limit=${LEDGER_PAGE_LIMIT}`}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -553,6 +584,8 @@ export function RunDebugPanel({
                 run={run}
                 ledgerEntries={ledgerEntries}
                 model={model}
+                ledgerSummary={ledgerSummary}
+                ledgerLimit={SUPPORT_BUNDLE_LEDGER_LIMIT}
                 loading={loading}
                 onExported={handleExported}
               />

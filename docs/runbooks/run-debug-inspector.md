@@ -17,7 +17,7 @@ Provide a deterministic operator workflow for run-level RCA and support escalati
    - Otherwise use the latest `RESOLVED` node attempt output in execution order.
 
 ## Debug actions
-1. `Refresh inspector` reloads `GET /runs/{run_id}` and `GET /runs/{run_id}/ledger`.
+1. `Refresh inspector` reloads `GET /runs/{run_id}` and paginates `GET /runs/{run_id}/ledger` up to bounded safety limits.
 2. `Rerun node` uses `POST /runs/{run_id}/rerun-node` with `scope=node_only|downstream`.
 3. `Cancel run` uses `POST /runs/{run_id}/cancel` when cancellable.
 
@@ -29,11 +29,17 @@ Provide a deterministic operator workflow for run-level RCA and support escalati
 - node attempts
 - retry/rerun history
 - last good output
-- bounded ledger excerpt
+- explicit export metadata (`bundle_schema`, `bundle_version`, `generated_at`)
+- explicit ledger completeness markers:
+  - `ledger_truncated`
+  - `ledger_entries_included`
+  - `ledger_entries_available`
+  - `ledger_entries_available_exact`
+- bounded ledger excerpt (`ledger.items`)
 
 ### Redaction guardrails
 - Secrets and auth material are redacted (`token`, `secret`, `password`, signatures, credentials).
-- Inline artifact body fields are redacted when `artifact_ref` is present.
+- Inline artifact body fields are redacted by default, including records without `artifact_ref`.
 - Heavy binary fields (for example `image_base64`) are redacted.
 - Artifact references are preserved.
 

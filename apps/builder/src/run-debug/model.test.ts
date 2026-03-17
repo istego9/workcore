@@ -293,4 +293,95 @@ describe('run-debug model normalization', () => {
     expect(json).toContain('art_1');
     expect(json).toContain('art_2');
   });
+
+  it('redacts inline artifact body fields even when artifact_ref is absent', () => {
+    const run = baseRun({
+      status: 'FAILED',
+      inputs: {
+        documents: [
+          {
+            doc_id: 'doc_1',
+            pages: [{ content: 'raw-inline-content' }]
+          }
+        ]
+      }
+    });
+
+    const ledger = [
+      entry('node_failed', '2026-03-01T10:00:03Z', {
+        node_id: 'extract',
+        step_id: 'extract',
+        status: 'ERROR',
+        payload: { body: 'raw-inline-body' }
+      })
+    ];
+
+    const bundle = buildRunSupportBundle({ run, ledgerEntries: ledger });
+    const json = JSON.stringify(bundle);
+
+    expect(json).not.toContain('raw-inline-content');
+    expect(json).not.toContain('raw-inline-body');
+    expect(json).toContain('[REDACTED_ARTIFACT_BODY]');
+  });
+
+  it('emits explicit truncation/completeness metadata for ledger export', () => {
+    const run = baseRun({ status: 'FAILED' });
+    const ledger = [
+      entry('run_started', '2026-03-01T10:00:01Z'),
+      entry('node_started', '2026-03-01T10:00:02Z', { node_id: 'extract', step_id: 'extract' }),
+      entry('node_failed', '2026-03-01T10:00:03Z', { node_id: 'extract', step_id: 'extract', status: 'ERROR' })
+    ];
+
+    const bundle = buildRunSupportBundle({
+      run,
+      ledgerEntries: ledger,
+      ledgerLimit: 2,
+      docsLinks: ['https://api.example.com/openapi.yaml', 'https://api.example.com/workflow-authoring-guide'],
+      ledgerSummary: {
+        ledger_entries_available: 5,
+        ledger_entries_available_exact: false,
+        ledger_truncated: true,
+        ledger_source_truncated: true
+      }
+    });
+
+    expect(bundle.bundle_type).toBe('run_support_bundle');
+    expect(bundle.bundle_version).toBe('run_debug_bundle_v1');
+    expect(bundle.generated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(bundle.docs_links).toEqual([
+      'https://api.example.com/openapi.yaml',
+      'https://api.example.com/workflow-authoring-guide'
+    ]);
+
+    expect(bundle.ledger_entries_included).toBe(2);
+    expect(bundle.ledger_entries_available).toBe(5);
+    expect(bundle.ledger_entries_available_exact).toBe(false);
+    expect(bundle.ledger_truncated).toBe(true);
+
+    expect(bundle.export_metadata).toEqual(
+      expect.objectContaining({
+        bundle_schema: 'run_support_bundle',
+        bundle_version: 'run_debug_bundle_v1',
+        ledger_truncated: true,
+        ledger_source_truncated: true,
+        ledger_export_truncated: true,
+        ledger_entries_included: 2,
+        ledger_entries_available: 5,
+        ledger_entries_available_exact: false
+      })
+    );
+    expect(bundle.ledger).toEqual(
+      expect.objectContaining({
+        included_entries: 2,
+        total_available: 5,
+        truncated: true,
+        ledger_entries_included: 2,
+        ledger_entries_available: 5,
+        ledger_truncated: true,
+        source_truncated: true,
+        export_truncated: true,
+        available_exact: false
+      })
+    );
+  });
 });
