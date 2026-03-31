@@ -33,7 +33,7 @@ Adopt a custom rich widget extension named `RichChart` for WorkCore-specific cha
 2. Introduce `RichChart` as a custom widget extension component.
 - `RichChart` is not a synonym for stock ChatKit `Chart`.
 - `RichChart` is the only public name for the WorkCore rich chart contract.
-- Existing internal/fork support for legacy custom `Chart` may remain temporarily as a migration alias, but public GA payloads must emit `RichChart`.
+- Existing internal/fork support for legacy custom `Chart` may remain temporarily as a migration alias only when explicit rich-chart-only fields are present; stock ChatKit `Chart` semantics must remain untouched, and public GA payloads must emit `RichChart`.
 
 3. Scope `RichChart v1` to client-only interactivity.
 - Supported interactions are renderer-local only: hover, tooltip, responsive resize, legend visibility, local theme/layout adaptation, and other interactions that do not require server round-trips.

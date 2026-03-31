@@ -2,7 +2,7 @@ import { Badge, Box, Button, Card, Divider, Group, Stack, Text, TextInput, Title
 import { useMemo, useState } from 'react';
 import type { WidgetActionPayload, WidgetComponent, WidgetRoot } from '../protocol/types';
 import { DataTable } from './extensions/DataTable';
-import { NivoChart } from './extensions/NivoChart';
+import { NivoChart, isLegacyRichChartAlias } from './extensions/NivoChart';
 
 type WidgetRendererProps = {
   widget: WidgetRoot;
@@ -139,7 +139,7 @@ export function WidgetRenderer({ widget, onAction }: WidgetRendererProps) {
       return <FormBlock key={key} component={component} onAction={onAction} renderChild={renderComponent} />;
     }
 
-    if (component.type === 'RichChart' || component.type === 'Chart') {
+    if (component.type === 'RichChart' || isLegacyRichChartAlias(component)) {
       return <NivoChart key={key} component={component} />;
     }
 

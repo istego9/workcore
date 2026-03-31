@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -13,6 +14,15 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover - dependency gate
     print(
         "PyYAML is required for check_public_contract_drift.py. Install with `pip install pyyaml`.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from exc
+
+try:
+    import jsonschema
+except ModuleNotFoundError as exc:  # pragma: no cover - dependency gate
+    print(
+        "jsonschema is required for check_public_contract_drift.py. Install with `pip install jsonschema`.",
         file=sys.stderr,
     )
     raise SystemExit(2) from exc
@@ -384,12 +394,39 @@ def main() -> int:
         errors.append("docs/api/reference.md must document `RichChart` extension support")
     if "client_capabilities" not in reference_text:
         errors.append("docs/api/reference.md must document additive `metadata.client_capabilities`")
+    for required_snippet in (
+        "Example: RichChart donut widget",
+        "Example: RichChart line widget",
+        "Example: native fallback widget when RichChart is unsupported",
+        "`xAxis`",
+    ):
+        if required_snippet not in reference_text:
+            errors.append(f"docs/api/reference.md missing required RichChart publication snippet: `{required_snippet}`")
 
     widget_schema_text = _read_text(ROOT / "docs" / "api" / "schemas" / "chatkit-widget-extension.schema.json", errors)
     if '"RichChart"' not in widget_schema_text:
         errors.append("widget extension schema must expose `RichChart`")
     if '"Chart"' in widget_schema_text and '"RichChart"' not in widget_schema_text:
         errors.append("widget extension schema must not expose legacy custom `Chart` as the public contract")
+    if widget_schema_text:
+        try:
+            widget_schema = json.loads(widget_schema_text)
+        except json.JSONDecodeError as exc:
+            errors.append(f"failed to parse widget extension schema JSON: {exc}")
+            widget_schema = {}
+        rich_chart_schema = ((widget_schema.get("definitions") or {}).get("richChart") or {}) if isinstance(widget_schema, dict) else {}
+        if not isinstance(rich_chart_schema, dict):
+            errors.append("widget extension schema `definitions.richChart` must be an object")
+        else:
+            rich_chart_examples = rich_chart_schema.get("examples")
+            if not isinstance(rich_chart_examples, list) or len(rich_chart_examples) < 2:
+                errors.append("widget extension schema must publish RichChart donut + line examples")
+            else:
+                for example in rich_chart_examples:
+                    try:
+                        jsonschema.validate(example, rich_chart_schema)
+                    except jsonschema.ValidationError as exc:
+                        errors.append(f"widget extension schema example is invalid: {exc.message}")
 
     guide_text = _read_text(ROOT / "docs" / "integration" / "workcore-api-integration-guide.md", errors)
     for required_snippet in (
@@ -500,7 +537,15 @@ def main() -> int:
                 "apps/orchestrator/api/app.py missing integration check snippet for chat alias policy: "
                 f"`{required_snippet}`"
             )
-    for required_snippet in ("RichChart", "client_capabilities", "widget_extensions"):
+    for required_snippet in (
+        "RichChart",
+        "client_capabilities",
+        "widget_extensions",
+        "RichChart donut widget payload",
+        "RichChart line widget payload",
+        "fallback widget when RichChart is unsupported",
+        "`xAxis`",
+    ):
         if required_snippet not in integration_kit_text:
             errors.append(f"apps/orchestrator/api/app.py must document `{required_snippet}` in integration surfaces")
 
@@ -515,6 +560,36 @@ def main() -> int:
     deploy_workflow_text = _read_text(ROOT / ".github" / "workflows" / "deploy-azure.yml", errors)
     if "check_public_host_matrix.sh" not in deploy_workflow_text:
         errors.append("deploy-azure workflow must run public host compatibility smoke checks")
+    for required_snippet in (
+        "enable_rich_chart_emission_after_validation",
+        "set_chatkit_rich_chart_emission.sh",
+        "WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION: '0'",
+    ):
+        if required_snippet not in deploy_workflow_text:
+            errors.append(f"deploy-azure workflow missing RichChart rollout gate snippet: `{required_snippet}`")
+
+    deploy_apps_text = _read_text(ROOT / "deploy" / "azure" / "scripts" / "deploy_apps.sh", errors)
+    if "WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION" not in deploy_apps_text:
+        errors.append("deploy_apps.sh must default RichChart emission env flag to off")
+
+    rollout_toggle_text = _read_text(
+        ROOT / "deploy" / "azure" / "scripts" / "set_chatkit_rich_chart_emission.sh",
+        errors,
+    )
+    if "--set-env-vars WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION" not in rollout_toggle_text:
+        errors.append("post-smoke rollout script must flip the RichChart emission env flag")
+
+    server_text = _read_text(ROOT / "apps" / "orchestrator" / "chatkit" / "server.py", errors)
+    for required_snippet in (
+        "_RICH_CHART_EMISSION_ENV",
+        "WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION",
+        "_is_legacy_rich_chart_alias",
+        'if component_type == "Chart":',
+    ):
+        if required_snippet not in server_text:
+            errors.append(f"chatkit/server.py missing RichChart runtime guard snippet: `{required_snippet}`")
+    if 'component_type in _RICH_CHART_TYPES' in server_text:
+        errors.append("chatkit/server.py must not blanket-map every `Chart` payload into RichChart handling")
 
     onboarding_text = _read_text(ROOT / "apps" / "orchestrator" / "api" / "partner_self_service.py", errors)
     for required_snippet in (

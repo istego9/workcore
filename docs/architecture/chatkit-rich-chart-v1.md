@@ -64,6 +64,7 @@ Canonical component type:
 - `data`: required; chart data payload
 - `series`: optional; series definitions used by cartesian/multi-series charts
 - `nivo_props`: optional object; pass-through renderer configuration
+- `xAxis`: optional string or object; x-axis key/config used by tabular cartesian payloads
 - `title`: optional string
 - `subtitle`: optional string
 - `description`: optional string
@@ -206,7 +207,7 @@ Current WorkCore rich chart payloads use `Chart` as a custom extension name. Tha
 
 Migration rules:
 - public GA contract emits `RichChart`
-- reference renderer accepts both `Chart` and `RichChart` during migration
+- reference renderer accepts `RichChart` and only those legacy custom `Chart` payloads that include explicit RichChart-only markers
 - public docs, examples, and negotiation output must use `RichChart` only
 - the stock ChatKit meaning of `Chart` must remain untouched
 
@@ -280,9 +281,11 @@ Migration rules:
 Phase 1:
 - publish spec and capability fields
 - keep server fallback default
+- keep `RichChart` emission behind a runtime feature flag that defaults to off
 
 Phase 2:
-- enable `RichChart` emission only for known-capable clients
+- validate public host matrix on every public API host
+- enable `RichChart` emission only for known-capable clients after matrix validation passes
 
 Phase 3:
 - deprecate legacy custom `Chart` alias in the reference renderer

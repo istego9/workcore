@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import unittest
 from unittest import mock
 
@@ -390,45 +391,46 @@ class ChatKitTests(unittest.TestCase):
         app = create_chatkit_app(workflow)
         client = TestClient(app)
         try:
-            req = ThreadsCreateReq(
-                metadata={
-                    "workflow_id": workflow.id,
-                    "workflow_version_id": workflow.version_id,
-                    "client_capabilities": {
-                        "widget_extensions": {
-                            "RichChart": {
-                                "spec_versions": ["1"]
+            with mock.patch.dict(os.environ, {"WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION": "1"}, clear=False):
+                req = ThreadsCreateReq(
+                    metadata={
+                        "workflow_id": workflow.id,
+                        "workflow_version_id": workflow.version_id,
+                        "client_capabilities": {
+                            "widget_extensions": {
+                                "RichChart": {
+                                    "spec_versions": ["1"]
+                                }
                             }
-                        }
+                        },
                     },
-                },
-                params=ThreadCreateParams(
-                    input=UserMessageInput(
-                        content=[UserMessageTextContent(text="start")],
-                        attachments=[],
-                        inference_options=InferenceOptions(),
+                    params=ThreadCreateParams(
+                        input=UserMessageInput(
+                            content=[UserMessageTextContent(text="start")],
+                            attachments=[],
+                            inference_options=InferenceOptions(),
+                        )
                     )
                 )
-            )
-            response = client.post(
-                "/chat",
-                content=req.model_dump_json(),
-                headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
-            )
-            self.assertEqual(response.status_code, 200)
-            widget_events = [
-                json.loads(line[len("data: "):])
-                for line in response.text.splitlines()
-                if line.startswith("data: ")
-            ]
-            rich_chart_event = next(
-                event
-                for event in widget_events
-                if event.get("type") == "thread.item.done"
-                and event.get("item", {}).get("type") == "widget"
-                and event.get("item", {}).get("widget", {}).get("children", [{}])[0].get("type") == "RichChart"
-            )
-            self.assertEqual(rich_chart_event["item"]["widget"]["type"], "Card")
+                response = client.post(
+                    "/chat",
+                    content=req.model_dump_json(),
+                    headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 200)
+                widget_events = [
+                    json.loads(line[len("data: "):])
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                rich_chart_event = next(
+                    event
+                    for event in widget_events
+                    if event.get("type") == "thread.item.done"
+                    and event.get("item", {}).get("type") == "widget"
+                    and event.get("item", {}).get("widget", {}).get("children", [{}])[0].get("type") == "RichChart"
+                )
+                self.assertEqual(rich_chart_event["item"]["widget"]["type"], "Card")
         finally:
             client.close()
 
@@ -491,6 +493,275 @@ class ChatKitTests(unittest.TestCase):
             self.assertEqual(children[0]["type"], "Col")
             self.assertTrue(any(child.get("type") == "DataTable" for child in children[0].get("children", [])))
             self.assertNotIn("RichChart", json.dumps(widget_event["item"]["widget"]))
+        finally:
+            client.close()
+
+    def test_thread_create_falls_back_when_rich_chart_capability_version_is_unsupported(self):
+        rich_widget = {
+            "type": "RichChart",
+            "title": "Budget trend",
+            "chart_type": "line",
+            "data": [
+                {"month": "Jan", "actual": 1200, "target": 1100},
+                {"month": "Feb", "actual": 1350, "target": 1200},
+            ],
+            "series": [
+                {"type": "line", "dataKey": "actual", "label": "Actual"},
+                {"type": "line", "dataKey": "target", "label": "Target"},
+            ],
+        }
+        workflow = Workflow(
+            id="wf_rich_chart_bad_version",
+            version_id="v1",
+            nodes={
+                "start": Node("start", "start"),
+                "out": Node("out", "output", {"value": {"widget": rich_widget}}),
+                "end": Node("end", "end"),
+            },
+            edges=[Edge("start", "out"), Edge("out", "end")],
+        )
+        app = create_chatkit_app(workflow)
+        client = TestClient(app)
+        try:
+            with mock.patch.dict(os.environ, {"WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION": "1"}, clear=False):
+                req = ThreadsCreateReq(
+                    metadata={
+                        "workflow_id": workflow.id,
+                        "workflow_version_id": workflow.version_id,
+                        "client_capabilities": {
+                            "widget_extensions": {
+                                "RichChart": {
+                                    "spec_versions": ["2"]
+                                }
+                            }
+                        },
+                    },
+                    params=ThreadCreateParams(
+                        input=UserMessageInput(
+                            content=[UserMessageTextContent(text="start")],
+                            attachments=[],
+                            inference_options=InferenceOptions(),
+                        )
+                    )
+                )
+                response = client.post(
+                    "/chat",
+                    content=req.model_dump_json(),
+                    headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 200)
+                events = [
+                    json.loads(line[len("data: "):])
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                widget_event = next(
+                    event
+                    for event in events
+                    if event.get("type") == "thread.item.done"
+                    and event.get("item", {}).get("type") == "widget"
+                )
+                self.assertNotIn("RichChart", json.dumps(widget_event["item"]["widget"]))
+                self.assertIn("DataTable", json.dumps(widget_event["item"]["widget"]))
+        finally:
+            client.close()
+
+    def test_thread_create_falls_back_when_rich_chart_rollout_gate_is_disabled(self):
+        rich_widget = {
+            "type": "RichChart",
+            "chart_type": "pie",
+            "data": [
+                {"id": "Needs", "value": 55},
+                {"id": "Savings", "value": 25},
+                {"id": "Wants", "value": 20},
+            ],
+        }
+        workflow = Workflow(
+            id="wf_rich_chart_gate_off",
+            version_id="v1",
+            nodes={
+                "start": Node("start", "start"),
+                "out": Node("out", "output", {"value": {"widget": rich_widget}}),
+                "end": Node("end", "end"),
+            },
+            edges=[Edge("start", "out"), Edge("out", "end")],
+        )
+        app = create_chatkit_app(workflow)
+        client = TestClient(app)
+        try:
+            with mock.patch.dict(os.environ, {"WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION": "0"}, clear=False):
+                req = ThreadsCreateReq(
+                    metadata={
+                        "workflow_id": workflow.id,
+                        "workflow_version_id": workflow.version_id,
+                        "client_capabilities": {
+                            "widget_extensions": {
+                                "RichChart": {
+                                    "spec_versions": ["1"]
+                                }
+                            }
+                        },
+                    },
+                    params=ThreadCreateParams(
+                        input=UserMessageInput(
+                            content=[UserMessageTextContent(text="start")],
+                            attachments=[],
+                            inference_options=InferenceOptions(),
+                        )
+                    )
+                )
+                response = client.post(
+                    "/chat",
+                    content=req.model_dump_json(),
+                    headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 200)
+                events = [
+                    json.loads(line[len("data: "):])
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                widget_event = next(
+                    event
+                    for event in events
+                    if event.get("type") == "thread.item.done"
+                    and event.get("item", {}).get("type") == "widget"
+                )
+                self.assertNotIn("RichChart", json.dumps(widget_event["item"]["widget"]))
+        finally:
+            client.close()
+
+    def test_thread_create_preserves_native_chart_payloads(self):
+        native_chart = {
+            "type": "Chart",
+            "data": [
+                {"month": "Jan", "value": 10},
+                {"month": "Feb", "value": 12},
+            ],
+            "series": [{"type": "line", "dataKey": "value", "label": "Value"}],
+            "xAxis": "month",
+        }
+        workflow = Workflow(
+            id="wf_native_chart",
+            version_id="v1",
+            nodes={
+                "start": Node("start", "start"),
+                "out": Node("out", "output", {"value": {"widget": native_chart}}),
+                "end": Node("end", "end"),
+            },
+            edges=[Edge("start", "out"), Edge("out", "end")],
+        )
+        app = create_chatkit_app(workflow)
+        client = TestClient(app)
+        try:
+            with mock.patch.dict(os.environ, {"WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION": "1"}, clear=False):
+                req = ThreadsCreateReq(
+                    metadata={
+                        "workflow_id": workflow.id,
+                        "workflow_version_id": workflow.version_id,
+                        "client_capabilities": {
+                            "widget_extensions": {
+                                "RichChart": {
+                                    "spec_versions": ["1"]
+                                }
+                            }
+                        },
+                    },
+                    params=ThreadCreateParams(
+                        input=UserMessageInput(
+                            content=[UserMessageTextContent(text="start")],
+                            attachments=[],
+                            inference_options=InferenceOptions(),
+                        )
+                    )
+                )
+                response = client.post(
+                    "/chat",
+                    content=req.model_dump_json(),
+                    headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 200)
+                events = [
+                    json.loads(line[len("data: "):])
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                widget_event = next(
+                    event
+                    for event in events
+                    if event.get("type") == "thread.item.done"
+                    and event.get("item", {}).get("type") == "widget"
+                )
+                children = widget_event["item"]["widget"].get("children", [])
+                self.assertEqual(children[0]["type"], "Chart")
+                self.assertNotEqual(children[0]["type"], "RichChart")
+        finally:
+            client.close()
+
+    def test_thread_create_accepts_legacy_custom_chart_alias_when_rich_markers_are_present(self):
+        legacy_rich_chart = {
+            "type": "Chart",
+            "chart_type": "pie",
+            "data": [
+                {"id": "Needs", "value": 55},
+                {"id": "Savings", "value": 25},
+                {"id": "Wants", "value": 20},
+            ],
+            "nivo_props": {"height": 220},
+        }
+        workflow = Workflow(
+            id="wf_legacy_rich_chart_alias",
+            version_id="v1",
+            nodes={
+                "start": Node("start", "start"),
+                "out": Node("out", "output", {"value": {"widget": legacy_rich_chart}}),
+                "end": Node("end", "end"),
+            },
+            edges=[Edge("start", "out"), Edge("out", "end")],
+        )
+        app = create_chatkit_app(workflow)
+        client = TestClient(app)
+        try:
+            with mock.patch.dict(os.environ, {"WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION": "1"}, clear=False):
+                req = ThreadsCreateReq(
+                    metadata={
+                        "workflow_id": workflow.id,
+                        "workflow_version_id": workflow.version_id,
+                        "client_capabilities": {
+                            "widget_extensions": {
+                                "RichChart": {
+                                    "spec_versions": ["1"]
+                                }
+                            }
+                        },
+                    },
+                    params=ThreadCreateParams(
+                        input=UserMessageInput(
+                            content=[UserMessageTextContent(text="start")],
+                            attachments=[],
+                            inference_options=InferenceOptions(),
+                        )
+                    )
+                )
+                response = client.post(
+                    "/chat",
+                    content=req.model_dump_json(),
+                    headers={"X-Tenant-Id": "tenant_test", "Content-Type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 200)
+                events = [
+                    json.loads(line[len("data: "):])
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                widget_event = next(
+                    event
+                    for event in events
+                    if event.get("type") == "thread.item.done"
+                    and event.get("item", {}).get("type") == "widget"
+                )
+                children = widget_event["item"]["widget"].get("children", [])
+                self.assertEqual(children[0]["type"], "RichChart")
         finally:
             client.close()
 

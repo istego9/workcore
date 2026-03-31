@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.9
+  version: 0.24.10
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -156,7 +156,7 @@ paths:
                 $ref: '#/components/schemas/IntegrationCapabilities'
               example:
                 generated_at: '2026-03-31T15:30:00Z'
-                api_version: '0.24.9'
+                api_version: '0.24.10'
                 error_contract:
                   schema_id: platform_error_envelope
                   schema_version: '1.0.0'

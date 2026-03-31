@@ -7,6 +7,9 @@ import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
 from unittest import mock
+from urllib.parse import urlparse
+
+import jsonschema
 
 from starlette.testclient import TestClient
 
@@ -2506,6 +2509,16 @@ class ApiTests(unittest.TestCase):
         self.assertIn("waffle", payload["widget_extensions"]["RichChart"]["supported_chart_types"])
         self.assertTrue(payload["docs"]["api_reference"].endswith("/api-reference"))
         self.assertTrue(payload["docs"]["integration_guide"].endswith("/agent-integration-kit"))
+        schema_url = payload["widget_extensions"]["RichChart"]["schema_url"]
+        parsed_schema_url = urlparse(schema_url)
+        schema_response = self.client.get(parsed_schema_url.path)
+        self.assertEqual(schema_response.status_code, 200)
+        schema_payload = schema_response.json()
+        rich_chart_schema = schema_payload["definitions"]["richChart"]
+        rich_chart_examples = rich_chart_schema.get("examples", [])
+        self.assertEqual(len(rich_chart_examples), 2)
+        for example in rich_chart_examples:
+            jsonschema.validate(example, rich_chart_schema)
 
     def test_agent_integration_kit_endpoints(self):
         markdown_response = self.client.get("/agent-integration-kit")
@@ -2530,6 +2543,9 @@ class ApiTests(unittest.TestCase):
         self.assertIn("input.transcribe", markdown_response.text)
         self.assertIn("RichChart", markdown_response.text)
         self.assertIn("client_capabilities", markdown_response.text)
+        self.assertIn("RichChart donut widget payload", markdown_response.text)
+        self.assertIn("RichChart line widget payload", markdown_response.text)
+        self.assertIn("fallback widget when RichChart is unsupported", markdown_response.text)
         self.assertIn("Example: project bootstrap + registry binding", markdown_response.text)
         self.assertIn("Example: orchestrator message", markdown_response.text)
 
@@ -2568,6 +2584,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             payload["schemas"]["chatkit_widget_extension"]["definitions"]["richChart"]["properties"]["spec_version"]["const"],
             "1",
+        )
+        self.assertEqual(
+            payload["schemas"]["chatkit_widget_extension"]["definitions"]["richChart"]["examples"][1]["xAxis"],
+            "month",
         )
 
         guide_response = self.client.get("/workflow-authoring-guide")
@@ -2635,6 +2655,17 @@ class ApiTests(unittest.TestCase):
         self.assertIn("project_orchestrator_upsert_template", report["urls"])
         self.assertIn("project_workflow_definition_upsert_template", report["urls"])
 
+    def test_api_reference_publishes_rich_chart_examples_and_fallback(self):
+        response = self.client.get("/api-reference")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Example: RichChart donut widget", response.text)
+        self.assertIn("Example: RichChart line widget", response.text)
+        self.assertIn("Example: native fallback widget when RichChart is unsupported", response.text)
+        self.assertIn("`xAxis`", response.text)
+
+    def test_agent_integration_logs_and_validate_draft(self):
+        prime_response = self.client.get("/agent-integration-kit")
+        self.assertEqual(prime_response.status_code, 200)
         integration_logs = self.client.get("/agent-integration-logs")
         self.assertEqual(integration_logs.status_code, 200)
         log_payload = integration_logs.json()

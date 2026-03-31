@@ -53,6 +53,21 @@ AZURE_OPENAI_API_KEY="$(get_secret_or_default azure-openai-api-key)"
 AZURE_OPENAI_API_VERSION="$(get_secret_or_default azure-openai-api-version 2025-03-01-preview)"
 CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS:-https://workcore.example.com,https://api.example.com,https://chatkit.example.com}"
 INTEGRATION_HTTP_ALLOWED_HOSTS="${INTEGRATION_HTTP_ALLOWED_HOSTS:-api.openai.com,*.openai.azure.com}"
+WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION="${WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION:-0}"
+
+normalize_flag() {
+  local value="${1:-}"
+  case "$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+      echo "1"
+      ;;
+    *)
+      echo "0"
+      ;;
+  esac
+}
+
+WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION="$(normalize_flag "${WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION}")"
 
 require_non_empty() {
   local value="$1"
@@ -308,6 +323,7 @@ apply_container_app() {
             MCP_BRIDGE_BASE_URL="${MCP_BRIDGE_BASE_URL}" \
             MCP_BRIDGE_AUTH_TOKEN=secretref:mcp-bridge-auth-token \
             CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS}" \
+            WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION="${WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION}" \
           --command /app/deploy/azure/apps/run_chatkit.sh \
           --output none
         ;;
@@ -485,6 +501,8 @@ properties:
             secretRef: mcp-bridge-auth-token
           - name: CORS_ALLOW_ORIGINS
             value: ${CORS_ALLOW_ORIGINS}
+          - name: WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION
+            value: "${WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION}"
         resources:
           cpu: 1.0
           memory: 2Gi

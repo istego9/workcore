@@ -232,6 +232,17 @@ export const inferChartTypeFromLegacyPayload = (component: WidgetComponent): Sup
   return 'bar';
 };
 
+export const isLegacyRichChartAlias = (component: WidgetComponent): boolean => {
+  if (component.type !== 'Chart') return false;
+  if (typeof component.spec_version === 'string' && component.spec_version.trim()) return true;
+  if (typeof component.chart_type === 'string' && component.chart_type.trim()) return true;
+  if (typeof component.chartType === 'string' && component.chartType.trim()) return true;
+  return Boolean(
+    (component.nivo_props && typeof component.nivo_props === 'object') ||
+      (component.nivoProps && typeof component.nivoProps === 'object')
+  );
+};
+
 const chartBox = (height: number, node: ReactNode) => <Box h={height}>{node}</Box>;
 
 const unsupported = (message: string) => (
@@ -276,16 +287,19 @@ const renderResolvedChart = (
   loadError: string | null
 ): ReactNode => {
   if (loadError) {
-    return unsupported(`Chart(${chartType}): failed to load renderer`);
+    return unsupported(`${COMPONENT_LABEL}(${chartType}): failed to load renderer`);
   }
   if (!chartComponent) {
-    return unsupported(`Chart(${chartType}): loading renderer...`);
+    return unsupported(`${COMPONENT_LABEL}(${chartType}): loading renderer...`);
   }
   const ChartComponent = chartComponent;
   return chartBox(height, <ChartComponent {...props} />);
 };
 
 export function NivoChart({ component }: NivoChartProps) {
+  if (component.type === 'Chart' && !isLegacyRichChartAlias(component)) {
+    return unsupported('Chart: stock ChatKit semantics are not handled by the RichChart renderer');
+  }
   const chartType =
     normalizeNivoChartType(component.chart_type) ||
     normalizeNivoChartType(component.chartType) ||

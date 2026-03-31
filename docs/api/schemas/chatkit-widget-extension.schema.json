@@ -48,6 +48,44 @@
     "richChart": {
       "type": "object",
       "additionalProperties": false,
+      "examples": [
+        {
+          "type": "RichChart",
+          "spec_version": "1",
+          "title": "Budget allocation",
+          "chart_type": "pie",
+          "data": [
+            { "id": "Needs", "value": 55 },
+            { "id": "Savings", "value": 25 },
+            { "id": "Wants", "value": 20 }
+          ],
+          "nivo_props": {
+            "height": 280,
+            "innerRadius": 0.6,
+            "padAngle": 1,
+            "cornerRadius": 3
+          }
+        },
+        {
+          "type": "RichChart",
+          "spec_version": "1",
+          "title": "Cashflow trend",
+          "chart_type": "line",
+          "xAxis": "month",
+          "data": [
+            { "month": "Jan", "actual": 1200, "target": 1100 },
+            { "month": "Feb", "actual": 1350, "target": 1200 },
+            { "month": "Mar", "actual": 1280, "target": 1250 }
+          ],
+          "series": [
+            { "type": "line", "dataKey": "actual", "label": "Actual" },
+            { "type": "line", "dataKey": "target", "label": "Target" }
+          ],
+          "nivo_props": {
+            "height": 280
+          }
+        }
+      ],
       "properties": {
         "type": {
           "type": "string",

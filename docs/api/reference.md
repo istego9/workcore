@@ -520,6 +520,7 @@ For full user interaction (approval/forms/files) integrate `POST /chat` in addit
 
 ### RichChart extension
 - `RichChart` is a WorkCore custom widget extension, not a stock ChatKit-native widget.
+- Legacy custom `Chart` aliases are tolerated only when explicit RichChart-only fields are present; stock ChatKit `Chart` semantics remain separate.
 - `RichChart v1` supports client-only interactivity only.
 - Canonical fields:
   - `type`
@@ -532,7 +533,80 @@ For full user interaction (approval/forms/files) integrate `POST /chat` in addit
   - `title`
   - `subtitle`
   - `description`
+  - `xAxis`
 - If a client does not advertise `RichChart` support, the server returns a native fallback widget instead.
+
+## Example: RichChart donut widget
+```json
+{
+  "type": "RichChart",
+  "spec_version": "1",
+  "title": "Budget allocation",
+  "chart_type": "pie",
+  "data": [
+    { "id": "Needs", "value": 55 },
+    { "id": "Savings", "value": 25 },
+    { "id": "Wants", "value": 20 }
+  ],
+  "nivo_props": {
+    "height": 280,
+    "innerRadius": 0.6,
+    "padAngle": 1,
+    "cornerRadius": 3
+  }
+}
+```
+
+## Example: RichChart line widget
+```json
+{
+  "type": "RichChart",
+  "spec_version": "1",
+  "title": "Cashflow trend",
+  "chart_type": "line",
+  "xAxis": "month",
+  "data": [
+    { "month": "Jan", "actual": 1200, "target": 1100 },
+    { "month": "Feb", "actual": 1350, "target": 1200 },
+    { "month": "Mar", "actual": 1280, "target": 1250 }
+  ],
+  "series": [
+    { "type": "line", "dataKey": "actual", "label": "Actual" },
+    { "type": "line", "dataKey": "target", "label": "Target" }
+  ],
+  "nivo_props": {
+    "height": 280
+  }
+}
+```
+
+## Example: native fallback widget when RichChart is unsupported
+```json
+{
+  "type": "Card",
+  "children": [
+    {
+      "type": "Col",
+      "children": [
+        { "type": "Title", "value": "Cashflow trend" },
+        {
+          "type": "DataTable",
+          "columns": [
+            { "key": "month", "label": "month" },
+            { "key": "actual", "label": "actual" },
+            { "key": "target", "label": "target" }
+          ],
+          "rows": [
+            { "month": "Jan", "actual": 1200, "target": 1100 },
+            { "month": "Feb", "actual": 1350, "target": 1200 },
+            { "month": "Mar", "actual": 1280, "target": 1250 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
 
 ## Example: capability-aware thread create (RichChart)
 ```bash

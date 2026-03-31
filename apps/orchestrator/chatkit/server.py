@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from inspect import isawaitable
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
@@ -37,9 +38,9 @@ from .widgets import (
 
 Transcriber = Callable[[AudioInput, ChatKitContext], Awaitable[TranscriptionResult] | TranscriptionResult]
 _RICH_CHART_SPEC_VERSION = "1"
+_RICH_CHART_EMISSION_ENV = "WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION"
 _ROOT_WIDGET_TYPES = {"Card", "ListView"}
-_RICH_CHART_TYPES = {"RichChart", "Chart"}
-_FALLBACK_COMPONENT_TYPES = _ROOT_WIDGET_TYPES | _RICH_CHART_TYPES | {"DataTable"}
+_WIDGET_COMPONENT_TYPES = _ROOT_WIDGET_TYPES | {"RichChart", "Chart", "DataTable"}
 
 
 class TranscriptionUnavailableError(RuntimeError):
@@ -48,6 +49,23 @@ class TranscriptionUnavailableError(RuntimeError):
 
 class InvalidTranscriptionInputError(ValueError):
     pass
+
+
+def _env_flag_enabled(name: str) -> bool:
+    value = (os.getenv(name) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _is_legacy_rich_chart_alias(payload: Dict[str, Any]) -> bool:
+    if payload.get("type") != "Chart":
+        return False
+    if isinstance(payload.get("spec_version"), str) and payload.get("spec_version"):
+        return True
+    if isinstance(payload.get("chart_type"), str) and payload.get("chart_type", "").strip():
+        return True
+    if isinstance(payload.get("chartType"), str) and payload.get("chartType", "").strip():
+        return True
+    return isinstance(payload.get("nivo_props") or payload.get("nivoProps"), dict)
 
 
 class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
@@ -379,6 +397,8 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
 
     @staticmethod
     def _rich_chart_supported(metadata: Dict[str, Any]) -> bool:
+        if not _env_flag_enabled(_RICH_CHART_EMISSION_ENV):
+            return False
         client_capabilities = metadata.get("client_capabilities")
         if not isinstance(client_capabilities, dict):
             return False
@@ -402,7 +422,7 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
         for candidate in candidates:
             if isinstance(candidate, dict):
                 component_type = candidate.get("type")
-                if isinstance(component_type, str) and component_type in _FALLBACK_COMPONENT_TYPES:
+                if isinstance(component_type, str) and component_type in _WIDGET_COMPONENT_TYPES:
                     return candidate
         return None
 
@@ -434,13 +454,15 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
                         next_children.append(transformed)
                 next_payload["children"] = next_children
             return next_payload
-        if component_type in _RICH_CHART_TYPES:
+        if component_type == "RichChart" or _is_legacy_rich_chart_alias(payload):
             normalized = self._normalize_rich_chart_component(payload)
             if normalized is None:
                 return self._card_summary_component("RichChart payload is invalid.")
             if rich_chart_supported:
                 return normalized
             return self._fallback_component_from_rich_chart(normalized)
+        if component_type == "Chart":
+            return dict(payload)
         return dict(payload)
 
     @staticmethod

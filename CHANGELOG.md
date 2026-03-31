@@ -7,6 +7,32 @@ The format follows a simple date-based log.
 ## 2026-03-31
 
 ### API diff vs previous version
+- Previous API version: `0.24.9`
+- Current API version: `0.24.10`
+- Compatibility: additive (RichChart rollout gating, native Chart preservation, and public example publication added; canonical `/chat` transport preserved)
+
+### Added
+- Public RichChart schema examples now published directly in:
+  - `GET /schemas/chatkit-widget-extension.schema.json`
+- Public API reference and agent integration kit now publish canonical examples for:
+  - RichChart donut payload
+  - RichChart line payload
+  - native fallback widget when RichChart is unsupported
+
+### Changed
+- RichChart server emission is now gated behind runtime rollout control and can only be enabled after host-matrix validation in the Azure deploy workflow.
+- Native stock ChatKit `Chart` payloads are no longer treated as RichChart migration aliases unless explicit rich-chart-only fields are present.
+- Public RichChart documentation now explicitly includes optional `xAxis` in the canonical field list.
+
+### Deprecated
+- None.
+
+### Removed
+- None.
+
+## 2026-03-31
+
+### API diff vs previous version
 - Previous API version: `0.24.8`
 - Current API version: `0.24.9`
 - Compatibility: additive (RichChart widget extension negotiation and client capability hints added; canonical `/chat` transport preserved)

@@ -74,6 +74,11 @@ on:
         description: Optional integration HTTP allowed hosts (comma-separated)
         required: false
         default: ''
+      enable_rich_chart_emission_after_validation:
+        description: Enable RichChart emission only after host-matrix validation passes
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   id-token: write
@@ -197,7 +202,14 @@ jobs:
           WORKCORE_IMAGE: ${{ steps.build.outputs.image_ref }}
           CORS_ALLOW_ORIGINS: ${{ inputs.cors_allow_origins }}
           INTEGRATION_HTTP_ALLOWED_HOSTS: ${{ inputs.integration_http_allowed_hosts }}
+          WORKCORE_CHATKIT_ENABLE_RICH_CHART_EMISSION: '0'
         run: ./deploy/azure/scripts/deploy_apps.sh
+
+      - name: Validate RichChart rollout request
+        if: ${{ inputs.enable_rich_chart_emission_after_validation && !(inputs.deploy_frontdoor || inputs.deploy_apim) }}
+        run: |
+          echo "enable_rich_chart_emission_after_validation requires deploy_frontdoor or deploy_apim so host-matrix validation runs first." >&2
+          exit 1
 
       - name: Deploy APIM gateway policy
         if: ${{ inputs.deploy_apim }}
@@ -231,3 +243,11 @@ jobs:
           API_SECONDARY_DOMAIN: ${{ inputs.api_secondary_domain }}
           ENABLE_SECONDARY_API_DOMAIN: ${{ inputs.enable_secondary_api_domain }}
         run: ./scripts/check_public_host_matrix.sh
+
+      - name: Enable RichChart emission after validation
+        if: ${{ inputs.enable_rich_chart_emission_after_validation && (inputs.deploy_frontdoor || inputs.deploy_apim) }}
+        env:
+          AZ_RESOURCE_GROUP: ${{ inputs.resource_group }}
+          CHATKIT_APP_NAME: ${{ env.CHATKIT_APP_NAME }}
+          ENABLE_RICH_CHART_EMISSION: '1'
+        run: ./deploy/azure/scripts/set_chatkit_rich_chart_emission.sh

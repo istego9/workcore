@@ -44,7 +44,7 @@ Out of scope:
   - no partner-specific `RichChart` contract fork is allowed
 - Naming migration strategy:
   - public GA payloads emit `RichChart`
-  - reference renderer accepts both legacy custom `Chart` and new `RichChart` during migration
+  - reference renderer accepts new `RichChart` and only explicit rich-chart-marked legacy custom `Chart` payloads during migration
   - stock ChatKit `Chart` semantics must not be redefined
 - Capability strategy:
   - server emits `RichChart` only for known-capable clients/surfaces
@@ -98,9 +98,11 @@ Out of scope:
 - Rollout order:
   1. public-host hotfix for `GET /integration-capabilities` on every public host
   2. publish docs/spec and capability payload changes
-  3. ship renderer migration support (`Chart` + `RichChart`)
-  4. enable server `RichChart` emission for known-capable clients only
-  5. partner validation against canonical examples
+  3. ship renderer migration support (`RichChart` + explicit legacy custom `Chart` alias only)
+  4. deploy runtime with `RichChart` emission feature flag default-off
+  5. verify public host matrix
+  6. enable server `RichChart` emission for known-capable clients only after matrix validation
+  7. partner validation against canonical examples
 - Rollback:
   - disable server `RichChart` emission and keep fallback
   - keep additive docs/schema in place if already published

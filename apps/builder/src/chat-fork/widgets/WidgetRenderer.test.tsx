@@ -80,4 +80,28 @@ describe('WidgetRenderer', () => {
 
     expect(screen.getByText('RichChart(radar): data is required')).toBeInTheDocument();
   });
+
+  it('does not hijack stock ChatKit Chart components', () => {
+    render(
+      <MantineProvider>
+        <WidgetRenderer
+          widget={{
+            type: 'Card',
+            children: [
+              {
+                type: 'Chart',
+                data: [{ month: 'Jan', value: 10 }],
+                series: [{ type: 'line', dataKey: 'value', label: 'Value' }],
+                xAxis: 'month'
+              }
+            ]
+          }}
+          onAction={() => undefined}
+        />
+      </MantineProvider>
+    );
+
+    expect(screen.getByText('Unsupported widget component')).toBeInTheDocument();
+    expect(screen.getByText('Chart')).toBeInTheDocument();
+  });
 });
