@@ -15,6 +15,11 @@ Define the WorkCore `RichChart` widget extension as a custom chart-rendering con
 
 `RichChart v1` is not intended to be a stock ChatKit-native component.
 
+`RichChart v1` is a platform-wide public compatibility feature:
+- it applies to the shared WorkCore public chat contract, not to a single partner;
+- all public API hosts that expose the same `/chat` contract must expose the same `RichChart` compatibility semantics;
+- client capability negotiation must be generic and reusable across external integrators.
+
 ## Goals
 - Keep a single canonical `/chat` transport contract.
 - Make the rich chart contract explicit and unambiguous.
@@ -149,6 +154,11 @@ Fallback selection is server-owned and is not part of the `RichChart` payload it
 ## Capability negotiation
 Schema is the source of truth for payload shape. Capability negotiation is discovery-only.
 
+Compatibility negotiation is general-purpose:
+- not EPAM-specific;
+- not tied to `api.runwcr.com` only;
+- reusable by any external client integrating against the public WorkCore chat surface.
+
 ### Server discovery payload
 `GET /integration-capabilities` should advertise `RichChart` support under a widget extension section similar to:
 
@@ -184,6 +194,12 @@ Client requests should be able to advertise rich widget support additively via r
 ```
 
 The exact field must remain additive within request metadata, not a new top-level chat transport.
+
+### Public host consistency
+The following rule applies to every public API host that exposes the same public chat surface:
+- if `/chat`, `/agent-integration-kit*`, and `/openapi.yaml` are exposed, `GET /integration-capabilities` must also be exposed;
+- `RichChart` capability semantics must be consistent across those hosts;
+- host-specific rollout lag is a deployment defect, not a supported compatibility mode.
 
 ## Migration from legacy custom `Chart`
 Current WorkCore rich chart payloads use `Chart` as a custom extension name. That naming is transitional only.
@@ -270,6 +286,10 @@ Phase 2:
 
 Phase 3:
 - deprecate legacy custom `Chart` alias in the reference renderer
+
+Public rollout requirement:
+- validate the same behavior on every public host, including `api.hq21.tech` and `api.runwcr.com`
+- future public domains must be added to the same smoke matrix before release sign-off
 
 ## Open questions
 - Whether `DataTable` remains under the same extension schema file or gets its own versioning track.

@@ -17,6 +17,11 @@ This creates three problems:
 
 Product direction requires expanded charting and client-side interactivity, while preserving a single `/chat` transport contract and avoiding a full chat protocol fork.
 
+This decision is platform-wide and not partner-specific:
+- `RichChart` must be part of the general public compatibility model for WorkCore chat integrations;
+- all public API hosts that expose the same public chat surface must expose the same compatibility semantics;
+- no partner should require a custom contract fork just to use rich chart rendering.
+
 ## Decision
 Adopt a custom rich widget extension named `RichChart` for WorkCore-specific chart rendering.
 
@@ -37,6 +42,7 @@ Adopt a custom rich widget extension named `RichChart` for WorkCore-specific cha
 4. Keep schema and capability roles separate.
 - Schema remains the source of truth for payload shape.
 - `GET /integration-capabilities` advertises whether `RichChart` is supported on the current public host / client surface.
+- This compatibility signal is part of the platform-wide public integration contract, not a partner-specific override.
 - Capability negotiation must not redefine the widget payload itself.
 
 5. Require explicit fallback behavior.
@@ -56,6 +62,7 @@ Adopt a custom rich widget extension named `RichChart` for WorkCore-specific cha
   - their own renderer for `RichChart`, or
   - fallback-only behavior.
 - Rich chart support is no longer implied for all generic ChatKit consumers.
+- Public host drift becomes more visible because all public hosts are expected to advertise the same compatibility system.
 
 ### Compatibility
 - Additive at the transport level: `/chat` and widget item delivery remain unchanged.
@@ -67,5 +74,6 @@ Adopt a custom rich widget extension named `RichChart` for WorkCore-specific cha
 ## Follow-up
 - Define the exact `RichChart v1` payload schema and examples.
 - Extend `GET /integration-capabilities` with `widget_extensions.RichChart`.
+- Add public-host consistency checks so all public API hosts expose the same capability surface.
 - Add explicit fallback selection rules and deployment smoke checks for public hosts.
 - Revisit `RichChart v2` only when server-backed interactivity becomes a real requirement.

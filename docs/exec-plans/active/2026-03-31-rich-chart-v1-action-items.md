@@ -8,7 +8,8 @@ Task classification: B + C + E
 - Remove semantic ambiguity between stock ChatKit `Chart` and WorkCore's custom Nivo-based chart payload.
 - Keep a single `/chat` transport contract and add `RichChart` as an additive extension inside the existing widget item model.
 - Scope `RichChart v1` to client-only interactivity only.
-- Restore public-host contract alignment so capability discovery works on `api.runwcr.com`.
+- Make `RichChart` part of the general public compatibility system for WorkCore integrations, not a partner-specific behavior.
+- Restore public-host contract alignment so capability discovery works consistently on every public API host.
 
 In scope:
 - Public contract wording and schema changes for `RichChart`
@@ -38,6 +39,9 @@ Out of scope:
 - Transport compatibility remains additive:
   - `POST /chat` is unchanged
   - widget delivery stays inside `thread.item.done`
+- Compatibility is platform-wide:
+  - the same capability model must apply across all public hosts exposing the WorkCore public chat surface
+  - no partner-specific `RichChart` contract fork is allowed
 - Naming migration strategy:
   - public GA payloads emit `RichChart`
   - reference renderer accepts both legacy custom `Chart` and new `RichChart` during migration
@@ -67,7 +71,7 @@ Out of scope:
 - API integration tests:
   - `/chat` fallback when client capability is absent
   - `/chat` `RichChart` emission when client capability is present
-  - public `api.runwcr.com` route exposure for `GET /integration-capabilities`
+  - public host route exposure for `GET /integration-capabilities`
 - Builder unit tests:
   - renderer accepts `RichChart`
   - migration alias `Chart` still renders during transition
@@ -92,7 +96,7 @@ Out of scope:
 
 ## 7) Rollout/rollback notes
 - Rollout order:
-  1. public-host hotfix for `GET /integration-capabilities`
+  1. public-host hotfix for `GET /integration-capabilities` on every public host
   2. publish docs/spec and capability payload changes
   3. ship renderer migration support (`Chart` + `RichChart`)
   4. enable server `RichChart` emission for known-capable clients only
@@ -112,7 +116,7 @@ Out of scope:
 ### Iteration 1: contract alignment and deployment hotfix
 - Add `/integration-capabilities` to Front Door route patterns.
 - Mark `/integration-capabilities` as a public route in APIM policy.
-- Add deployment smoke checks for `api.runwcr.com`.
+- Add deployment smoke checks for every public API host.
 - Publish spec docs and ADR.
 
 ### Iteration 2: widget contract and reference renderer migration
@@ -137,7 +141,7 @@ Out of scope:
   - public contract docs and runtime stay aligned
   - `RichChart` examples validate and render on `chat-fork`
   - no-capability clients receive fallback, not broken widgets
-  - `GET /integration-capabilities` responds on all public hosts
+  - `GET /integration-capabilities` responds on all public hosts with the same compatibility semantics
 
 ## Rollout and rollback
 - Rollout steps:
