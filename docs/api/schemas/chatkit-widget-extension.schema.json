@@ -1,13 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ChatForkWidgetExtension",
-  "description": "Additive extension components rendered by fork frontend while preserving ChatKit widget compatibility.",
+  "description": "Additive widget extension components rendered by WorkCore capability-aware chat clients while preserving the canonical ChatKit transport contract.",
   "oneOf": [
     {
       "$ref": "#/definitions/dataTable"
     },
     {
-      "$ref": "#/definitions/chart"
+      "$ref": "#/definitions/richChart"
     }
   ],
   "definitions": {
@@ -45,13 +45,26 @@
       },
       "required": ["type", "columns", "rows"]
     },
-    "chart": {
+    "richChart": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["Chart"]
+          "enum": ["RichChart"]
+        },
+        "spec_version": {
+          "type": "string",
+          "const": "1"
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
         },
         "chart_type": {
           "type": "string",
@@ -90,6 +103,17 @@
           "type": "object",
           "additionalProperties": true
         },
+        "xAxis": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "additionalProperties": true
+            }
+          ]
+        },
         "data": {
           "oneOf": [
             {
@@ -113,7 +137,7 @@
           }
         }
       },
-      "required": ["type"]
+      "required": ["type", "spec_version", "chart_type", "data"]
     }
   }
 }

@@ -132,6 +132,10 @@ def main() -> int:
         ).lower()
         if "negotiation" not in negotiation_text:
             errors.append("OpenAPI `GET /integration-capabilities` must describe feature negotiation purpose")
+    if "widget_extensions" not in openapi_text or "RichChart" not in openapi_text:
+        errors.append("OpenAPI must document `RichChart` widget extension negotiation")
+    if "client_capabilities" not in openapi_text:
+        errors.append("OpenAPI must document additive `metadata.client_capabilities`")
 
     for path_name in ("/capabilities", "/capabilities/{capability_id}/versions"):
         path_item = paths.get(path_name)
@@ -376,6 +380,16 @@ def main() -> int:
         errors.append("docs/api/reference.md must keep capability registry/negotiation separation guidance")
     if "status` (`PASS` | `WARN` | `FAIL`)" not in reference_text:
         errors.append("docs/api/reference.md must document doctor check PASS/WARN/FAIL statuses")
+    if "RichChart" not in reference_text:
+        errors.append("docs/api/reference.md must document `RichChart` extension support")
+    if "client_capabilities" not in reference_text:
+        errors.append("docs/api/reference.md must document additive `metadata.client_capabilities`")
+
+    widget_schema_text = _read_text(ROOT / "docs" / "api" / "schemas" / "chatkit-widget-extension.schema.json", errors)
+    if '"RichChart"' not in widget_schema_text:
+        errors.append("widget extension schema must expose `RichChart`")
+    if '"Chart"' in widget_schema_text and '"RichChart"' not in widget_schema_text:
+        errors.append("widget extension schema must not expose legacy custom `Chart` as the public contract")
 
     guide_text = _read_text(ROOT / "docs" / "integration" / "workcore-api-integration-guide.md", errors)
     for required_snippet in (
@@ -486,6 +500,21 @@ def main() -> int:
                 "apps/orchestrator/api/app.py missing integration check snippet for chat alias policy: "
                 f"`{required_snippet}`"
             )
+    for required_snippet in ("RichChart", "client_capabilities", "widget_extensions"):
+        if required_snippet not in integration_kit_text:
+            errors.append(f"apps/orchestrator/api/app.py must document `{required_snippet}` in integration surfaces")
+
+    frontdoor_text = _read_text(ROOT / "deploy" / "azure" / "scripts" / "deploy_frontdoor.sh", errors)
+    if "/integration-capabilities" not in frontdoor_text:
+        errors.append("deploy_frontdoor.sh must route `/integration-capabilities` on public API hosts")
+
+    apim_text = _read_text(ROOT / "deploy" / "azure" / "scripts" / "deploy_apim.sh", errors)
+    if 'path == "/integration-capabilities"' not in apim_text:
+        errors.append("deploy_apim.sh must treat `/integration-capabilities` as a public route")
+
+    deploy_workflow_text = _read_text(ROOT / ".github" / "workflows" / "deploy-azure.yml", errors)
+    if "check_public_host_matrix.sh" not in deploy_workflow_text:
+        errors.append("deploy-azure workflow must run public host compatibility smoke checks")
 
     onboarding_text = _read_text(ROOT / "apps" / "orchestrator" / "api" / "partner_self_service.py", errors)
     for required_snippet in (

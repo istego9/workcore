@@ -19,7 +19,7 @@ API_PRIMARY_DOMAIN="${API_PRIMARY_DOMAIN:-${API_DOMAIN:-}}"
 API_SECONDARY_DOMAIN="${API_SECONDARY_DOMAIN:-}"
 ENABLE_SECONDARY_API_DOMAIN="${ENABLE_SECONDARY_API_DOMAIN:-false}"
 API_USE_APIM_GATEWAY="${API_USE_APIM_GATEWAY:-true}"
-API_ROUTE_PATTERNS="${API_ROUTE_PATTERNS:-/health,/openapi.yaml,/api-reference,/workflow-authoring-guide,/schemas/*,/agent-integration-kit,/agent-integration-kit.json,/agent-integration-test,/agent-integration-test.json,/agent-integration-test/validate-draft,/agent-integration-logs,/projects,/projects/*,/capabilities,/capabilities/*,/orchestrator/*,/workflows,/workflows/*,/runs/*,/handoff/*,/webhooks/*,/artifacts/*}"
+API_ROUTE_PATTERNS="${API_ROUTE_PATTERNS:-/health,/openapi.yaml,/api-reference,/workflow-authoring-guide,/schemas/*,/integration-capabilities,/agent-integration-kit,/agent-integration-kit.json,/agent-integration-test,/agent-integration-test.json,/agent-integration-test/validate-draft,/agent-integration-logs,/projects,/projects/*,/capabilities,/capabilities/*,/orchestrator/*,/workflows,/workflows/*,/runs/*,/handoff/*,/webhooks/*,/artifacts/*}"
 
 is_true() {
   local value

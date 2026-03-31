@@ -2486,6 +2486,7 @@ class ApiTests(unittest.TestCase):
             "auth",
             "chat",
             "runtime_features",
+            "widget_extensions",
             "docs",
         ):
             self.assertIn(key, payload)
@@ -2497,6 +2498,12 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(payload["runtime_features"]["document_payload"]["artifact_ref_default"])
         self.assertTrue(payload["runtime_features"]["capability_registry"])
         self.assertTrue(payload["runtime_features"]["workflow_version_pinning"])
+        self.assertEqual(payload["widget_extensions"]["RichChart"]["component_type"], "RichChart")
+        self.assertEqual(payload["widget_extensions"]["RichChart"]["schema_url"], "http://testserver/schemas/chatkit-widget-extension.schema.json")
+        self.assertEqual(payload["widget_extensions"]["RichChart"]["spec_versions"], ["1"])
+        self.assertEqual(payload["widget_extensions"]["RichChart"]["interactive_mode"], "client_only")
+        self.assertIn("line", payload["widget_extensions"]["RichChart"]["supported_chart_types"])
+        self.assertIn("waffle", payload["widget_extensions"]["RichChart"]["supported_chart_types"])
         self.assertTrue(payload["docs"]["api_reference"].endswith("/api-reference"))
         self.assertTrue(payload["docs"]["integration_guide"].endswith("/agent-integration-kit"))
 
@@ -2521,6 +2528,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Option B: headless integration against ChatKit API", markdown_response.text)
         self.assertIn("/chat", markdown_response.text)
         self.assertIn("input.transcribe", markdown_response.text)
+        self.assertIn("RichChart", markdown_response.text)
+        self.assertIn("client_capabilities", markdown_response.text)
         self.assertIn("Example: project bootstrap + registry binding", markdown_response.text)
         self.assertIn("Example: orchestrator message", markdown_response.text)
 
@@ -2551,6 +2560,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             payload["schemas"]["workflow_export_v1"]["properties"]["schema_version"]["const"],
             "workflow_export_v1",
+        )
+        self.assertEqual(
+            payload["schemas"]["chatkit_widget_extension"]["definitions"]["richChart"]["properties"]["type"]["enum"],
+            ["RichChart"],
+        )
+        self.assertEqual(
+            payload["schemas"]["chatkit_widget_extension"]["definitions"]["richChart"]["properties"]["spec_version"]["const"],
+            "1",
         )
 
         guide_response = self.client.get("/workflow-authoring-guide")

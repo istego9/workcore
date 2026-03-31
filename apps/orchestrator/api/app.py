@@ -120,6 +120,29 @@ _RUN_LEDGER_FK_RETRY_BASE_DELAY_SECONDS = 0.02
 _CHATKIT_ALIAS_SUNSET_AT = datetime(2026, 4, 4, 0, 0, 0, tzinfo=timezone.utc)
 
 
+def _load_chatkit_widget_extension_schema_payload() -> Dict[str, Any]:
+    return json.loads(_CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _rich_chart_supported_types(schema_payload: Dict[str, Any]) -> list[str]:
+    definitions = schema_payload.get("definitions")
+    if not isinstance(definitions, dict):
+        return []
+    rich_chart = definitions.get("richChart") or definitions.get("chart")
+    if not isinstance(rich_chart, dict):
+        return []
+    properties = rich_chart.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    chart_type = properties.get("chart_type")
+    if not isinstance(chart_type, dict):
+        return []
+    enum_values = chart_type.get("enum")
+    if not isinstance(enum_values, list):
+        return []
+    return [str(item) for item in enum_values if isinstance(item, str) and item.strip()]
+
+
 class RunLedgerWriteRaceError(RuntimeError):
     incident_code = "RUN_LEDGER_RUN_NOT_VISIBLE"
 
@@ -2936,6 +2959,10 @@ def create_app(
 
     async def integration_capabilities(request: Request) -> JSONResponse:
         urls = _public_doc_urls(request)
+        try:
+            rich_chart_types = _rich_chart_supported_types(_load_chatkit_widget_extension_schema_payload())
+        except Exception:
+            rich_chart_types = []
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "api_version": _openapi_api_version(),
@@ -2986,6 +3013,15 @@ def create_app(
                 },
                 "capability_registry": True,
                 "workflow_version_pinning": True,
+            },
+            "widget_extensions": {
+                "RichChart": {
+                    "component_type": "RichChart",
+                    "schema_url": urls["chatkit_widget_extension_schema"],
+                    "spec_versions": ["1"],
+                    "interactive_mode": "client_only",
+                    "supported_chart_types": rich_chart_types,
+                }
             },
             "docs": {
                 "api_reference": urls["api_reference"],
@@ -3923,7 +3959,7 @@ def create_app(
             )
             return PlainTextResponse("chatkit widget extension schema not found", status_code=404)
         try:
-            payload = json.loads(_CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.read_text(encoding="utf-8"))
+            payload = _load_chatkit_widget_extension_schema_payload()
         except Exception as exc:
             _integration_log(
                 request,
@@ -3946,6 +3982,10 @@ def create_app(
     async def agent_integration_kit(request: Request) -> PlainTextResponse:
         urls = _public_doc_urls(request)
         public_base_url = _public_base_url(request)
+        try:
+            rich_chart_types = _rich_chart_supported_types(_load_chatkit_widget_extension_schema_payload())
+        except Exception:
+            rich_chart_types = []
         updated_at = datetime.now(timezone.utc).isoformat()
         lines = [
             "# WorkCore Agent Integration Kit",
@@ -4057,6 +4097,15 @@ def create_app(
             "  - `threads.add_user_message` (SSE response)",
             "  - `threads.custom_action` (SSE response)",
             "  - `input.transcribe` (non-stream JSON response `{ text }`)",
+            "- `RichChart` is a WorkCore custom widget extension for capability-aware clients; it is not the stock ChatKit `Chart` widget.",
+            "- Capability-aware clients should advertise support additively via `metadata.client_capabilities.widget_extensions.RichChart.spec_versions = [\"1\"]`.",
+            "- If a client does not advertise `RichChart` support, server returns a native fallback widget instead of a rich chart payload.",
+            (
+                "- Supported `RichChart` chart types: "
+                + ", ".join(f"`{item}`" for item in rich_chart_types)
+                if rich_chart_types
+                else "- Supported `RichChart` chart types are defined by the published widget extension schema."
+            ),
             "",
             "### Example: create thread (SSE)",
             "```bash",
@@ -4064,7 +4113,7 @@ def create_app(
             "  -H \"Authorization: Bearer $TOKEN\" \\",
             "  -H \"X-Tenant-Id: $TENANT\" \\",
             "  -H \"Content-Type: application/json\" \\",
-            "  -d '{\"type\":\"threads.create\",\"metadata\":{\"workflow_id\":\"'\"$WORKFLOW_ID\"'\",\"workflow_version_id\":\"'\"$WORKFLOW_VERSION_ID\"'\",\"project_id\":\"'\"$PROJECT_ID\"'\"},\"params\":{\"input\":{\"content\":[{\"type\":\"input_text\",\"text\":\"start\"}],\"attachments\":[]}}}'",
+            "  -d '{\"type\":\"threads.create\",\"metadata\":{\"workflow_id\":\"'\"$WORKFLOW_ID\"'\",\"workflow_version_id\":\"'\"$WORKFLOW_VERSION_ID\"'\",\"project_id\":\"'\"$PROJECT_ID\"'\",\"client_capabilities\":{\"widget_extensions\":{\"RichChart\":{\"spec_versions\":[\"1\"]}}}},\"params\":{\"input\":{\"content\":[{\"type\":\"input_text\",\"text\":\"start\"}],\"attachments\":[]}}}'",
             "```",
             "",
             "### Example: transcribe audio (JSON)",
@@ -4194,9 +4243,7 @@ def create_app(
             chatkit_transcribe_schema = json.loads(
                 _CHATKIT_INPUT_TRANSCRIBE_SCHEMA_PATH.read_text(encoding="utf-8")
             )
-            chatkit_widget_extension_schema = json.loads(
-                _CHATKIT_WIDGET_EXTENSION_SCHEMA_PATH.read_text(encoding="utf-8")
-            )
+            chatkit_widget_extension_schema = _load_chatkit_widget_extension_schema_payload()
         except Exception as exc:
             _integration_log(
                 request,

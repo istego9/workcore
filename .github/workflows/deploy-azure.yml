@@ -223,3 +223,11 @@ jobs:
           APIM_NAME: ${{ env.APIM_NAME }}
           CHATKIT_DOMAIN: ${{ inputs.chatkit_domain }}
         run: ./deploy/azure/scripts/deploy_frontdoor.sh
+
+      - name: Check public host compatibility matrix
+        if: ${{ inputs.deploy_frontdoor || inputs.deploy_apim }}
+        env:
+          API_PRIMARY_DOMAIN: ${{ inputs.api_primary_domain }}
+          API_SECONDARY_DOMAIN: ${{ inputs.api_secondary_domain }}
+          ENABLE_SECONDARY_API_DOMAIN: ${{ inputs.enable_secondary_api_domain }}
+        run: ./scripts/check_public_host_matrix.sh

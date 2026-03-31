@@ -4,6 +4,33 @@ All notable public API changes in this repository must be documented in this fil
 
 The format follows a simple date-based log.
 
+## 2026-03-31
+
+### API diff vs previous version
+- Previous API version: `0.24.8`
+- Current API version: `0.24.9`
+- Compatibility: additive (RichChart widget extension negotiation and client capability hints added; canonical `/chat` transport preserved)
+
+### Added
+- Public widget extension negotiation in `GET /integration-capabilities`:
+  - `widget_extensions.RichChart`
+- Additive chat request metadata field:
+  - `metadata.client_capabilities.widget_extensions.RichChart.spec_versions`
+- Public custom widget extension schema for:
+  - `RichChart`
+  - `DataTable`
+
+### Changed
+- Public custom rich chart contract is now named `RichChart` instead of reusing the stock ChatKit `Chart` name.
+- API reference now documents `RichChart` as a capability-aware custom widget extension with client-only interactivity.
+- Architecture docs now distinguish `RichChart` from the stock ChatKit `Chart`.
+
+### Deprecated
+- Public use of legacy custom widget component name `Chart` for WorkCore rich chart payloads.
+
+### Removed
+- None.
+
 ## 2026-03-17
 
 ### API diff vs previous version

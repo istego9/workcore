@@ -232,6 +232,7 @@ Runtime validates pinned references when present.
   - auth/header expectations
   - canonical chat endpoint + deprecated alias lifecycle
   - runtime feature flags (`projection_controls`, `document_payload`, capability registry, version pinning)
+  - widget extension support (`RichChart`)
 - Exclusions by design:
   - no tenant readiness checks
   - no onboarding doctor verdicts
@@ -502,6 +503,11 @@ For full user interaction (approval/forms/files) integrate `POST /chat` in addit
 - Recommended metadata keys for reconciliation:
   - `external_user_id`
   - `external_session_id`
+- Client capability negotiation:
+  - Capability-aware chat clients should advertise rich widget support via `metadata.client_capabilities`.
+  - `RichChart` support is declared as:
+    - `metadata.client_capabilities.widget_extensions.RichChart.spec_versions = ["1"]`
+  - This field is additive and does not change the canonical `/chat` transport contract.
 - Persist and reconcile:
   - `thread_id` (chat session identity)
   - `run_id` (workflow execution identity)
@@ -511,6 +517,49 @@ For full user interaction (approval/forms/files) integrate `POST /chat` in addit
   - `chat_resolution_mode` (`explicit_workflow`, `project_default`, `header_default`)
 
 `POST /chat` uses the same OAuth access token model as other protected API endpoints.
+
+### RichChart extension
+- `RichChart` is a WorkCore custom widget extension, not a stock ChatKit-native widget.
+- `RichChart v1` supports client-only interactivity only.
+- Canonical fields:
+  - `type`
+  - `spec_version`
+  - `chart_type`
+  - `data`
+  - `series`
+  - `nivo_props`
+- Optional fields:
+  - `title`
+  - `subtitle`
+  - `description`
+- If a client does not advertise `RichChart` support, the server returns a native fallback widget instead.
+
+## Example: capability-aware thread create (RichChart)
+```bash
+curl -N -X POST "https://api.workcore.build/chat" \
+  -H "X-Project-Id: proj_chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "project_id": "proj_chat",
+      "client_capabilities": {
+        "widget_extensions": {
+          "RichChart": {
+            "spec_versions": ["1"]
+          }
+        }
+      }
+    },
+    "type": "threads.create",
+    "params": {
+      "input": {
+        "content": [{"type": "input_text", "text": "start"}],
+        "attachments": [],
+        "inference_options": {}
+      }
+    }
+  }'
+```
 
 ## Example: start chat thread from project scope only (SSE)
 ```bash

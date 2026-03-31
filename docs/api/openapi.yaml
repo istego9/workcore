@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Workflow Platform API
-  version: 0.24.8
+  version: 0.24.9
   description: >
     MVP+ API for workflows, runs, interrupts, streaming, and webhooks with transparent run metadata propagation.
     Project orchestration mode supports intent routing, disambiguation, workflow switching, and direct workflow start.
@@ -116,7 +116,7 @@ paths:
   /schemas/chatkit-widget-extension.schema.json:
     get:
       tags: [chatkit]
-      summary: JSON Schema for fork frontend widget extension payloads
+      summary: JSON Schema for RichChart and DataTable widget extension payloads
       security: []
       responses:
         '200':
@@ -155,8 +155,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/IntegrationCapabilities'
               example:
-                generated_at: '2026-03-11T15:30:00Z'
-                api_version: '0.24.7'
+                generated_at: '2026-03-31T15:30:00Z'
+                api_version: '0.24.9'
                 error_contract:
                   schema_id: platform_error_envelope
                   schema_version: '1.0.0'
@@ -202,6 +202,41 @@ paths:
                     artifact_ref_default: true
                   capability_registry: true
                   workflow_version_pinning: true
+                widget_extensions:
+                  RichChart:
+                    component_type: RichChart
+                    schema_url: https://api.hq21.tech/schemas/chatkit-widget-extension.schema.json
+                    spec_versions: ['1']
+                    interactive_mode: client_only
+                    supported_chart_types:
+                      - bar
+                      - line
+                      - pie
+                      - area-bump
+                      - bump
+                      - boxplot
+                      - bullet
+                      - calendar
+                      - chord
+                      - circle-packing
+                      - funnel
+                      - geo
+                      - heatmap
+                      - icicle
+                      - marimekko
+                      - network
+                      - parallel-coordinates
+                      - polar-bar
+                      - radar
+                      - radial-bar
+                      - sankey
+                      - scatterplot
+                      - stream
+                      - sunburst
+                      - swarmplot
+                      - tree
+                      - treemap
+                      - waffle
                 docs:
                   api_reference: https://api.hq21.tech/api-reference
                   integration_guide: https://api.hq21.tech/agent-integration-kit
@@ -434,6 +469,8 @@ paths:
         `metadata.workflow_id` keeps explicit direct workflow mode, otherwise
         `metadata.project_id`, otherwise `X-Project-Id`, resolves the project's
         configured default chat workflow.
+        Clients may advertise additive widget extension support through
+        `metadata.client_capabilities` without changing the canonical transport contract.
         For interactive operations (`threads.create`, `threads.add_user_message`, `threads.custom_action`)
         the response is streamed as SSE where each `data:` line is a JSON ChatKit stream event.
         For `input.transcribe` requests, the response is non-streaming JSON with transcription text.
@@ -449,6 +486,10 @@ paths:
                 value:
                   metadata:
                     project_id: proj_chat
+                    client_capabilities:
+                      widget_extensions:
+                        RichChart:
+                          spec_versions: ["1"]
                     external_user_id: user_42
                     external_session_id: session_abc
                   type: threads.create
@@ -466,6 +507,10 @@ paths:
                     workflow_id: wf_chat
                     workflow_version_id: v1
                     project_id: proj_chat
+                    client_capabilities:
+                      widget_extensions:
+                        RichChart:
+                          spec_versions: ["1"]
                     external_user_id: user_42
                     external_session_id: session_abc
                   type: threads.create
@@ -2046,6 +2091,8 @@ components:
         `metadata.workflow_id` -> `metadata.project_id` -> `X-Project-Id`.
         `metadata.workflow_id` remains fully backward-compatible, and optional
         `workflow_version_id` still overrides the active published version in explicit mode.
+        `metadata.client_capabilities` is additive and allows clients to declare support
+        for WorkCore widget extensions such as `RichChart`.
       properties:
         workflow_id: { type: string }
         workflow_version_id: { type: string }
@@ -2054,8 +2101,33 @@ components:
           description: >
             Project scope used to resolve the project's configured default chat workflow
             when `workflow_id` is omitted.
+        client_capabilities:
+          $ref: '#/components/schemas/ChatKitClientCapabilities'
         external_user_id: { type: string }
         external_session_id: { type: string }
+      additionalProperties: true
+
+    ChatKitClientCapabilities:
+      type: object
+      properties:
+        widget_extensions:
+          $ref: '#/components/schemas/ChatKitWidgetExtensionCapabilities'
+      additionalProperties: true
+
+    ChatKitWidgetExtensionCapabilities:
+      type: object
+      properties:
+        RichChart:
+          $ref: '#/components/schemas/RichChartClientCapability'
+      additionalProperties: true
+
+    RichChartClientCapability:
+      type: object
+      properties:
+        spec_versions:
+          type: array
+          items: { type: string }
+      required: [spec_versions]
       additionalProperties: true
 
     ChatKitThreadCreateRequest:
@@ -3571,6 +3643,8 @@ components:
             - document_payload
             - capability_registry
             - workflow_version_pinning
+        widget_extensions:
+          $ref: '#/components/schemas/IntegrationWidgetExtensions'
         docs:
           type: object
           properties:
@@ -3584,7 +3658,37 @@ components:
         - auth
         - chat
         - runtime_features
+        - widget_extensions
         - docs
+
+    IntegrationWidgetExtensions:
+      type: object
+      properties:
+        RichChart:
+          $ref: '#/components/schemas/IntegrationWidgetExtensionSupport'
+      required: [RichChart]
+      additionalProperties: true
+
+    IntegrationWidgetExtensionSupport:
+      type: object
+      properties:
+        component_type: { type: string }
+        schema_url: { type: string, format: uri }
+        spec_versions:
+          type: array
+          items: { type: string }
+        interactive_mode:
+          type: string
+          enum: [client_only]
+        supported_chart_types:
+          type: array
+          items: { type: string }
+      required:
+        - component_type
+        - schema_url
+        - spec_versions
+        - interactive_mode
+        - supported_chart_types
 
     AgentIntegrationKit:
       type: object

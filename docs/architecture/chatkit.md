@@ -76,13 +76,14 @@ Status: Draft
   - Builder embeds `chat-fork.html` React shell behind feature flag.
   - Shell keeps parity with existing widget/action semantics and `/chat` payloads.
   - Extension renderer adds:
-    - chart mapping to Nivo adapters (`chart_type` registry):
+    - `RichChart` custom extension mapped to Nivo adapters (`chart_type` registry):
       - `bar`, `line`, `pie`, `area-bump`, `bump`
       - `boxplot`, `bullet`, `calendar`, `chord`, `circle-packing`
       - `funnel`, `geo`, `heatmap`, `icicle`, `marimekko`
       - `network`, `parallel-coordinates`, `polar-bar`, `radar`, `radial-bar`
       - `sankey`, `scatterplot`, `stream`, `sunburst`, `swarmplot`
       - `tree`, `treemap`, `waffle`
+    - legacy custom `Chart` accepted only as a renderer-side migration alias,
     - `DataTable` extension component (read-only MVP),
     - safe fallback card for unknown widget component types.
 

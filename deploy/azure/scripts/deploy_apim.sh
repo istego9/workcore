@@ -297,6 +297,7 @@ cat > "${POLICY_FILE}" <<'EOF_POLICY'
       return path == "/health"
         || path == "/openapi.yaml"
         || path == "/api-reference"
+        || path == "/integration-capabilities"
         || path == "/workflow-authoring-guide"
         || path == "/agent-integration-kit"
         || path == "/agent-integration-kit.json"

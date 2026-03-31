@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PRIMARY_HOST="${API_PRIMARY_DOMAIN:-api.hq21.tech}"
+SECONDARY_HOST="${API_SECONDARY_DOMAIN:-api.runwcr.com}"
+ENABLE_SECONDARY="${ENABLE_SECONDARY_API_DOMAIN:-true}"
+PUBLIC_API_HOSTS="${PUBLIC_API_HOSTS:-}"
+
+build_hosts() {
+  if [[ -n "${PUBLIC_API_HOSTS}" ]]; then
+    echo "${PUBLIC_API_HOSTS}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d'
+    return
+  fi
+  printf '%s\n' "${PRIMARY_HOST}"
+  if [[ "${ENABLE_SECONDARY,,}" == "1" || "${ENABLE_SECONDARY,,}" == "true" || "${ENABLE_SECONDARY,,}" == "yes" || "${ENABLE_SECONDARY,,}" == "on" ]]; then
+    printf '%s\n' "${SECONDARY_HOST}"
+  fi
+}
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
+first_signature=""
+first_host=""
+
+while IFS= read -r host; do
+  [[ -z "${host}" ]] && continue
+  openapi_url="https://${host}/openapi.yaml"
+  caps_url="https://${host}/integration-capabilities"
+
+  echo "[host-matrix] checking ${host}"
+  curl -fsS "${openapi_url}" | grep -q '^  /integration-capabilities:' || {
+    echo "[host-matrix] ${host}: OpenAPI is missing /integration-capabilities" >&2
+    exit 1
+  }
+  curl -fsS "${caps_url}" > "${TMP_DIR}/${host}.json"
+
+  signature="$(
+    python3 - <<'PY' "${TMP_DIR}/${host}.json"
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+signature = {
+    "chat": payload.get("chat"),
+    "widget_extensions": payload.get("widget_extensions"),
+}
+print(json.dumps(signature, sort_keys=True))
+PY
+  )"
+
+  if [[ -z "${first_signature}" ]]; then
+    first_signature="${signature}"
+    first_host="${host}"
+    continue
+  fi
+
+  if [[ "${signature}" != "${first_signature}" ]]; then
+    echo "[host-matrix] compatibility mismatch: ${host} differs from ${first_host}" >&2
+    echo "[host-matrix] ${first_host}: ${first_signature}" >&2
+    echo "[host-matrix] ${host}: ${signature}" >&2
+    exit 1
+  fi
+done < <(build_hosts)
+
+echo "[host-matrix] public host compatibility matrix passed"
