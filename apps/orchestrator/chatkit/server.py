@@ -36,6 +36,10 @@ from .widgets import (
 )
 
 Transcriber = Callable[[AudioInput, ChatKitContext], Awaitable[TranscriptionResult] | TranscriptionResult]
+_RICH_CHART_SPEC_VERSION = "1"
+_ROOT_WIDGET_TYPES = {"Card", "ListView"}
+_RICH_CHART_TYPES = {"RichChart", "Chart"}
+_FALLBACK_COMPONENT_TYPES = _ROOT_WIDGET_TYPES | _RICH_CHART_TYPES | {"DataTable"}
 
 
 class TranscriptionUnavailableError(RuntimeError):
@@ -285,7 +289,11 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
                 yield ProgressUpdateEvent(text=progress_text)
 
             if event.type == "run_completed":
-                yield self._assistant_message(thread, context, self._completion_text(run))
+                completion_widget = self._completion_widget(thread, context, run)
+                if completion_widget is not None:
+                    yield ThreadItemDoneEvent(item=completion_widget)
+                else:
+                    yield self._assistant_message(thread, context, self._completion_text(run))
             elif event.type == "run_failed":
                 yield self._assistant_message(thread, context, self._failure_text(event.payload, run))
 
@@ -342,6 +350,194 @@ class WorkflowChatKitServer(ChatKitServer[ChatKitContext]):
             created_at=datetime.now(),
             widget=widget,
         )
+
+    def _completion_widget(
+        self,
+        thread: ThreadMetadata,
+        context: ChatKitContext,
+        run: Run,
+    ) -> Optional[WidgetItem]:
+        widget_payload = self._extract_widget_payload(run.outputs)
+        if widget_payload is None:
+            return None
+        metadata: Dict[str, Any] = {}
+        if isinstance(run.metadata, dict):
+            metadata.update(run.metadata)
+        if isinstance(context.request_metadata, dict):
+            metadata.update(context.request_metadata)
+        rich_chart_supported = self._rich_chart_supported(metadata)
+        widget_root = self._normalize_widget_root(widget_payload, rich_chart_supported)
+        if widget_root is None:
+            return None
+        return WidgetItem(
+            id=self.store.generate_item_id("message", thread, context),
+            thread_id=thread.id,
+            created_at=datetime.now(),
+            widget=widget_root,
+            copy_text=self._widget_copy_text(widget_root),
+        )
+
+    @staticmethod
+    def _rich_chart_supported(metadata: Dict[str, Any]) -> bool:
+        client_capabilities = metadata.get("client_capabilities")
+        if not isinstance(client_capabilities, dict):
+            return False
+        widget_extensions = client_capabilities.get("widget_extensions")
+        if not isinstance(widget_extensions, dict):
+            return False
+        rich_chart = widget_extensions.get("RichChart")
+        if not isinstance(rich_chart, dict):
+            return False
+        spec_versions = rich_chart.get("spec_versions")
+        if not isinstance(spec_versions, list):
+            return False
+        normalized = {str(item).strip() for item in spec_versions if isinstance(item, str) and item.strip()}
+        return _RICH_CHART_SPEC_VERSION in normalized
+
+    @staticmethod
+    def _extract_widget_payload(outputs: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(outputs, dict):
+            return None
+        candidates: List[Any] = [outputs.get("widget"), outputs.get("result"), outputs]
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                component_type = candidate.get("type")
+                if isinstance(component_type, str) and component_type in _FALLBACK_COMPONENT_TYPES:
+                    return candidate
+        return None
+
+    def _normalize_widget_root(self, payload: Dict[str, Any], rich_chart_supported: bool) -> Optional[Dict[str, Any]]:
+        component_type = payload.get("type")
+        if not isinstance(component_type, str):
+            return None
+        if component_type in _ROOT_WIDGET_TYPES:
+            return self._transform_widget_component(payload, rich_chart_supported)
+        child = self._transform_widget_component(payload, rich_chart_supported)
+        if child is None:
+            return None
+        return {"type": "Card", "children": [child]}
+
+    def _transform_widget_component(self, payload: Dict[str, Any], rich_chart_supported: bool) -> Optional[Dict[str, Any]]:
+        component_type = payload.get("type")
+        if not isinstance(component_type, str):
+            return None
+        if component_type in _ROOT_WIDGET_TYPES:
+            next_payload = dict(payload)
+            children = payload.get("children")
+            if isinstance(children, list):
+                next_children: List[Dict[str, Any]] = []
+                for child in children:
+                    if not isinstance(child, dict):
+                        continue
+                    transformed = self._transform_widget_component(child, rich_chart_supported)
+                    if transformed is not None:
+                        next_children.append(transformed)
+                next_payload["children"] = next_children
+            return next_payload
+        if component_type in _RICH_CHART_TYPES:
+            normalized = self._normalize_rich_chart_component(payload)
+            if normalized is None:
+                return self._card_summary_component("RichChart payload is invalid.")
+            if rich_chart_supported:
+                return normalized
+            return self._fallback_component_from_rich_chart(normalized)
+        return dict(payload)
+
+    @staticmethod
+    def _normalize_rich_chart_component(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        chart_type = payload.get("chart_type") or payload.get("chartType")
+        data = payload.get("data")
+        if not isinstance(chart_type, str) or not chart_type.strip():
+            return None
+        if not isinstance(data, (list, dict)):
+            return None
+        normalized: Dict[str, Any] = {
+            "type": "RichChart",
+            "spec_version": _RICH_CHART_SPEC_VERSION,
+            "chart_type": chart_type.strip(),
+            "data": data,
+        }
+        for key in ("title", "subtitle", "description"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized[key] = value
+        series = payload.get("series")
+        if isinstance(series, list):
+            normalized["series"] = series
+        nivo_props = payload.get("nivo_props") or payload.get("nivoProps")
+        if isinstance(nivo_props, dict):
+            normalized["nivo_props"] = nivo_props
+        x_axis = payload.get("xAxis")
+        if isinstance(x_axis, (str, dict)):
+            normalized["xAxis"] = x_axis
+        return normalized
+
+    def _fallback_component_from_rich_chart(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        title = payload.get("title") if isinstance(payload.get("title"), str) else ""
+        description = payload.get("description") if isinstance(payload.get("description"), str) else ""
+        data = payload.get("data")
+        if isinstance(data, list) and data and all(isinstance(item, dict) for item in data):
+            columns = self._datatable_columns_from_rows(data)
+            if columns:
+                children: List[Dict[str, Any]] = []
+                if title:
+                    children.append({"type": "Title", "value": title})
+                if description:
+                    children.append({"type": "Text", "value": description})
+                children.append(
+                    {
+                        "type": "DataTable",
+                        "title": title or None,
+                        "columns": columns,
+                        "rows": data[:12],
+                    }
+                )
+                return {"type": "Col", "children": children}
+        summary = self._rich_chart_summary_text(payload)
+        return self._card_summary_component(summary, title=title, description=description)
+
+    @staticmethod
+    def _datatable_columns_from_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+        first_row = rows[0]
+        if not isinstance(first_row, dict):
+            return []
+        columns: List[Dict[str, Any]] = []
+        for key in list(first_row.keys())[:6]:
+            if not isinstance(key, str) or not key:
+                continue
+            columns.append({"key": key, "label": key})
+        return columns
+
+    def _card_summary_component(self, summary: str, *, title: str = "", description: str = "") -> Dict[str, Any]:
+        children: List[Dict[str, Any]] = []
+        if title:
+            children.append({"type": "Title", "value": title})
+        if description:
+            children.append({"type": "Text", "value": description})
+        children.append({"type": "Text", "value": summary})
+        return {"type": "Col", "children": children}
+
+    @staticmethod
+    def _rich_chart_summary_text(payload: Dict[str, Any]) -> str:
+        chart_type = str(payload.get("chart_type") or "unknown")
+        data = payload.get("data")
+        rows = len(data) if isinstance(data, list) else 0
+        series = payload.get("series")
+        series_count = len(series) if isinstance(series, list) else 0
+        if rows:
+            return f"RichChart fallback: {chart_type} chart with {rows} row(s) and {series_count} series."
+        if isinstance(data, dict):
+            return f"RichChart fallback: {chart_type} chart requires a RichChart-capable client."
+        return "RichChart fallback: chart data is unavailable."
+
+    @staticmethod
+    def _widget_copy_text(widget_root: Dict[str, Any]) -> Optional[str]:
+        try:
+            return json.dumps(widget_root, ensure_ascii=False)
+        except Exception:
+            return None
 
     @staticmethod
     def _progress_text(event_type: str, node_id: Optional[str], payload: Optional[Dict[str, Any]]) -> Optional[str]:

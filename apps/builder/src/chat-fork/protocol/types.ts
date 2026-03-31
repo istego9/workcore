@@ -80,9 +80,13 @@ export type WidgetComponent = {
   id?: string;
   key?: string;
   type: string;
+  spec_version?: string;
   children?: WidgetComponent[];
   value?: string;
   label?: string;
+  title?: string;
+  subtitle?: string;
+  description?: string;
   name?: string;
   placeholder?: string;
   required?: boolean;
@@ -92,7 +96,7 @@ export type WidgetComponent = {
   chartType?: string;
   nivo_props?: Record<string, unknown>;
   nivoProps?: Record<string, unknown>;
-  data?: Array<Record<string, string | number>>;
+  data?: Array<Record<string, unknown>> | Record<string, unknown>;
   series?: Array<Record<string, unknown>>;
   xAxis?: string | Record<string, unknown>;
   onClickAction?: WidgetActionPayload;

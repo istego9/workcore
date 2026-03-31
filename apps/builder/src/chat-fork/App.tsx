@@ -89,6 +89,13 @@ export default function App() {
     if (workflowVersionId.trim()) metadata.workflow_version_id = workflowVersionId.trim();
     if (projectId.trim()) metadata.project_id = projectId.trim();
     if (domainKey.trim()) metadata.domain_key = domainKey.trim();
+    metadata.client_capabilities = {
+      widget_extensions: {
+        RichChart: {
+          spec_versions: ['1']
+        }
+      }
+    };
     return metadata;
   }, [workflowId, workflowVersionId, projectId, domainKey]);
   const hasChatScope = workflowId.trim() || projectId.trim();

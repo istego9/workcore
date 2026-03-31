@@ -64,4 +64,20 @@ describe('WidgetRenderer', () => {
     expect(screen.getByText('A')).toBeInTheDocument();
     expect(screen.getByText('20')).toBeInTheDocument();
   });
+
+  it('routes RichChart components to the rich chart renderer', () => {
+    render(
+      <MantineProvider>
+        <WidgetRenderer
+          widget={{
+            type: 'Card',
+            children: [{ type: 'RichChart', chart_type: 'radar' }]
+          }}
+          onAction={() => undefined}
+        />
+      </MantineProvider>
+    );
+
+    expect(screen.getByText('RichChart(radar): data is required')).toBeInTheDocument();
+  });
 });

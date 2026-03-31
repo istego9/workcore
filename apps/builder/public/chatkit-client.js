@@ -271,13 +271,20 @@ const appendRequestMetadata = (body, { workflowId, workflowVersionId, projectId 
   if (typeof body !== 'string') return body;
   try {
     const parsed = JSON.parse(body);
-    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'threads.create') {
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.type !== 'string') {
       return body;
     }
     parsed.metadata = parsed.metadata || {};
     if (trim(workflowId)) parsed.metadata.workflow_id = trim(workflowId);
     if (trim(workflowVersionId)) parsed.metadata.workflow_version_id = trim(workflowVersionId);
     if (trim(projectId)) parsed.metadata.project_id = trim(projectId);
+    parsed.metadata.client_capabilities = {
+      widget_extensions: {
+        RichChart: {
+          spec_versions: ['1'],
+        },
+      },
+    };
     return JSON.stringify(parsed);
   } catch {
     return body;

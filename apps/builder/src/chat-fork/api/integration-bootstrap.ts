@@ -46,6 +46,15 @@ export type IntegrationCapabilities = {
     capability_registry?: boolean;
     workflow_version_pinning?: boolean;
   };
+  widget_extensions?: {
+    RichChart?: {
+      component_type?: string;
+      schema_url?: string;
+      spec_versions?: string[];
+      interactive_mode?: 'client_only' | string;
+      supported_chart_types?: string[];
+    };
+  };
 };
 
 export type IntegrationDoctorReport = {

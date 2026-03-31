@@ -139,7 +139,7 @@ export function WidgetRenderer({ widget, onAction }: WidgetRendererProps) {
       return <FormBlock key={key} component={component} onAction={onAction} renderChild={renderComponent} />;
     }
 
-    if (component.type === 'Chart') {
+    if (component.type === 'RichChart' || component.type === 'Chart') {
       return <NivoChart key={key} component={component} />;
     }
 

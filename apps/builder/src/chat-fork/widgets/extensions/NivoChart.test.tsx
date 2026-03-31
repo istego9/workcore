@@ -21,14 +21,14 @@ describe('NivoChart', () => {
   it('infers legacy chart type from series payload', () => {
     expect(
       inferChartTypeFromLegacyPayload({
-        type: 'Chart',
+        type: 'RichChart',
         series: [{ type: 'bar', dataKey: 'value' }]
       })
     ).toBe('bar');
 
     expect(
       inferChartTypeFromLegacyPayload({
-        type: 'Chart',
+        type: 'RichChart',
         series: [{ type: 'line', dataKey: 'value' }]
       })
     ).toBe('line');
@@ -37,10 +37,20 @@ describe('NivoChart', () => {
   it('renders safe message when required chart payload is missing', () => {
     render(
       <MantineProvider>
+        <NivoChart component={{ type: 'RichChart', chart_type: 'radar' }} />
+      </MantineProvider>
+    );
+
+    expect(screen.getByText('RichChart(radar): data is required')).toBeInTheDocument();
+  });
+
+  it('accepts legacy custom Chart alias during migration', () => {
+    render(
+      <MantineProvider>
         <NivoChart component={{ type: 'Chart', chart_type: 'radar' }} />
       </MantineProvider>
     );
 
-    expect(screen.getByText('Chart(radar): data is required')).toBeInTheDocument();
+    expect(screen.getByText('RichChart(radar): data is required')).toBeInTheDocument();
   });
 });

@@ -52,6 +52,7 @@ type LegacySeries = {
 const DEFAULT_HEIGHT = 280;
 const DEFAULT_MARGIN = { top: 20, right: 24, bottom: 44, left: 56 };
 const CHART_TYPE_SET = new Set<string>(SUPPORTED_NIVO_CHART_TYPES);
+const COMPONENT_LABEL = 'RichChart';
 
 const CHART_TYPE_ALIASES: Record<string, SupportedNivoChartType> = {
   area: 'line',
@@ -299,19 +300,19 @@ export function NivoChart({ component }: NivoChartProps) {
   const height = resolveHeight(nivoProps);
 
   if (!chartType) {
-    return unsupported('Chart: chart_type is required');
+    return unsupported(`${COMPONENT_LABEL}: chart_type is required`);
   }
 
   if (chartType === 'bar') {
     const data = asLegacyRows(nivoProps.data).length ? asLegacyRows(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(bar): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(bar): data is required`);
     const keys = asStringArray(nivoProps.keys).length
       ? asStringArray(nivoProps.keys)
       : series
           .map((item) => (typeof item.dataKey === 'string' ? item.dataKey : ''))
           .filter(Boolean);
     const finalKeys = keys.length ? keys : inferNumericKeys(data, xAxisKey);
-    if (!finalKeys.length) return unsupported('Chart(bar): keys are required');
+    if (!finalKeys.length) return unsupported(`${COMPONENT_LABEL}(bar): keys are required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       indexBy: typeof nivoProps.indexBy === 'string' ? nivoProps.indexBy : xAxisKey,
@@ -329,7 +330,7 @@ export function NivoChart({ component }: NivoChartProps) {
       externalData.length > 0
         ? externalData
         : toLineSeriesFromLegacy(rows, series, xAxisKey);
-    if (!data.length) return unsupported('Chart(line): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(line): data is required`);
     const hasAreaSeries = series.some((item) => String(item.type || '').toLowerCase() === 'area');
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
@@ -345,7 +346,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'pie') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : asArrayRecord(component.data);
-    if (!data.length) return unsupported('Chart(pie): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(pie): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -357,7 +358,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'area-bump') {
     const data = Array.isArray(nivoProps.data) ? nivoProps.data : component.series;
-    if (!Array.isArray(data) || !data.length) return unsupported('Chart(area-bump): data is required');
+    if (!Array.isArray(data) || !data.length) return unsupported(`${COMPONENT_LABEL}(area-bump): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -367,7 +368,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'bump') {
     const data = Array.isArray(nivoProps.data) ? nivoProps.data : component.series;
-    if (!Array.isArray(data) || !data.length) return unsupported('Chart(bump): data is required');
+    if (!Array.isArray(data) || !data.length) return unsupported(`${COMPONENT_LABEL}(bump): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -377,7 +378,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'boxplot') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(boxplot): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(boxplot): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -387,7 +388,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'bullet') {
     const data = Array.isArray(nivoProps.data) ? nivoProps.data : component.data;
-    if (!Array.isArray(data) || !data.length) return unsupported('Chart(bullet): data is required');
+    if (!Array.isArray(data) || !data.length) return unsupported(`${COMPONENT_LABEL}(bullet): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
@@ -396,7 +397,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'calendar') {
     const data = Array.isArray(nivoProps.data) ? nivoProps.data : component.data;
-    if (!Array.isArray(data) || !data.length) return unsupported('Chart(calendar): data is required');
+    if (!Array.isArray(data) || !data.length) return unsupported(`${COMPONENT_LABEL}(calendar): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
@@ -405,7 +406,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'chord') {
     const data = Array.isArray(nivoProps.data) ? nivoProps.data : component.data;
-    if (!Array.isArray(data) || !data.length) return unsupported('Chart(chord): data matrix is required');
+    if (!Array.isArray(data) || !data.length) return unsupported(`${COMPONENT_LABEL}(chord): data matrix is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -415,7 +416,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'circle-packing') {
     const data = asRecord(nivoProps.data).children ? asRecord(nivoProps.data) : asRecord(component.data);
-    if (!Object.keys(data).length) return unsupported('Chart(circle-packing): hierarchy data is required');
+    if (!Object.keys(data).length) return unsupported(`${COMPONENT_LABEL}(circle-packing): hierarchy data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
@@ -424,7 +425,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'funnel') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(funnel): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(funnel): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -434,7 +435,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'geo') {
     const features = Array.isArray(nivoProps.features) ? nivoProps.features : (component.features as unknown[] | undefined);
-    if (!Array.isArray(features) || !features.length) return unsupported('Chart(geo): features are required in nivo_props.features');
+    if (!Array.isArray(features) || !features.length) return unsupported(`${COMPONENT_LABEL}(geo): features are required in nivo_props.features`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       projectionScale: 110,
@@ -445,7 +446,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'heatmap') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(heatmap): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(heatmap): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -455,7 +456,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'icicle') {
     const data = asRecord(nivoProps.data).children ? asRecord(nivoProps.data) : asRecord(component.data);
-    if (!Object.keys(data).length) return unsupported('Chart(icicle): hierarchy data is required');
+    if (!Object.keys(data).length) return unsupported(`${COMPONENT_LABEL}(icicle): hierarchy data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
@@ -464,7 +465,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'marimekko') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(marimekko): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(marimekko): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -474,7 +475,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'network') {
     const data = asRecord(nivoProps.data).nodes ? asRecord(nivoProps.data) : asRecord(component.data);
-    if (!Object.keys(data).length) return unsupported('Chart(network): graph data is required');
+    if (!Object.keys(data).length) return unsupported(`${COMPONENT_LABEL}(network): graph data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -484,7 +485,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'parallel-coordinates') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(parallel-coordinates): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(parallel-coordinates): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -494,10 +495,10 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'polar-bar') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(polar-bar): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(polar-bar): data is required`);
     const keys = asStringArray(nivoProps.keys);
     const finalKeys = keys.length ? keys : inferNumericKeys(data as LegacyRow[], xAxisKey);
-    if (!finalKeys.length) return unsupported('Chart(polar-bar): keys are required');
+    if (!finalKeys.length) return unsupported(`${COMPONENT_LABEL}(polar-bar): keys are required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -509,10 +510,10 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'radar') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(radar): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(radar): data is required`);
     const keys = asStringArray(nivoProps.keys);
     const finalKeys = keys.length ? keys : inferNumericKeys(data as LegacyRow[], xAxisKey);
-    if (!finalKeys.length) return unsupported('Chart(radar): keys are required');
+    if (!finalKeys.length) return unsupported(`${COMPONENT_LABEL}(radar): keys are required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -524,7 +525,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'radial-bar') {
     const data = Array.isArray(nivoProps.data) ? nivoProps.data : component.data;
-    if (!Array.isArray(data) || !data.length) return unsupported('Chart(radial-bar): data is required');
+    if (!Array.isArray(data) || !data.length) return unsupported(`${COMPONENT_LABEL}(radial-bar): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -534,7 +535,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'sankey') {
     const data = asRecord(nivoProps.data).nodes ? asRecord(nivoProps.data) : asRecord(component.data);
-    if (!Object.keys(data).length) return unsupported('Chart(sankey): data is required');
+    if (!Object.keys(data).length) return unsupported(`${COMPONENT_LABEL}(sankey): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -544,7 +545,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'scatterplot') {
     const data = Array.isArray(nivoProps.data) ? nivoProps.data : component.series;
-    if (!Array.isArray(data) || !data.length) return unsupported('Chart(scatterplot): data is required');
+    if (!Array.isArray(data) || !data.length) return unsupported(`${COMPONENT_LABEL}(scatterplot): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -554,10 +555,10 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'stream') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(stream): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(stream): data is required`);
     const keys = asStringArray(nivoProps.keys);
     const finalKeys = keys.length ? keys : inferNumericKeys(data as LegacyRow[], xAxisKey);
-    if (!finalKeys.length) return unsupported('Chart(stream): keys are required');
+    if (!finalKeys.length) return unsupported(`${COMPONENT_LABEL}(stream): keys are required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -569,7 +570,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'sunburst') {
     const data = asRecord(nivoProps.data).children ? asRecord(nivoProps.data) : asRecord(component.data);
-    if (!Object.keys(data).length) return unsupported('Chart(sunburst): hierarchy data is required');
+    if (!Object.keys(data).length) return unsupported(`${COMPONENT_LABEL}(sunburst): hierarchy data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
@@ -578,7 +579,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'swarmplot') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(swarmplot): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(swarmplot): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       margin: DEFAULT_MARGIN,
       ...nivoProps,
@@ -588,7 +589,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'tree') {
     const data = asRecord(nivoProps.data).children ? asRecord(nivoProps.data) : asRecord(component.data);
-    if (!Object.keys(data).length) return unsupported('Chart(tree): hierarchy data is required');
+    if (!Object.keys(data).length) return unsupported(`${COMPONENT_LABEL}(tree): hierarchy data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
@@ -597,7 +598,7 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'treemap') {
     const data = asRecord(nivoProps.data).children ? asRecord(nivoProps.data) : asRecord(component.data);
-    if (!Object.keys(data).length) return unsupported('Chart(treemap): hierarchy data is required');
+    if (!Object.keys(data).length) return unsupported(`${COMPONENT_LABEL}(treemap): hierarchy data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
@@ -606,12 +607,12 @@ export function NivoChart({ component }: NivoChartProps) {
 
   if (chartType === 'waffle') {
     const data = asArrayRecord(nivoProps.data).length ? asArrayRecord(nivoProps.data) : rows;
-    if (!data.length) return unsupported('Chart(waffle): data is required');
+    if (!data.length) return unsupported(`${COMPONENT_LABEL}(waffle): data is required`);
     return renderResolvedChart(chartComponent, chartType, height, {
       ...nivoProps,
       data
     }, loadError);
   }
 
-  return unsupported(`Chart: unsupported chart_type '${chartType}'`);
+  return unsupported(`${COMPONENT_LABEL}: unsupported chart_type '${chartType}'`);
 }
