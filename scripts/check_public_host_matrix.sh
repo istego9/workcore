@@ -32,9 +32,11 @@ while IFS= read -r host; do
   [[ -z "${host}" ]] && continue
   openapi_url="https://${host}/openapi.yaml"
   caps_url="https://${host}/integration-capabilities"
+  openapi_file="${TMP_DIR}/${host}-openapi.yaml"
 
   echo "[host-matrix] checking ${host}"
-  curl -fsS "${openapi_url}" | grep -q '^  /integration-capabilities:' || {
+  curl -fsS "${openapi_url}" > "${openapi_file}"
+  grep -q '^  /integration-capabilities:' "${openapi_file}" || {
     echo "[host-matrix] ${host}: OpenAPI is missing /integration-capabilities" >&2
     exit 1
   }
@@ -45,11 +47,22 @@ while IFS= read -r host; do
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+widget_extensions = payload.get("widget_extensions") or {}
+if isinstance(widget_extensions, dict):
+    rich_chart = widget_extensions.get("RichChart")
+    if isinstance(rich_chart, dict):
+        schema_url = rich_chart.get("schema_url")
+        if isinstance(schema_url, str) and schema_url.strip():
+            rich_chart = dict(rich_chart)
+            rich_chart["schema_url"] = urlparse(schema_url).path or schema_url
+            widget_extensions = dict(widget_extensions)
+            widget_extensions["RichChart"] = rich_chart
 signature = {
     "chat": payload.get("chat"),
-    "widget_extensions": payload.get("widget_extensions"),
+    "widget_extensions": widget_extensions,
 }
 print(json.dumps(signature, sort_keys=True))
 PY

@@ -15,6 +15,7 @@ APIM_API_ID="${APIM_API_ID:-workcore}"
 APIM_API_DISPLAY_NAME="${APIM_API_DISPLAY_NAME:-WorkCore Public API}"
 APIM_API_PATH="${APIM_API_PATH:-}"
 APIM_OAUTH_AUDIENCE="${APIM_OAUTH_AUDIENCE:-api://workcore-partner-api}"
+APIM_OAUTH_RESOURCE_APP_ID="${APIM_OAUTH_RESOURCE_APP_ID:-}"
 APIM_ENFORCE_PARTNER_MAP="${APIM_ENFORCE_PARTNER_MAP:-true}"
 
 ENTRA_TENANT_ID="${ENTRA_TENANT_ID:-${AZURE_TENANT_ID:-}}"
@@ -67,6 +68,15 @@ upsert_named_value() {
     --value "${value}" \
     --secret "${secret}" \
     --output none
+}
+
+get_named_value_value() {
+  local named_value_id="$1"
+  az apim nv show \
+    --resource-group "${AZ_RESOURCE_GROUP}" \
+    --service-name "${APIM_NAME}" \
+    --named-value-id "${named_value_id}" \
+    --query value -o tsv 2>/dev/null || true
 }
 
 build_partner_map_json() {
@@ -227,7 +237,15 @@ echo "[apim] validating required resources"
 az apim show --resource-group "${AZ_RESOURCE_GROUP}" --name "${APIM_NAME}" --query name -o tsv >/dev/null
 ORCHESTRATOR_HOST="$(az containerapp show --resource-group "${AZ_RESOURCE_GROUP}" --name "${ORCHESTRATOR_APP_NAME}" --query properties.configuration.ingress.fqdn -o tsv)"
 CHATKIT_HOST="$(az containerapp show --resource-group "${AZ_RESOURCE_GROUP}" --name "${CHATKIT_APP_NAME}" --query properties.configuration.ingress.fqdn -o tsv)"
-OAUTH_RESOURCE_APP_ID="$(resolve_oauth_resource_app_id)"
+
+if [[ -n "${APIM_OAUTH_RESOURCE_APP_ID}" ]]; then
+  OAUTH_RESOURCE_APP_ID="${APIM_OAUTH_RESOURCE_APP_ID}"
+else
+  OAUTH_RESOURCE_APP_ID="$(get_named_value_value oauth-resource-app-id)"
+  if [[ -z "${OAUTH_RESOURCE_APP_ID}" ]]; then
+    OAUTH_RESOURCE_APP_ID="$(resolve_oauth_resource_app_id)"
+  fi
+fi
 
 if [[ -z "${ORCHESTRATOR_HOST}" || -z "${CHATKIT_HOST}" ]]; then
   echo "orchestrator/chatkit ingress FQDN could not be resolved" >&2
