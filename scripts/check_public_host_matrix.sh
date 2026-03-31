@@ -6,13 +6,18 @@ SECONDARY_HOST="${API_SECONDARY_DOMAIN:-api.runwcr.com}"
 ENABLE_SECONDARY="${ENABLE_SECONDARY_API_DOMAIN:-true}"
 PUBLIC_API_HOSTS="${PUBLIC_API_HOSTS:-}"
 
+normalize_flag() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
 build_hosts() {
   if [[ -n "${PUBLIC_API_HOSTS}" ]]; then
     echo "${PUBLIC_API_HOSTS}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d'
     return
   fi
   printf '%s\n' "${PRIMARY_HOST}"
-  if [[ "${ENABLE_SECONDARY,,}" == "1" || "${ENABLE_SECONDARY,,}" == "true" || "${ENABLE_SECONDARY,,}" == "yes" || "${ENABLE_SECONDARY,,}" == "on" ]]; then
+  normalized_secondary="$(normalize_flag "${ENABLE_SECONDARY}")"
+  if [[ "${normalized_secondary}" == "1" || "${normalized_secondary}" == "true" || "${normalized_secondary}" == "yes" || "${normalized_secondary}" == "on" ]]; then
     printf '%s\n' "${SECONDARY_HOST}"
   fi
 }
